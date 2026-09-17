@@ -1,0 +1,169 @@
+{
+  "interests": [
+    {
+      "id": "markets",
+      "label_es": "Mercados y economía",
+      "label_en": "Markets & economy",
+      "seeds_es": [
+        "¿Qué pasó hoy con las tasas de interés y qué significa para mis ahorros?",
+        "¿Cómo se movió el dólar esta semana y por qué?",
+        "Dame un resumen diario de las bolsas más importantes y qué las movió."
+      ],
+      "seeds_en": [
+        "What happened with interest rates today and what does it mean for my savings?",
+        "How did the dollar move this week and why?",
+        "Give me a daily summary of the major stock markets and what moved them."
+      ]
+    },
+    {
+      "id": "technology",
+      "label_es": "Tecnología",
+      "label_en": "Technology",
+      "seeds_es": [
+        "¿Qué lanzamientos o novedades importantes hubo hoy en tecnología?",
+        "Mantenme al día con los avances en inteligencia artificial.",
+        "¿Qué está pasando con las grandes empresas de tecnología esta semana?"
+      ],
+      "seeds_en": [
+        "What important tech launches or news happened today?",
+        "Keep me up to date on advances in artificial intelligence.",
+        "What's happening with big tech companies this week?"
+      ]
+    },
+    {
+      "id": "world",
+      "label_es": "Noticias del mundo",
+      "label_en": "World news",
+      "seeds_es": [
+        "Dame un resumen diario de las noticias internacionales más relevantes.",
+        "¿Qué está pasando con los conflictos internacionales que están activos?",
+        "Mantenme informado sobre política internacional y relaciones entre países."
+      ],
+      "seeds_en": [
+        "Give me a daily summary of the most relevant international news.",
+        "What's happening with the international conflicts that are active right now?",
+        "Keep me informed on international politics and relations between countries."
+      ]
+    },
+    {
+      "id": "local",
+      "label_es": "Noticias de Colombia",
+      "label_en": "Colombia news",
+      "seeds_es": [
+        "¿Qué pasó hoy en las noticias nacionales de Colombia?",
+        "Mantenme al día con las decisiones del gobierno colombiano que me afectan.",
+        "¿Qué está pasando con la economía y el empleo en Colombia?"
+      ],
+      "seeds_en": [
+        "What happened today in Colombia's national news?",
+        "Keep me up to date on decisions from the Colombian government that affect me.",
+        "What's happening with the economy and jobs in Colombia?"
+      ]
+    },
+    {
+      "id": "sports",
+      "label_es": "Deportes",
+      "label_en": "Sports",
+      "seeds_es": [
+        "Dame un resumen diario de los resultados de fútbol que me importan.",
+        "¿Cómo le fue a mi equipo favorito esta semana?",
+        "Mantenme al día con las noticias de deportes más importantes del día."
+      ],
+      "seeds_en": [
+        "Give me a daily summary of the soccer results I care about.",
+        "How did my favorite team do this week?",
+        "Keep me up to date on the most important sports news of the day."
+      ]
+    },
+    {
+      "id": "health",
+      "label_es": "Salud y bienestar",
+      "label_en": "Health & wellness",
+      "seeds_es": [
+        "¿Qué hay de nuevo en investigación de salud y bienestar esta semana?",
+        "Mantenme informado sobre avances médicos relevantes.",
+        "Dame consejos prácticos de salud basados en evidencia reciente."
+      ],
+      "seeds_en": [
+        "What's new in health and wellness research this week?",
+        "Keep me informed on relevant medical advances.",
+        "Give me practical, evidence-based health tips."
+      ]
+    },
+    {
+      "id": "science",
+      "label_es": "Ciencia",
+      "label_en": "Science",
+      "seeds_es": [
+        "¿Qué descubrimientos científicos importantes hubo esta semana?",
+        "Mantenme al día con las noticias del espacio y la exploración espacial.",
+        "Explícame en simple los avances científicos más relevantes del momento."
+      ],
+      "seeds_en": [
+        "What important scientific discoveries happened this week?",
+        "Keep me up to date on space news and exploration.",
+        "Explain the most relevant scientific advances right now, in simple terms."
+      ]
+    },
+    {
+      "id": "entertainment",
+      "label_es": "Entretenimiento y cultura",
+      "label_en": "Entertainment & culture",
+      "seeds_es": [
+        "¿Qué está pasando en el mundo del cine y las series esta semana?",
+        "Dame las noticias de música y conciertos más relevantes.",
+        "Mantenme al día con la cultura pop y lo que la gente está comentando."
+      ],
+      "seeds_en": [
+        "What's happening in movies and TV this week?",
+        "Give me the most relevant music and concert news.",
+        "Keep me up to date on pop culture and what people are talking about."
+      ]
+    },
+    {
+      "id": "politics",
+      "label_es": "Política",
+      "label_en": "Politics",
+      "seeds_es": [
+        "¿Qué decisiones políticas importantes se tomaron hoy?",
+        "Mantenme informado sobre el congreso y las leyes que se están discutiendo.",
+        "Dame un resumen imparcial de los temas políticos más debatidos esta semana."
+      ],
+      "seeds_en": [
+        "What important political decisions were made today?",
+        "Keep me informed on congress and the laws being debated.",
+        "Give me an unbiased summary of the most debated political topics this week."
+      ]
+    },
+    {
+      "id": "climate",
+      "label_es": "Clima y medio ambiente",
+      "label_en": "Climate & environment",
+      "seeds_es": [
+        "¿Qué hay de nuevo en cambio climático y medio ambiente esta semana?",
+        "Mantenme al día con eventos climáticos extremos que puedan afectarme.",
+        "Dame noticias sobre energías renovables y sostenibilidad."
+      ],
+      "seeds_en": [
+        "What's new in climate change and the environment this week?",
+        "Keep me up to date on extreme weather events that could affect me.",
+        "Give me news on renewable energy and sustainability."
+      ]
+    },
+    {
+      "id": "personal_finance",
+      "label_es": "Finanzas personales",
+      "label_en": "Personal finance",
+      "seeds_es": [
+        "Dame consejos prácticos para administrar mejor mi dinero.",
+        "¿Qué está pasando con la inflación y cómo me afecta?",
+        "Mantenme al día con opciones de inversión para principiantes."
+      ],
+      "seeds_en": [
+        "Give me practical tips for managing my money better.",
+        "What's happening with inflation and how does it affect me?",
+        "Keep me up to date on investment options for beginners."
+      ]
+    }
+  ]
+}
