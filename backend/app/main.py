@@ -6,7 +6,10 @@ from app.db.session import engine, Base
 from app.db.migraciones import ejecutar_migraciones
 # Import every model so create_all() sees them
 from app.models import cliente, request, profile, episode, generation_job, instrumentation, onboarding  # noqa: F401
-from app.api.routes import auth, requests as requests_routes, profile as profile_routes, onboarding as onboarding_routes
+from app.api.routes import (
+    auth, requests as requests_routes, profile as profile_routes,
+    onboarding as onboarding_routes, generation as generation_routes,
+)
 
 
 @asynccontextmanager
@@ -36,6 +39,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(requests_routes.router, prefix="/api")
 app.include_router(profile_routes.router, prefix="/api")
 app.include_router(onboarding_routes.router, prefix="/api")
+app.include_router(generation_routes.router, prefix="/api")
 
 
 @app.get("/health")

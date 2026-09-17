@@ -9,16 +9,26 @@ shared semantic index for Home/Search, evals, multi-provider fallback,
 budgets/rate limits, TTS synthesize()) is deliberately deferred — each
 needs the epic that consumes it (Generator, Home, Search) to exist first.
 
+Also now backs the Episode Generator's research+writing stage
+(research_and_write_block) — see app/services/episode_generator.py for the
+scope note on what's built there. The Generator PRD's own tenet applies
+here too: this function decides *how* to research (a bounded web search
+call) and log it; episode_generator.py decides *what* to do with the
+result (assemble, trim, publish).
+
 Tenets followed here:
 - How, never what: this module doesn't decide whether a request is worth
   pursuing, only whether it's safe and how to structure it. Callers
-  (Request Management, Onboarding) decide what to do with a rejection.
+  (Request Management, Onboarding, the Generator) decide what to do with
+  the result.
 - Every call has an id and a cost: every call writes an AICall row
   (app/models/instrumentation.py), matching the existing Instrumentation
   catalog.
-- Prompts are versioned artifacts: STRUCTURE_REQUEST_VERSION is bumped
-  whenever STRUCTURE_REQUEST_SYSTEM changes.
+- Prompts are versioned artifacts: each *_VERSION constant is bumped
+  whenever its matching *_SYSTEM prompt changes.
 """
+import json
+import re
 import time
 import uuid
 from datetime import datetime
@@ -35,8 +45,35 @@ MODEL = "claude-opus-5"
 PROVIDER = "anthropic"
 
 # Per-1M-token prices (USD) — PRD §5: "per-provider price tables in config;
-# cost computed at call time." Update here if pricing changes.
+# cost computed at call time." Update here if pricing changes. Note: this
+# does not include the web_search tool's own per-search cost, which isn't
+# broken out by the API response usage object — logged costs are therefore
+# a token-only approximation for any call that uses web_search.
 _PRICE_PER_1M = {"claude-opus-5": {"input": 5.00, "output": 25.00}}
+
+
+def _cost(usage) -> float:
+    prices = _PRICE_PER_1M.get(MODEL, {"input": 0.0, "output": 0.0})
+    return (usage.input_tokens / 1_000_000) * prices["input"] + (usage.output_tokens / 1_000_000) * prices["output"]
+
+
+def _log_call(db: AsyncSession, *, prompt: str, version: str, purpose: str, usage, latency_ms: int,
+              context: dict, rejected_reason: str | None = None) -> None:
+    db.add(AICall(
+        call_id=uuid.uuid4(),
+        prompt=prompt,
+        version=version,
+        purpose=purpose,
+        model=MODEL,
+        provider=PROVIDER,
+        tokens_in=usage.input_tokens,
+        tokens_out=usage.output_tokens,
+        cost=_cost(usage),
+        latency_ms=latency_ms,
+        context=context,
+        rejected_reason=rejected_reason,
+        creado_en=datetime.utcnow(),
+    ))
 
 
 class StructuredRequest(BaseModel):
@@ -92,27 +129,116 @@ async def structure_request(
         output_format=StructuredRequest,
     )
     latency_ms = int((time.monotonic() - start) * 1000)
-
     result = response.parsed_output
-    prices = _PRICE_PER_1M.get(MODEL, {"input": 0.0, "output": 0.0})
-    cost = (response.usage.input_tokens / 1_000_000) * prices["input"] + (
-        response.usage.output_tokens / 1_000_000
-    ) * prices["output"]
 
-    db.add(AICall(
-        call_id=uuid.uuid4(),
-        prompt="structure_request",
-        version=STRUCTURE_REQUEST_VERSION,
-        purpose="structure_request",
-        model=MODEL,
-        provider=PROVIDER,
-        tokens_in=response.usage.input_tokens,
-        tokens_out=response.usage.output_tokens,
-        cost=cost,
-        latency_ms=latency_ms,
+    _log_call(
+        db, prompt="structure_request", version=STRUCTURE_REQUEST_VERSION, purpose="structure_request",
+        usage=response.usage, latency_ms=latency_ms,
         context={"customer_id": str(customer_id), "request_id": str(request_id) if request_id else None},
         rejected_reason=result.rejected_reason,
-        creado_en=datetime.utcnow(),
-    ))
-
+    )
     return result
+
+
+class BlockResult(BaseModel):
+    summary: str
+    script: str
+    sources: list[dict]
+    no_news: bool
+
+
+RESEARCH_AND_WRITE_BLOCK_VERSION = "v1"
+
+_DEPTH_WORDS = {"brief": "about 50-70 words", "standard": "about 100-140 words", "deep": "about 180-240 words"}
+_STYLE_DESCRIPTIONS = {
+    "news": "a neutral, concise news-brief voice — just the facts, no personality",
+    "story": "a narrative, storytelling voice that gives context and builds a small arc",
+    "casual": "a casual, conversational voice, like a knowledgeable friend catching you up",
+}
+
+RESEARCH_AND_WRITE_BLOCK_SYSTEM = """You research one customer's standing request for a daily audio briefing and write the spoken segment that answers it for today.
+
+Use the web_search tool to find what is genuinely new or notable today (or in the last 1-2 days) about the topic. Never invent facts; only report what your searches actually returned, and cite every source you use.
+
+After researching, respond with ONLY a single JSON object (no other text, no markdown fences) with these fields:
+- "summary": one sentence, plain text, summarizing the block (for internal indexing, not read aloud).
+- "script": the spoken segment itself, written in {style_description}, in {language}, targeting {word_target}. Written to be read aloud — no headers, no bullet points, no markdown.
+- "sources": a list of objects {{"url": ..., "title": ..., "publisher": ...}} for every fact used. Empty list only if no_news is true.
+- "no_news": true if your research found nothing new, notable, or researchable for this request today — in that case "script" and "summary" should be empty strings and "sources" an empty list. Do not pad or speculate to avoid returning no_news; an honestly empty day is correct behavior, not a failure."""
+
+
+async def research_and_write_block(
+    db: AsyncSession,
+    raw_text: str,
+    topic: str,
+    scope: str,
+    geography: str | None,
+    depth: str,
+    style: str,
+    language: str,
+    customer_id: uuid.UUID,
+    request_id: uuid.UUID,
+) -> BlockResult:
+    """
+    research_and_write_block — the Episode Generator's research+judge_novelty
+    +write_block stages, collapsed into one call for this MVP. Uses Claude's
+    server-side web_search tool (licensed/API sources per the Generator PRD's
+    intent, not scraping) so the whole research+write step happens in a
+    single request/response, no client-side tool loop needed.
+
+    Scope reduction vs. the full PRD: true novelty judgment (§4, "against
+    the customer's previous blocks in the shared index, last 14 days") isn't
+    implemented — there's no shared index yet (AI Platform hasn't built it).
+    This call only judges "is there anything new today", not "new since we
+    last told this customer" — see episode_generator.py for the fuller note.
+    """
+    depth = depth if depth in _DEPTH_WORDS else "standard"
+    style = style if style in _STYLE_DESCRIPTIONS else "news"
+    language_name = "Spanish" if language == "es" else "English"
+
+    system = RESEARCH_AND_WRITE_BLOCK_SYSTEM.format(
+        style_description=_STYLE_DESCRIPTIONS[style],
+        language=language_name,
+        word_target=_DEPTH_WORDS[depth],
+    )
+
+    user_content = f"Request (customer's own words): {raw_text}\nTopic: {topic}\nScope: {scope}"
+    if geography:
+        user_content += f"\nGeography: {geography}"
+
+    start = time.monotonic()
+    response = _client.messages.create(
+        model=MODEL,
+        max_tokens=4096,
+        thinking={"type": "adaptive"},
+        output_config={"effort": "medium"},
+        system=system,
+        messages=[{"role": "user", "content": user_content}],
+        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+
+    _log_call(
+        db, prompt="research_and_write_block", version=RESEARCH_AND_WRITE_BLOCK_VERSION,
+        purpose="research_and_write_block", usage=response.usage, latency_ms=latency_ms,
+        context={"customer_id": str(customer_id), "request_id": str(request_id)},
+    )
+
+    text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
+    return _parse_block_result(text)
+
+
+def _parse_block_result(text: str) -> BlockResult:
+    try:
+        return BlockResult.model_validate_json(text)
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return BlockResult.model_validate(json.loads(match.group(0)))
+        except Exception:
+            pass
+    # Model didn't return parseable JSON — treat as no_news rather than
+    # publishing garbage (Generator tenet: "no source, no block").
+    return BlockResult(summary="", script="", sources=[], no_news=True)

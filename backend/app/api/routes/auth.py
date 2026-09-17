@@ -71,7 +71,7 @@ async def signup(data: SignupRequest, db: AsyncSession = Depends(get_db)):
     db.add(cliente)
     await db.flush()
 
-    await emitir(db, "account_created", customer_id=cliente.id, method="email")
+    await emitir(db, "account_created", customer_id=cliente.id, source="auth", method="email")
     await db.commit()
 
     token = create_access_token(cliente.id, cliente.token_version)
@@ -108,13 +108,13 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = 
         if cliente.intentos_fallidos >= MAX_INTENTOS:
             cliente.bloqueado_hasta = ahora + timedelta(seconds=BLOQUEO_SEGUNDOS)
             cliente.intentos_fallidos = 0
-        await emitir(db, "login_failure", customer_id=cliente.id, method="email", reason="bad_credentials")
+        await emitir(db, "login_failure", customer_id=cliente.id, source="auth", method="email", reason="bad_credentials")
         await db.commit()
         raise error_generico
 
     cliente.intentos_fallidos = 0
     cliente.bloqueado_hasta = None
-    await emitir(db, "login_success", customer_id=cliente.id, method="email")
+    await emitir(db, "login_success", customer_id=cliente.id, source="auth", method="email")
     await db.commit()
 
     token = create_access_token(cliente.id, cliente.token_version)
@@ -127,7 +127,7 @@ async def logout(
     db: AsyncSession = Depends(get_db),
 ):
     cliente.token_version += 1  # instantly invalidates any token issued before this
-    await emitir(db, "logout", customer_id=cliente.id)
+    await emitir(db, "logout", customer_id=cliente.id, source="auth")
     await db.commit()
     return {"mensaje": "Logged out"}
 
