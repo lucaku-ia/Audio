@@ -18,9 +18,9 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_access_token(cliente_id: Any, token_version: int) -> str:
     """
-    token_version viaja en el payload; logout incrementa el valor guardado en
-    Cliente, lo que invalida de un solo golpe cualquier token emitido antes
-    — así "logout revoca la sesión" sin necesitar una tabla de sesiones.
+    token_version travels in the payload; logout increments the value stored
+    on Cliente, which invalidates every previously issued token in one shot
+    — so "logout revokes the session" without needing a sessions table.
     """
     expire = datetime.utcnow() + timedelta(days=settings.ACCESS_TOKEN_EXPIRE_DAYS)
     payload = {"exp": expire, "sub": str(cliente_id), "tv": token_version}

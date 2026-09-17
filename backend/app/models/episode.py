@@ -1,4 +1,4 @@
-"""Episode y Block — System Contracts v0.1."""
+"""Episode and Block — System Contracts v0.1."""
 import enum
 import uuid
 from datetime import datetime, date as date_type
@@ -18,7 +18,7 @@ class Episode(Base):
     __tablename__ = "episodes"
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    customer_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("clientes.id"), nullable=True, index=True)  # null = inventario compartido
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("clientes.id"), nullable=True, index=True)  # null = shared inventory
     shared: Mapped[bool] = mapped_column(Boolean, default=False)
     fecha: Mapped[date_type] = mapped_column(Date)
     path: Mapped[EpisodePath] = mapped_column(SAEnum(EpisodePath, name="episode_path"))
@@ -30,7 +30,7 @@ class Episode(Base):
     audio_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     had_more_any: Mapped[bool] = mapped_column(Boolean, default=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    cost: Mapped[dict] = mapped_column(JSON, default=lambda: {})  # {research, writing, tts, other} — snapshot de Instrumentation
+    cost: Mapped[dict] = mapped_column(JSON, default=lambda: {})  # {research, writing, tts, other} — Instrumentation snapshot
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
@@ -43,8 +43,8 @@ class Block(Base):
     request_version_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("request_versions.id"), nullable=True)
     start_s: Mapped[int] = mapped_column(Integer)
     end_s: Mapped[int] = mapped_column(Integer)
-    summary: Mapped[str] = mapped_column(Text)  # una línea, indexada
-    script: Mapped[str] = mapped_column(Text)  # guardado, no indexado completo
+    summary: Mapped[str] = mapped_column(Text)  # one line, indexed
+    script: Mapped[str] = mapped_column(Text)  # stored, not fully indexed
     sources: Mapped[list] = mapped_column(JSON, default=lambda: [])  # [{url, title, publisher, license, retrieved_at}]
     had_more: Mapped[bool] = mapped_column(Boolean, default=False)
     no_news: Mapped[bool] = mapped_column(Boolean, default=False)

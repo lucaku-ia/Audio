@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.session import engine, Base
 from app.db.migraciones import ejecutar_migraciones
-# Importar todos los modelos para que create_all() los vea
+# Import every model so create_all() sees them
 from app.models import cliente, request, profile, episode, generation_job, instrumentation  # noqa: F401
 from app.api.routes import auth, requests as requests_routes, profile as profile_routes
 
@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Lucaku Audio — API",
-    description="Servicio de investigación personal entregado en audio. Fundación técnica v0.1 (System Contracts).",
+    description="A personal research service delivered in audio. Technical foundation v0.1 (System Contracts).",
     version="0.1.0",
     lifespan=lifespan,
 )

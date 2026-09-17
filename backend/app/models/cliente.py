@@ -1,13 +1,13 @@
 """
-Cliente — objeto de cuenta según Lucaku_Login_PRD (Juan, Draft v2).
+Cliente — account object per Lucaku_Login_PRD (Juan, Draft v2).
 
-No está en System Contracts v0.1 (que asume que customer_id ya existe),
-pero el Login PRD sí define su forma: login obligatorio (se descartó modo
-invitado), 3 métodos (Google / Apple / email+password), ruteo post-login
-por onboarding_complete (false → Onboarding, true → Home, nunca a un feed).
+Not part of System Contracts v0.1 (which assumes customer_id already exists),
+but the Login PRD does define its shape: mandatory login (guest mode was
+rejected), 3 methods (Google / Apple / email+password), post-login routing
+via onboarding_complete (false -> Onboarding, true -> Home, never a feed).
 
-El idioma se captura aquí una sola vez y lo hereda Profile — nunca se
-vuelve a preguntar (regla transversal del documento paraguas).
+Language is captured here once and inherited by Profile — never asked
+again (umbrella doc cross-cutting rule).
 """
 import enum
 import uuid
@@ -28,19 +28,19 @@ class Cliente(Base):
     __tablename__ = "clientes"
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)  # Apple: email de relay privado
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)  # Apple: private relay email
     auth_provider: Mapped[AuthProvider] = mapped_column(SAEnum(AuthProvider, name="auth_provider"))
-    provider_sub: Mapped[str | None] = mapped_column(String(255), nullable=True)  # sub de Google/Apple; null si es email
-    hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)  # bcrypt/argon2; solo metodo email
+    provider_sub: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Google/Apple sub; null for email
+    hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)  # bcrypt/argon2; email method only
     nombre: Mapped[str] = mapped_column(String(255))
-    idioma: Mapped[str] = mapped_column(String(5), default="es")  # capturado aqui, heredado por Profile — nunca se repregunta
-    onboarding_complete: Mapped[bool] = mapped_column(Boolean, default=False)  # ruteo: false→Onboarding, true→Home
+    idioma: Mapped[str] = mapped_column(String(5), default="es")  # captured here, inherited by Profile — never re-asked
+    onboarding_complete: Mapped[bool] = mapped_column(Boolean, default=False)  # routing: false->Onboarding, true->Home
 
-    # Throttle de intentos — Login PRD §5: "5 intentos fallidos consecutivos disparan 60s de bloqueo"
+    # Attempt throttle — Login PRD §5: "5 consecutive failed attempts trigger a 60s lockout"
     intentos_fallidos: Mapped[int] = mapped_column(Integer, default=0)
     bloqueado_hasta: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Se incrementa en logout — cualquier JWT emitido antes queda invalido de inmediato
+    # Incremented on logout — any JWT issued before that instantly becomes invalid
     token_version: Mapped[int] = mapped_column(Integer, default=0)
 
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

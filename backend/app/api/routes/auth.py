@@ -1,10 +1,10 @@
 """
-Login PRD (Juan, Draft v2) — flujo de email+password.
+Login PRD (Juan, Draft v2) — email+password flow.
 
-Google y Apple quedan fuera de este primer corte: requieren credenciales OAuth
-creadas en sus consolas respectivas (mismo patrón que Gmail en el proyecto de
-manufactura). auth_provider ya soporta esos valores en el modelo; falta el
-endpoint de callback de cada uno.
+Google and Apple are out of scope for this first cut: they require OAuth
+credentials created in their respective consoles (same pattern as Gmail in
+the manufacturing project). auth_provider already supports those values in
+the model; each one's callback endpoint is still missing.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -29,7 +29,7 @@ BLOQUEO_SEGUNDOS = 60
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    onboarding_complete: bool  # el cliente rutea con esto: false -> Onboarding, true -> Home
+    onboarding_complete: bool  # the client routes on this: false -> Onboarding, true -> Home
 
 
 class SignupRequest(BaseModel):
@@ -54,10 +54,10 @@ async def signup(data: SignupRequest, db: AsyncSession = Depends(get_db)):
     cliente_existente = existente.scalar_one_or_none()
     if cliente_existente:
         # PRD: "shows a message pointing to the right way in, instead of silently
-        # creating a second account" — deliberadamente NO es un error generico aqui.
+        # creating a second account" — deliberately NOT a generic error here.
         raise HTTPException(
             status_code=400,
-            detail=f"Este correo ya tiene una cuenta con el método '{cliente_existente.auth_provider.value}'. Inicia sesión con ese método.",
+            detail=f"This email already has an account using the '{cliente_existente.auth_provider.value}' method. Sign in with that method instead.",
         )
 
     cliente = Cliente(
@@ -83,8 +83,8 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = 
     result = await db.execute(select(Cliente).where(Cliente.email == form.username))
     cliente = result.scalar_one_or_none()
 
-    # Error generico deliberado — "never reveals whether the email or the password was wrong"
-    error_generico = HTTPException(status_code=401, detail="Credenciales incorrectas")
+    # Deliberately generic error — "never reveals whether the email or the password was wrong"
+    error_generico = HTTPException(status_code=401, detail="Incorrect credentials")
 
     if cliente is None:
         raise error_generico
@@ -92,7 +92,7 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = 
     if cliente.auth_provider != AuthProvider.email:
         raise HTTPException(
             status_code=400,
-            detail=f"Esta cuenta usa '{cliente.auth_provider.value}' para iniciar sesión, no email y contraseña.",
+            detail=f"This account signs in with '{cliente.auth_provider.value}', not email and password.",
         )
 
     ahora = datetime.now(timezone.utc)
@@ -100,7 +100,7 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = 
         segundos_restantes = int((cliente.bloqueado_hasta - ahora).total_seconds())
         raise HTTPException(
             status_code=429,
-            detail=f"Demasiados intentos. Intenta de nuevo en {segundos_restantes} segundos.",
+            detail=f"Too many attempts. Try again in {segundos_restantes} seconds.",
         )
 
     if not cliente.hashed_password or not verify_password(form.password, cliente.hashed_password):
@@ -126,10 +126,10 @@ async def logout(
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
-    cliente.token_version += 1  # invalida de inmediato cualquier token emitido antes
+    cliente.token_version += 1  # instantly invalidates any token issued before this
     await emitir(db, "logout", customer_id=cliente.id)
     await db.commit()
-    return {"mensaje": "Sesión cerrada"}
+    return {"mensaje": "Logged out"}
 
 
 @router.get("/me", response_model=MeResponse)

@@ -4,7 +4,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 
 def _normalizar_database_url(url: str) -> str:
-    """Asegura que la URL use el driver asyncpg (Railway/Heroku entregan postgres:// o postgresql:// sin driver)."""
+    """Ensures the URL uses the asyncpg driver (Railway/Heroku hand back postgres:// or postgresql:// with no driver)."""
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+asyncpg://", 1)
     elif url.startswith("postgresql://") and "+asyncpg" not in url:

@@ -1,4 +1,4 @@
-"""GenerationJob e InventoryItem — System Contracts v0.1."""
+"""GenerationJob and InventoryItem — System Contracts v0.1."""
 import enum
 import uuid
 from datetime import datetime, date as date_type
@@ -29,7 +29,7 @@ class GenerationJob(Base):
     path: Mapped[EpisodePath] = mapped_column(SAEnum(EpisodePath, name="job_path"))
     status: Mapped[JobStatus] = mapped_column(SAEnum(JobStatus, name="job_status"), default=JobStatus.queued)
     eta: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    snapshot: Mapped[dict] = mapped_column(JSON, default=lambda: {})  # resultado de active_for_generation usado
+    snapshot: Mapped[dict] = mapped_column(JSON, default=lambda: {})  # active_for_generation result that was used
     stages: Mapped[list] = mapped_column(JSON, default=lambda: [])  # [{name, started, completed, cost, latency}]
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 

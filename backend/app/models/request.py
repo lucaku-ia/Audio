@@ -1,4 +1,4 @@
-"""Request y RequestVersion — System Contracts v0.1, sección 1."""
+"""Request and RequestVersion — System Contracts v0.1, section 1."""
 import enum
 import uuid
 from datetime import datetime
@@ -47,7 +47,7 @@ class Request(Base):
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     customer_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("clientes.id"), index=True)
     kind: Mapped[RequestKind] = mapped_column(SAEnum(RequestKind, name="request_kind"), default=RequestKind.standing)
-    raw_text: Mapped[str] = mapped_column(Text)  # palabra sagrada — nunca lo modifica el sistema
+    raw_text: Mapped[str] = mapped_column(Text)  # sacred — the system never modifies it
     structured: Mapped[dict] = mapped_column(JSON, default=lambda: {})  # {topic, scope, geography, depth}
     cadence: Mapped[str] = mapped_column(String(20), default="daily")
     status: Mapped[RequestStatus] = mapped_column(SAEnum(RequestStatus, name="request_status"), default=RequestStatus.active)

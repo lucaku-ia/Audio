@@ -1,18 +1,20 @@
 """
-Request Management PRD (Andrés, Draft v1) — CRUD + versionado.
+Request Management PRD (Andrés, Draft v1) — CRUD + versioning.
 
-Lo que falta a propósito porque depende de la AI Platform (todavía no existe):
+Deliberately missing because it depends on the AI Platform (which doesn't
+exist yet):
 
-- structure_request: `structured` queda siempre {} por ahora. Cuando exista la
-  AI Platform, se llena en create/edit.
-- validate_request: solo hay un heurístico mínimo (longitud). El PRD pide
-  rechazar solicitudes no investigables, maliciosas o sobre personas privadas
-  — eso necesita el modelo de IA.
-- refine() y adopt(): dependen de Player y Home, que tampoco existen. No están
-  implementados todavía.
+- structure_request: `structured` always stays {} for now. Once the AI
+  Platform exists, it gets filled in on create/edit.
+- validate_request: only a minimal heuristic (length) exists. The PRD
+  asks to reject requests that aren't researchable, are malicious, or are
+  about private individuals — that needs the AI model.
+- refine() and adopt(): depend on Player and Home, which also don't exist
+  yet. Not implemented.
 
-raw_text es sagrado — nunca se sobrescribe, cada cambio crea una RequestVersion
-nueva y la anterior queda marcada superseded (System Contracts §3).
+raw_text is sacred — the system never overwrites it; every edit creates a
+new RequestVersion and the previous one is marked superseded
+(System Contracts §3).
 """
 import uuid
 from datetime import datetime
@@ -71,10 +73,10 @@ class RequestDetailOut(RequestOut):
 
 
 def _validar_raw_text(raw_text: str):
-    """Heuristico minimo — el PRD pide rechazar en la puerta via AI Platform.validate_request,
-    que todavia no existe. Placeholder deliberado, no la validacion real."""
+    """Minimal heuristic — the PRD wants gatekeeping via AI Platform.validate_request,
+    which doesn't exist yet. Deliberate placeholder, not the real validation."""
     if len(raw_text.strip()) < 5:
-        raise HTTPException(400, "La solicitud es demasiado corta para investigar algo con ella.")
+        raise HTTPException(400, "This request is too short to research anything from.")
 
 
 async def _obtener_request_del_cliente(db: AsyncSession, request_id: uuid.UUID, cliente: Cliente) -> Request:
@@ -83,7 +85,7 @@ async def _obtener_request_del_cliente(db: AsyncSession, request_id: uuid.UUID, 
     )
     req = result.scalar_one_or_none()
     if not req:
-        raise HTTPException(404, "Solicitud no encontrada")
+        raise HTTPException(404, "Request not found")
     return req
 
 
@@ -101,7 +103,7 @@ async def crear_request(
         customer_id=cliente.id,
         kind=body.kind,
         raw_text=body.raw_text,
-        structured={},  # pendiente de AI Platform.structure_request
+        structured={},  # pending AI Platform.structure_request
         status=RequestStatus.active,
         created_from=body.created_from,
     )
@@ -159,8 +161,8 @@ async def active_for_generation(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Snapshot que el Episode Generator necesita en T-60 (System Contracts §2).
-    Consumido internamente hoy solo por pruebas — el Generator todavia no existe.
+    Snapshot the Episode Generator needs at T-60 (System Contracts §2).
+    Consumed internally today only for testing — the Generator doesn't exist yet.
     """
     result = await db.execute(
         select(Request).where(Request.customer_id == cliente.id, Request.status == RequestStatus.active)
@@ -217,7 +219,7 @@ async def editar_request(
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
-    """Edicion directa — aplica de inmediato (a diferencia de refine(), que aplica en la proxima generacion)."""
+    """Direct edit — applies immediately (unlike refine(), which applies on the next generation)."""
     _validar_raw_text(body.raw_text)
     req = await _obtener_request_del_cliente(db, request_id, cliente)
 
@@ -276,7 +278,7 @@ async def archivar_request(
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
-    """Reversible — la confirmacion antes de archivar es responsabilidad del cliente (UI)."""
+    """Reversible — confirming before archiving is the client's (UI's) responsibility."""
     req = await _obtener_request_del_cliente(db, request_id, cliente)
     req.status = RequestStatus.archived
     await db.commit()
@@ -296,8 +298,8 @@ async def mark_answered(
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
-    """Lo llama el Episode Generator tras publicar — todavia no existe, pero la operacion
-    ya esta lista segun el contrato (System Contracts §2)."""
+    """Called by the Episode Generator after publishing — doesn't exist yet, but the
+    operation is already ready per the contract (System Contracts §2)."""
     ahora = datetime.utcnow()
     actualizados = []
     for rid in body.request_ids:

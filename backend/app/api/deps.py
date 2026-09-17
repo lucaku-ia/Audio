@@ -18,7 +18,7 @@ async def get_current_cliente(
 ) -> Cliente:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="No autenticado",
+        detail="Not authenticated",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
@@ -35,6 +35,6 @@ async def get_current_cliente(
     if cliente is None:
         raise credentials_exception
     if cliente.token_version != token_version:
-        # el token fue emitido antes del ultimo logout — Login PRD: "logout revokes it"
+        # the token was issued before the last logout — Login PRD: "logout revokes it"
         raise credentials_exception
     return cliente

@@ -1,4 +1,4 @@
-"""Emisor mínimo del catálogo de Instrumentation (ver Instrumentation & Cost PRD §5)."""
+"""Minimal emitter for the Instrumentation catalog (see Instrumentation & Cost PRD §5)."""
 import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.instrumentation import Event
