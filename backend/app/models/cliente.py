@@ -12,7 +12,7 @@ vuelve a preguntar (regla transversal del documento paraguas).
 import enum
 import uuid
 from datetime import datetime
-from sqlalchemy import String, DateTime, Boolean, Enum as SAEnum
+from sqlalchemy import String, DateTime, Boolean, Integer, Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
@@ -35,4 +35,12 @@ class Cliente(Base):
     nombre: Mapped[str] = mapped_column(String(255))
     idioma: Mapped[str] = mapped_column(String(5), default="es")  # capturado aqui, heredado por Profile — nunca se repregunta
     onboarding_complete: Mapped[bool] = mapped_column(Boolean, default=False)  # ruteo: false→Onboarding, true→Home
+
+    # Throttle de intentos — Login PRD §5: "5 intentos fallidos consecutivos disparan 60s de bloqueo"
+    intentos_fallidos: Mapped[int] = mapped_column(Integer, default=0)
+    bloqueado_hasta: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Se incrementa en logout — cualquier JWT emitido antes queda invalido de inmediato
+    token_version: Mapped[int] = mapped_column(Integer, default=0)
+
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
