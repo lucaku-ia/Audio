@@ -1,16 +1,13 @@
 """
 Request Management PRD (Andrés, Draft v1) — CRUD + versioning.
 
-Deliberately missing because it depends on the AI Platform (which doesn't
-exist yet):
+structure_request and validate_request now go through the AI Platform
+(app/services/ai_platform.py) — a single call returns both the structured
+object {topic, scope, geography, depth} and a safety verdict, filling in
+what used to be a length-only placeholder heuristic.
 
-- structure_request: `structured` always stays {} for now. Once the AI
-  Platform exists, it gets filled in on create/edit.
-- validate_request: only a minimal heuristic (length) exists. The PRD
-  asks to reject requests that aren't researchable, are malicious, or are
-  about private individuals — that needs the AI model.
-- refine() and adopt(): depend on Player and Home, which also don't exist
-  yet. Not implemented.
+Still deliberately missing:
+- refine() and adopt(): depend on Player and Home, which don't exist yet.
 
 raw_text is sacred — the system never overwrites it; every edit creates a
 new RequestVersion and the previous one is marked superseded
@@ -32,6 +29,7 @@ from app.models.request import (
     CreatedFrom, Request, RequestKind, RequestStatus, RequestVersion,
     VersionSource, VersionStatus,
 )
+from app.services import ai_platform
 
 router = APIRouter(prefix="/requests", tags=["Request Management"])
 
@@ -73,10 +71,24 @@ class RequestDetailOut(RequestOut):
 
 
 def _validar_raw_text(raw_text: str):
-    """Minimal heuristic — the PRD wants gatekeeping via AI Platform.validate_request,
-    which doesn't exist yet. Deliberate placeholder, not the real validation."""
+    """Cheap pre-filter before spending a model call — the real safety/structuring
+    gate is app.services.ai_platform.structure_request."""
     if len(raw_text.strip()) < 5:
         raise HTTPException(400, "This request is too short to research anything from.")
+
+
+def _structured_dict(result: ai_platform.StructuredRequest) -> dict:
+    return {"topic": result.topic, "scope": result.scope, "geography": result.geography, "depth": result.depth}
+
+
+async def _structure_or_reject(
+    db: AsyncSession, raw_text: str, customer_id: uuid.UUID, request_id: uuid.UUID | None
+) -> dict:
+    result = await ai_platform.structure_request(db, raw_text, customer_id, request_id)
+    if result.rejected:
+        await db.commit()  # persist the AICall log even though the request is rejected — PRD: every call is logged
+        raise HTTPException(400, result.rejected_reason or "This request can't be researched as written.")
+    return _structured_dict(result)
 
 
 async def _obtener_request_del_cliente(db: AsyncSession, request_id: uuid.UUID, cliente: Cliente) -> Request:
@@ -98,12 +110,13 @@ async def crear_request(
     db: AsyncSession = Depends(get_db),
 ):
     _validar_raw_text(body.raw_text)
+    structured = await _structure_or_reject(db, body.raw_text, cliente.id, None)
 
     req = Request(
         customer_id=cliente.id,
         kind=body.kind,
         raw_text=body.raw_text,
-        structured={},  # pending AI Platform.structure_request
+        structured=structured,
         status=RequestStatus.active,
         created_from=body.created_from,
     )
@@ -113,7 +126,7 @@ async def crear_request(
     version = RequestVersion(
         request_id=req.id,
         raw_text=body.raw_text,
-        structured={},
+        structured=structured,
         source=VersionSource.create,
         status=VersionStatus.applied,
         aplicado_en=datetime.utcnow(),
@@ -222,6 +235,7 @@ async def editar_request(
     """Direct edit — applies immediately (unlike refine(), which applies on the next generation)."""
     _validar_raw_text(body.raw_text)
     req = await _obtener_request_del_cliente(db, request_id, cliente)
+    structured = await _structure_or_reject(db, body.raw_text, cliente.id, req.id)
 
     if req.current_version_id:
         anterior = await db.get(RequestVersion, req.current_version_id)
@@ -231,7 +245,7 @@ async def editar_request(
     nueva_version = RequestVersion(
         request_id=req.id,
         raw_text=body.raw_text,
-        structured={},
+        structured=structured,
         source=VersionSource.edit,
         status=VersionStatus.applied,
         aplicado_en=datetime.utcnow(),
@@ -240,6 +254,7 @@ async def editar_request(
     await db.flush()
 
     req.raw_text = body.raw_text
+    req.structured = structured
     req.current_version_id = nueva_version.id
     await db.commit()
     await db.refresh(req)
