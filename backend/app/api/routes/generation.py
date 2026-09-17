@@ -33,6 +33,7 @@ class JobOut(BaseModel):
     path: str
     status: str
     creado_en: datetime
+    stages: list = []  # carries the {"error": ...} entry when status == "failed"
 
 
 class BlockOut(BaseModel):
@@ -60,7 +61,10 @@ class EpisodeOut(BaseModel):
 
 
 def _job_out(job: GenerationJob) -> JobOut:
-    return JobOut(id=str(job.id), fecha=job.fecha, path=job.path.value, status=job.status.value, creado_en=job.creado_en)
+    return JobOut(
+        id=str(job.id), fecha=job.fecha, path=job.path.value, status=job.status.value,
+        creado_en=job.creado_en, stages=job.stages or [],
+    )
 
 
 @router.post("/run", response_model=JobOut)
