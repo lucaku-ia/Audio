@@ -20,20 +20,23 @@ Solo backend + modelos de datos, sin UI todavía. Implementa los objetos definid
 | `Episode`, `Block` | `app/models/episode.py` | Episode Generator |
 | `GenerationJob`, `InventoryItem` | `app/models/generation_job.py` | Episode Generator |
 | `Event`, `AICall` | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
-| `Cliente` (placeholder) | `app/models/cliente.py` | **Login PRD — no existe todavía, ver abajo** |
+| `Cliente` | `app/models/cliente.py` | Login PRD (Juan, Draft v2) |
 
-## Pendiente conocido
+## Estado de los PRDs
 
-Tres PRDs están referenciados por los demás documentos pero **no existen** en la
-carpeta de Drive fuente:
+Los 3 PRDs que faltaban en la carpeta de Drive (Login, Home, Player) existían como
+Google Docs separados y ya se incorporaron:
 
-- **Login PRD** — cuenta, autenticación, biometría. `Cliente` en este repo es un
-  placeholder mínimo hasta que aparezca.
-- **Home PRD** — pantalla principal, banners, sugerencias.
-- **Player PRD** — reproductor de audio, eventos de escucha, refinamiento.
+- **Login PRD** (Juan, Draft v2 — propuesto por Andrés) — login obligatorio, 3 métodos
+  (Google/Apple/email), biometría por dispositivo, ruteo por `onboarding_complete`.
+- **Home PRD** (Andrés, Draft v1) — banner con estados, últimos 3 episodios, sugerencias
+  explicables, día vacío, re-entrada.
+- **Player PRD** (Juan, Draft v1) — barra persistente + reproductor completo, navegación
+  por bloque/request, refinamiento, modo offline, media session del OS.
 
-Escribirlos (o encontrarlos) antes de construir Onboarding, Notifications o
-Search & AI a fondo, porque esos PRDs ya asumen decisiones que deberían vivir ahí.
+Aún no construidos en este repo: Onboarding, Request Management (lógica), Episode
+Generator, AI Platform, Search & AI, Notifications+Settings, Instrumentation dashboard.
+Todos dependen de la fundación de datos que ya está aquí.
 
 ## Stack
 
