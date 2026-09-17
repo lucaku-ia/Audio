@@ -1,17 +1,17 @@
 """
-Profile — System Contracts v0.1 + regla transversal del documento paraguas
+Profile — System Contracts v0.1 + umbrella doc cross-cutting rule
 ("Language and name | Captured once in Login profile. Inherited by every
 epic. Never asked again.").
 
-Por eso `language` no es un campo editable en este endpoint: se copia de
-Cliente.idioma la primera vez que se crea el Profile (en el signup del cliente,
-o aquí mismo si todavía no existe fila). Si el cliente quiere cambiar su
-idioma, ese cambio vive en Cliente/Settings, no aquí.
+That's why `language` is not editable through this endpoint: it's copied
+from Cliente.idioma the first time the Profile row is created (either at
+signup, or here if the row doesn't exist yet). If the customer wants to
+change their language, that lives in Cliente/Settings, not here.
 
-`signals` (completion/skip/rating/refinements/adoptions/dismissals) es
-derivado — nunca se pregunta y nunca se muestra como etiqueta (Request
-Management PRD, tenet). Por eso tampoco es editable desde este endpoint;
-lo va a escribir el Player/Home cuando existan.
+`signals` (completion/skip/rating, refinements, adoptions, dismissals) is
+derived — never asked and never shown as a label (Request Management PRD
+tenet). It's also not editable through this endpoint; the future
+Player/Home will write it.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -31,7 +31,7 @@ class ProfileBody(BaseModel):
     narration_style: NarrationStyle = NarrationStyle.news
     delivery_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")  # "HH:MM"
     delivery_timezone: str = "America/Bogota"
-    max_length_minutes: int | None = None  # None = sin límite — techo, nunca meta (umbrella §8)
+    max_length_minutes: int | None = None  # None = no limit — ceiling, never a target (umbrella §8)
 
 
 class ProfileOut(BaseModel):
@@ -59,18 +59,18 @@ def _out(perfil: Profile) -> ProfileOut:
 
 
 @router.get("", response_model=ProfileOut)
-async def obtener_perfil(
+async def get_profile(
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
     perfil = await db.get(Profile, cliente.id)
     if not perfil:
-        raise HTTPException(404, "Todavía no se ha configurado el perfil (Onboarding sin completar)")
+        raise HTTPException(404, "Profile not set up yet (Onboarding incomplete)")
     return _out(perfil)
 
 
 @router.put("", response_model=ProfileOut)
-async def actualizar_perfil(
+async def update_profile(
     body: ProfileBody,
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
@@ -86,7 +86,7 @@ async def actualizar_perfil(
     if not perfil:
         perfil = Profile(
             customer_id=cliente.id,
-            language=Language(cliente.idioma),  # heredado de Cliente, no del body — nunca se repregunta
+            language=Language(cliente.idioma),  # inherited from Cliente, not from the body — never re-asked
         )
         db.add(perfil)
 
