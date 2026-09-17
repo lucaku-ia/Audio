@@ -81,7 +81,13 @@ async def run_generation(db: AsyncSession, cliente: Cliente) -> GenerationJob:
 
     try:
         snapshot = await active_for_generation(at=None, cliente=cliente, db=db)
-        job.snapshot = snapshot
+        # snapshot's request lists are RequestOut pydantic models — not JSON-serializable
+        # as-is for the `snapshot` JSON column, so dump them before storing.
+        job.snapshot = {
+            **snapshot,
+            "standing_requests": [r.model_dump(mode="json") for r in snapshot["standing_requests"]],
+            "one_off_requests": [r.model_dump(mode="json") for r in snapshot["one_off_requests"]],
+        }
 
         result = await db.execute(select(Profile).where(Profile.customer_id == cliente.id))
         perfil = result.scalar_one_or_none()
