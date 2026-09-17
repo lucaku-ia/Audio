@@ -5,47 +5,108 @@ know, Lucaku researches it, and delivers it spoken — the first time on demand,
 every day after that at the time the customer chose.
 
 **This repo replaces Lucaku's previous focus** (a sales/purchasing/production platform
-for manufacturing, now archived at `lucaku-ia/LUCAKU`). This is a new product built
-from scratch.
+for manufacturing, now archived at `lucaku-ia/LUCAKU`, untouched). This is a new
+product built from scratch.
+
+This README is written as a handoff — read it top to bottom before making changes.
 
 ## Current status
 
-Backend only, no UI yet. Implements the data objects defined in
-`Lucaku_System_Contracts.docx` (v0.1), plus the business logic for the modules below.
+Backend only, no UI yet. Live in production on Railway:
+`https://audio-production-2a77.up.railway.app` (`/health`, `/docs` for interactive API docs).
 
 | Module | Status | Files | Source PRD |
 |---|---|---|---|
 | Login (signup/login/logout/me, JWT + revocation) | ✅ Built & deployed | `app/api/routes/auth.py`, `app/models/cliente.py` | Login PRD (Juan, Draft v2) |
 | Request Management (CRUD + versioning) | ✅ Built & deployed | `app/api/routes/requests.py`, `app/models/request.py` | Request Management PRD (Andrés, Draft v1) |
 | Profile (voice, narration style, delivery time, length) | ✅ Built & deployed | `app/api/routes/profile.py`, `app/models/profile.py` | Request Management / Onboarding |
+| Onboarding (resumable state, interests, seed-list suggestions, T-60 confirmation) | ✅ Built & deployed | `app/api/routes/onboarding.py`, `app/models/onboarding.py`, `app/data/onboarding_seeds.json` | Onboarding PRD (Andrés, Draft v4) |
+| AI Platform — `structure_request` only (structuring + safety screen) | ✅ Built & deployed | `app/services/ai_platform.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
 | Episode, Block | Data model only | `app/models/episode.py` | Episode Generator |
 | GenerationJob, InventoryItem | Data model only | `app/models/generation_job.py` | Episode Generator |
-| Event, AICall | Data model only | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
-| Onboarding, Episode Generator, AI Platform, Search & AI, Home, Player, Notifications+Settings, Instrumentation dashboard | Not started | — | — |
+| Event, AICall | Data model, `AICall` actively written by the AI Platform | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
+| Episode Generator, Home, Player, Search & AI, Notifications+Settings, Instrumentation dashboard | Not started | — | — |
 
-## PRD status
+Everything above has been **tested end-to-end against the live production deployment**,
+not just locally — see "Verifying a change" below for how to do the same.
 
-All PRDs have been read and incorporated as reference:
+## Read this before touching anything
 
-- **Login PRD** (Juan, Draft v2, proposed by Andrés) — mandatory login, 3 methods
-  (Google/Apple/email), per-device biometrics, routing via `onboarding_complete`.
-- **Request Management PRD** (Andrés, Draft v1) — standing/one-off requests, raw_text
-  versioning (old versions marked `superseded`, never overwritten), pause/resume/archive.
-- **Home PRD** (Andrés, Draft v1) — status banner, last 3 episodes, explainable
-  suggestions, empty-day state, re-entry.
-- **Player PRD** (Juan, Draft v1) — persistent bar + full player, block/request
-  navigation, refinement, offline mode, OS media session.
+1. **Find and read the PRD first.** Every module here was built from a PRD doc in the
+   team's shared Drive folder (`Lucaku_<Module>_PRD.docx`), not improvised. Before
+   extending a module or adding a new one, find its PRD and read it in full — PRDs are
+   long (engineering notes at the bottom often matter more than the requirements table).
+2. **Each module only implements what's buildable without epics that don't exist yet.**
+   Every route/service file has a "scope note" docstring at the top explaining exactly
+   what was deferred and why (usually: needs the AI Platform's shared index, or the
+   Episode Generator, neither of which exists). Read that docstring before assuming
+   something is missing by oversight rather than by design.
+3. **All code, comments, and commits are in English.** Chat with the user can be in
+   Spanish, but nothing written to this repo should be.
+4. **Never run destructive git operations or push without being asked.**
 
-Still to be built in this repo: Onboarding, Episode Generator, AI Platform, Search & AI,
-Notifications+Settings, Instrumentation dashboard. All depend on the data foundation
-that's already here.
+## Architecture
 
-## Stack
+FastAPI + SQLAlchemy 2.0 (async) + PostgreSQL — same stack as the archived
+manufacturing project, reused for team familiarity. No client platform (mobile/web)
+has been decided yet; several PRDs (Notifications, Login) assume a mobile app (iOS
+with APNs, biometrics, `lucaku://play/{episode_id}` deep links) — that decision is
+still open.
 
-FastAPI + SQLAlchemy 2.0 async + PostgreSQL — same stack as the manufacturing project,
-reused for team familiarity. No client platform (mobile/web) has been decided yet;
-several PRDs (Notifications, Login) assume a mobile app (iOS with APNs, biometrics,
-`lucaku://play/{episode_id}` deep links) — that client-platform decision is still open.
+```
+backend/app/
+  models/       SQLAlchemy models — one file per System Contracts object
+  api/routes/   FastAPI routers — one file per epic/module
+  services/     Cross-cutting logic (ai_platform.py, events.py)
+  db/           session.py (engine + URL normalization), migraciones.py (schema migrations)
+  core/         config.py (Settings), security.py (JWT/password hashing)
+  data/         static config, e.g. onboarding_seeds.json
+```
+
+### Auth model
+
+JWT with a `token_version` claim on `Cliente`. Logout increments `token_version` in the
+DB, which instantly invalidates every previously issued token — no session/blocklist
+table needed. `get_current_cliente` (`app/api/deps.py`) checks the claim against the DB
+on every request.
+
+### Request versioning
+
+`raw_text` on a `Request` is sacred — the system never overwrites it silently. Every
+edit creates a new `RequestVersion` row; the previous one is marked `superseded`, never
+deleted (System Contracts §3).
+
+### AI Platform scope
+
+The AI Platform PRD describes a much bigger system (prompt registry, shared semantic
+index for Home/Search, evals, multi-provider fallback, budgets). Only its **first
+delivery-order item** is built: a call wrapper with cost telemetry
+(`app/services/ai_platform.structure_request`), because the PRD itself says this is
+what unblocks Onboarding and Request Management. It calls Claude
+(`claude-opus-5` via the official `anthropic` Python SDK, `messages.parse` with a
+Pydantic output schema) to both structure a raw request into
+`{topic, scope, geography, depth}` and screen it for safety, and logs every call —
+including rejected ones — as an `AICall` row. Building the next PRD-priority item
+(the prompt registry, to unblock the Generator) is the natural next AI Platform step
+when picked back up.
+
+**Requires `ANTHROPIC_API_KEY`** to be set (Railway Variables in production, `.env`
+locally) or every `POST`/`PATCH /requests` call will fail with a 500
+(`anthropic.AuthenticationError`) — this bit us once already, see git history.
+
+### The recurring migration gotcha
+
+SQLAlchemy's `create_all()` (run on every startup, see `app/main.py` lifespan) only
+creates **missing tables** — it never alters columns on tables that already exist. This
+has caused a production crash twice already (once in the manufacturing project, once
+here with `Cliente.intentos_fallidos`). The fix in place: `app/db/migraciones.py` has a
+declarative `COLUMNAS_ESPERADAS` list of `(table, column, sql_type)` that's applied as
+idempotent `ALTER TABLE` statements after `create_all()`.
+
+**Any time you add a column to an existing model, add a row to
+`COLUMNAS_ESPERADAS` in the same commit**, or the next deploy will crash with
+`UndefinedColumnError` the moment that column is queried. Brand-new tables don't need
+an entry — `create_all()` already creates them with every column.
 
 ## Running locally
 
@@ -55,19 +116,78 @@ python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 
-# copy .env.example to .env and fill in DATABASE_URL
+copy .env.example .env
+# fill in DATABASE_URL (a local Postgres), SECRET_KEY, and ANTHROPIC_API_KEY
 
 uvicorn app.main:app --reload --port 8000
 ```
 
+Interactive API docs at `http://localhost:8000/docs` once running.
+
 ## Deployment
 
-Deployed on Railway (backend + Postgres). The root-level `Dockerfile` is required —
-Railway looks for it at the repo root regardless of `railway.json`'s dockerfile path.
-`DATABASE_URL` gets normalized from Railway's plain `postgresql://` to
-`postgresql+asyncpg://` at startup (see `app/db/session.py`).
+Railway (backend service + a Postgres service), auto-deploys on push to `main`.
 
-Schema changes to existing tables are NOT picked up by SQLAlchemy's `create_all()`
-(it only creates missing tables). Any new column added to an existing model must be
-added to `COLUMNAS_ESPERADAS` in `app/db/migraciones.py`, or it will crash in
-production the way it did once already.
+- The root-level `Dockerfile` is required — Railway looks for it at the repo root
+  regardless of what `railway.json`'s `dockerfile` path says. Build context is the repo
+  root, so `Dockerfile` does `COPY backend/ .`.
+- `DATABASE_URL` gets normalized from Railway's plain `postgresql://` to
+  `postgresql+asyncpg://` at startup (`_normalizar_database_url` in `app/db/session.py`)
+  — without this, SQLAlchemy defaults to the sync `psycopg2` driver, which isn't
+  installed, and startup crashes with `ModuleNotFoundError`.
+- Railway service Variables needed in production: `DATABASE_URL` (usually
+  `${{Postgres.DATABASE_URL}}`), `SECRET_KEY` (long random string — never reuse the
+  placeholder in `.env.example`), `ANTHROPIC_API_KEY`.
+
+### Verifying a change
+
+There's no test suite yet — every module so far has been verified by deploying and
+exercising the real endpoints with `curl` against the live Railway URL (signup a fresh
+test user, drive it through the flow, check the responses match the PRD's acceptance
+criteria). Do the same for new work: deploy, then curl it for real rather than trusting
+that it compiles. Watch Railway's deploy logs (Deployments tab → the active deployment →
+View Logs, or export as JSON) for the actual traceback if something 500s — that's been
+the fastest way to find the real cause every time so far (an invalid API key, a missing
+migration column, a wrong Docker path) rather than guessing.
+
+## PRD status
+
+All PRDs live as `Lucaku_<Module>_PRD.docx` in the team's shared Drive folder. Read in
+full so far:
+
+- **Login PRD** (Juan, Draft v2, proposed by Andrés) — mandatory login, 3 methods
+  (Google/Apple/email — only email+password is built; Google/Apple need OAuth
+  credentials from their consoles, same pattern as Gmail in the manufacturing project),
+  per-device biometrics, routing via `onboarding_complete`.
+- **Request Management PRD** (Andrés, Draft v1) — standing/one-off requests, raw_text
+  versioning, pause/resume/archive. `refine()` and `adopt()` are explicitly NOT built —
+  they depend on the Player, which doesn't exist.
+- **Onboarding PRD** (Andrés, Draft v4) — interest picker → shape into requests →
+  delivery time/length → voice/style → confirm → notifications → tour. The AI-dependent
+  parts (`structure_request`'s one-line preview, day-zero sample matching to shared
+  inventory) are deferred; see the scope note at the top of `onboarding.py`.
+- **AI Platform PRD** (Andrés + Juan, Draft v1) — see "AI Platform scope" above.
+- **Home PRD** (Andrés, Draft v1) — status banner, last 3 episodes, explainable
+  suggestions, empty-day state, re-entry. Not started.
+- **Player PRD** (Juan, Draft v1) — persistent bar + full player, block/request
+  navigation, refinement, offline mode, OS media session. Not started.
+
+Not yet read in this pass: Episode Generator, Search & AI, Notifications+Settings,
+Instrumentation dashboard PRDs — find and read them before starting that module.
+
+## Suggested next steps
+
+1. **Episode Generator** — the biggest remaining gap. Nothing produces an actual
+   episode yet, so Onboarding's T-60 confirmation message is currently just a promise
+   with no job behind it. Needs its own PRD read in full; will likely need the AI
+   Platform's `synthesize()` (TTS) and a `research`/`write` prompt in the registry.
+2. **AI Platform, next delivery-order item** — the prompt registry (per the PRD's own
+   §9 delivery order, this comes right after the call wrapper that's already built), to
+   unblock the Generator's research/writing prompts.
+3. **Home** and **Player** — both read already; Player is a hard dependency of Request
+   Management's `refine()`, which is still unbuilt.
+4. **Google/Apple OAuth** for Login — needs the user to create OAuth credentials in
+   Google Cloud Console and the Apple Developer portal first.
+5. **Mobile client platform decision** — still open, and several PRDs assume it's
+   settled (push notifications, deep links, biometrics). Worth resolving before Home/
+   Player go too far, since it affects their contracts.
