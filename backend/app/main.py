@@ -3,15 +3,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.session import engine, Base
+from app.db.migraciones import ejecutar_migraciones
 # Importar todos los modelos para que create_all() los vea
 from app.models import cliente, request, profile, episode, generation_job, instrumentation  # noqa: F401
-from app.api.routes import auth
+from app.api.routes import auth, requests as requests_routes
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await ejecutar_migraciones(engine)
     yield
 
 
@@ -31,6 +33,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(requests_routes.router, prefix="/api")
 
 
 @app.get("/health")
