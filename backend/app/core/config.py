@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # audio still resolves without extra config; override via env if that changes.
     PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "https://audio-production-2a77.up.railway.app")
 
+    # Shared-secret gate for the founder/ops-only Instrumentation dashboard routes
+    # (app/api/routes/instrumentation.py) — there is no admin role yet, only
+    # Cliente. None (unset) means the dashboard is unreachable: see that module's
+    # docstring for the full security posture and why this is a stopgap.
+    INTERNAL_DASHBOARD_KEY: str | None = os.getenv("INTERNAL_DASHBOARD_KEY")
+
     class Config:
         env_file = ".env"
         extra = "ignore"

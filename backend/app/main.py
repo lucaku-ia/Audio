@@ -11,6 +11,7 @@ from app.models import cliente, request, profile, episode, generation_job, instr
 from app.api.routes import (
     auth, requests as requests_routes, profile as profile_routes,
     onboarding as onboarding_routes, generation as generation_routes,
+    home as home_routes, instrumentation as instrumentation_routes,
 )
 from app.services.scheduler import scheduler
 
@@ -44,9 +45,12 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(requests_routes.router, prefix="/api")
+app.include_router(requests_routes.episodes_router, prefix="/api")
 app.include_router(profile_routes.router, prefix="/api")
 app.include_router(onboarding_routes.router, prefix="/api")
 app.include_router(generation_routes.router, prefix="/api")
+app.include_router(home_routes.router, prefix="/api")
+app.include_router(instrumentation_routes.router, prefix="/api")
 
 settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)  # StaticFiles needs the dir to exist at mount time
 app.mount("/media", StaticFiles(directory=settings.MEDIA_DIR), name="media")
