@@ -10,7 +10,7 @@ product built from scratch.
 
 This README is written as a handoff — read it top to bottom before making changes.
 
-## Current status
+## Current status (as of 2026-09-18)
 
 Backend only, no UI yet. Live in production on Railway:
 `https://audio-production-2a77.up.railway.app` (`/health`, `/docs` for interactive API docs).
@@ -22,16 +22,68 @@ Backend only, no UI yet. Live in production on Railway:
 | Profile (voice, narration style, delivery time, length) | ✅ Built & deployed | `app/api/routes/profile.py`, `app/models/profile.py` | Request Management / Onboarding |
 | Onboarding (resumable state, interests, seed-list suggestions, T-60 confirmation) | ✅ Built & deployed | `app/api/routes/onboarding.py`, `app/models/onboarding.py`, `app/data/onboarding_seeds.json` | Onboarding PRD (Andrés, Draft v4) |
 | AI Platform — `structure_request` + `research_and_write_block` (structuring, safety screen, research+writing) | ✅ Built & deployed | `app/services/ai_platform.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
-| Episode Generator — shared pipeline (load → research+write → assemble → trim → headline → voice → publish), on-demand and scheduled paths, idempotent per (customer, date, path) | ✅ Built & deployed | `app/services/episode_generator.py`, `app/api/routes/generation.py`, `app/services/scheduler.py` | Episode Generator PRD (Juan, Draft v1) |
+| Episode Generator — shared pipeline (load → research+write → assemble → trim → headline → voice → publish), on-demand and scheduled paths, idempotent per (customer, date, path) | ✅ Built & deployed, **with working TTS** | `app/services/episode_generator.py`, `app/api/routes/generation.py`, `app/services/scheduler.py` | Episode Generator PRD (Juan, Draft v1) |
 | Event, AICall | Data model, actively written by the AI Platform and Generator | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
-| Home, Player, Search & AI, Notifications+Settings, Instrumentation dashboard | Not started | — | — |
+| Home, Player, Search & AI, Notifications+Settings, Instrumentation dashboard | Not started on `main` — all built and in open PRs, see below | — | — |
 
 Everything above has been **tested end-to-end against the live production deployment**,
 not just locally — see "Verifying a change" below for how to do the same. Most recently:
 signup → create request → `POST /generation/run` against production on 2026-09-18,
-confirming a real episode gets researched (live web search), written, trimmed, voiced
-(ElevenLabs) and published with cited sources — see "Episode Generator scope" below for
-exactly what that covers and what it doesn't yet.
+confirming a real episode gets researched (live web search), written, trimmed, **voiced
+via ElevenLabs**, and published — a real playable MP3, not just a script. See "Episode
+Generator scope" below for exactly what's built vs. deferred.
+
+**Durable audio storage**: `MEDIA_DIR` points at `/data/media`, a Railway persistent
+volume attached to the Audio service — survives redeploys, unlike the plain container
+disk it used before.
+
+**Scheduled generation + idempotency** (this branch, merged into the table row above):
+a real T−60 per-customer-timezone scheduler (`app/services/scheduler.py`, in-process
+asyncio, no new infra), plus a DB-level uniqueness fix so `/generation/run` can't
+produce two episodes for the same customer/day. Included a critical migration-safety
+fix (verified against a real local Postgres): backfilling a `UNIQUE` constraint onto a
+table with pre-existing rows can crash startup if not handled carefully — it dedups
+first and isolates the attempt in its own savepoint.
+
+### Other open PRs — built, tested, reviewed, not yet merged
+
+More work landed in the same session (2026-09-18) as parallel, independently built and
+reviewed branches, to keep `main` (which auto-deploys) stable while still moving fast.
+**Merging is a human action someone needs to take** — read each PR's own description
+for what it does and what an independent review pass found before merging.
+
+- **[PR #2](../../pull/2) — Request refine() + Player rating + Home backend +
+  Instrumentation dashboard.** `POST /requests/{id}/refine` (the Player PRD's "less of
+  this"/"go deeper"), `POST /episodes/{id}/rating`, `GET /api/home` (banner state
+  machine + recent episodes), and four founder/ops-only cost/funnel endpoints under
+  `/internal/instrumentation/*` (shared-secret gated, fails closed if unconfigured).
+- **[PR #3](../../pull/3) — Pending-version promotion + Search keyword search +
+  Notifications/Settings.** Closes PR #2's own documented gap: a refined request's
+  pending version is now actually promoted to current at the next generation.
+  `GET /api/search/history` + `GET /api/search/query` (PostgreSQL full-text search,
+  real GIN indexes). `PATCH /api/profile`, `GET /api/account/export`,
+  `DELETE /api/account` with a full deletion cascade (Events *and* AICall rows
+  anonymized, not just deleted customer data).
+- **[PR #4](../../pull/4) — AI Platform prompt registry.** Moves hardcoded prompt
+  strings into a DB-backed, versioned registry with a fail-safe fallback to the
+  original constants. Builder-tested against real Postgres, not yet independently
+  reviewed.
+- **[PR #5](../../pull/5) — Instrumentation event catalogue completeness.** Audits
+  every epic's event emissions against the Instrumentation PRD's own catalogue,
+  fixing naming gaps. Builder-tested against real Postgres, not yet independently
+  reviewed.
+
+PRs #2 and #3 were reviewed by a separate adversarial pass focused on security and
+cross-customer data isolation — findings from those reviews are fixed in the PRs
+themselves, not left as follow-up items, except where explicitly noted in the PR
+description as a documented, lower-priority gap. #4 and #5 have not had that extra
+pass yet (session time constraints) — worth one before merging.
+
+**Still genuinely not started, PRD-read but no code**: the AI Platform's shared
+semantic index (a design decision, not a quick patch — needs an embeddings-provider
+choice), the actual mobile client, Google/Apple OAuth for Login, push notification
+delivery (needs an APNs/FCM credential), and the mobile-platform decision itself
+(§12 of the Umbrella PRD, still open).
 
 ## Read this before touching anything
 
