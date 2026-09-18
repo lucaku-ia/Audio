@@ -55,6 +55,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.instrumentation import AICall
 from app.services.events import emitir
 from app.services.prompt_registry import get_active_prompt
+from app.services.source_catalogue import attach_licenses
 
 _client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 
@@ -232,15 +233,30 @@ async def research_and_write_block(
     """
     research_and_write_block — the Episode Generator's research+judge_novelty
     +write_block stages, collapsed into one call for this MVP. Uses Claude's
-    server-side web_search tool (licensed/API sources per the Generator PRD's
-    intent, not scraping) so the whole research+write step happens in a
-    single request/response, no client-side tool loop needed.
+    server-side web_search tool (a general open-web, API-driven tool — not
+    scraping — so it satisfies the PRD's "only licensed or API sources, no
+    scraping" tenet at the mechanism level) so the whole research+write step
+    happens in a single request/response, no client-side tool loop needed.
 
     Scope reduction vs. the full PRD: true novelty judgment (§4, "against
     the customer's previous blocks in the shared index, last 14 days") isn't
     implemented — there's no shared index yet (AI Platform hasn't built it).
     This call only judges "is there anything new today", not "new since we
     last told this customer" — see episode_generator.py for the fuller note.
+
+    Source catalogue / license labeling (PRD §5's "config file: source, API,
+    license, language, topics" and §4's "every block stores its sources
+    (url, title, publisher, license)"): app/models/source_catalogue.py now
+    holds that curated catalogue, and every source this function returns is
+    passed through app.services.source_catalogue.attach_licenses before
+    being handed back, which best-effort matches the source's domain against
+    it and adds an explicit "license" key (the matched license_name, or None
+    if the domain isn't catalogued — never fabricated). Read that module's
+    docstring before assuming more: this is a provenance/labeling layer
+    applied AFTER web_search already ran — it does not and cannot restrict
+    web_search itself to the catalogued domains, since the `web_search_20260209`
+    tool used below is a general open-web tool with no API-level allowlist
+    parameter this codebase uses.
     """
     depth = depth if depth in _DEPTH_WORDS else "standard"
     style = style if style in _STYLE_DESCRIPTIONS else "news"
@@ -281,6 +297,7 @@ async def research_and_write_block(
     text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
     result = _parse_block_result(text)
     result.cost = cost
+    result.sources = await attach_licenses(db, result.sources)
     return result
 
 
