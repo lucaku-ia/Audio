@@ -49,6 +49,12 @@ class BlockOut(BaseModel):
     script: str
     sources: list
     had_more: bool
+    # [{"word": str, "start_s": float, "end_s": float}, ...] relative to this
+    # block's own audio (add start_s above for the episode-relative offset), or
+    # null if this block's audio wasn't synthesized with ElevenLabs timestamps
+    # (e.g. TTS not configured, or the block predates this field) — see
+    # Block.word_timestamps' docstring in app/models/episode.py.
+    word_timestamps: list | None = None
 
 
 def _block_common_fields(b: Block) -> dict:
@@ -144,7 +150,7 @@ async def latest_episode(
         style=episode.style, voice_id=episode.voice_id, duration_s=episode.duration_s,
         audio_url=episode.audio_url, had_more_any=episode.had_more_any, published_at=episode.published_at,
         blocks=[
-            BlockOut(**_block_common_fields(b), script=b.script)
+            BlockOut(**_block_common_fields(b), script=b.script, word_timestamps=b.word_timestamps)
             for b in blocks
         ],
     )

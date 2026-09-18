@@ -44,6 +44,7 @@ COLUMNAS_ESPERADAS: list[tuple[str, str, str]] = [
     ("clientes", "intentos_fallidos", "INTEGER DEFAULT 0"),
     ("clientes", "bloqueado_hasta", "TIMESTAMPTZ"),
     ("clientes", "token_version", "INTEGER DEFAULT 0"),
+    ("blocks", "word_timestamps", "JSON"),
 ]
 
 # (table, index name, "CREATE [UNIQUE] INDEX ... ON ..." statement, without "IF NOT EXISTS")
