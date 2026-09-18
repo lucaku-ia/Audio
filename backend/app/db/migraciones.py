@@ -15,21 +15,23 @@ The same gotcha applies to constraints and indexes: create_all() never adds
 a UniqueConstraint (or any other index) to a table Postgres already has —
 it only diffs for missing tables. INDICES_ESPERADOS below covers that case
 the same way COLUMNAS_ESPERADAS does: check pg_indexes first, only issue
-the CREATE if it's missing, so this is safe to rerun on every boot.
+the CREATE if it's missing, so this is safe to rerun on every boot. Each
+CREATE runs in its own SAVEPOINT (conn.begin_nested()) and is wrapped in
+its own try/except — one index failing to apply (e.g. a transient lock, or
+a UNIQUE index whose table still has violating rows DEDUP_ANTES_DE_INDICE
+didn't anticipate) logs an error and lets the app boot without it, rather
+than crashing startup and boot-looping the whole service.
 
 A UNIQUE index backfilled onto a table that already has rows can fail if
 any of those rows violate the new uniqueness — e.g. generation_jobs had no
-duplicate protection at all before this index was added, so any
-(customer_id, fecha, path) collision created before this shipped would
-make the plain CREATE UNIQUE INDEX below raise and — since ejecutar_migraciones
-is awaited directly in app.main's lifespan with no try/except — crash app
-startup entirely. Two safeguards against that: (1) a dedup pass specific to
-generation_jobs, run before the index attempt, that deletes all but the
-earliest row (by creado_en) per (customer_id, fecha, path); (2) each index
-CREATE is still wrapped in its own try/except so a problem this dedup
-didn't anticipate logs an error and lets the app boot with the index
-missing, rather than crashing outright — an index that failed to apply is
-recoverable on the next deploy; a boot loop is not.
+duplicate protection at all before its index was added, so any
+(customer_id, fecha, path) collision created before that shipped would
+make a plain CREATE UNIQUE INDEX raise. DEDUP_ANTES_DE_INDICE runs a
+dedup pass (delete all but the earliest row per key) before such an index
+is attempted.
+
+Search & AI's keyword search (app/api/routes/search.py) relies on the
+plain (non-unique) GIN indexes below, which don't need deduping.
 """
 import logging
 from sqlalchemy import text
@@ -52,12 +54,33 @@ INDICES_ESPERADOS: list[tuple[str, str, str]] = [
         "CREATE UNIQUE INDEX uq_generation_jobs_customer_fecha_path "
         "ON generation_jobs (customer_id, fecha, path)",
     ),
+    # GIN indexes over the exact `to_tsvector('simple', ...)` expression the
+    # search queries use in app/api/routes/search.py — the expression must
+    # match verbatim for Postgres to use the index instead of a seq scan.
+    (
+        "episodes",
+        "ix_episodes_headline_fts",
+        "CREATE INDEX ix_episodes_headline_fts ON episodes "
+        "USING GIN (to_tsvector('simple', coalesce(headline, '')))",
+    ),
+    (
+        "blocks",
+        "ix_blocks_summary_fts",
+        "CREATE INDEX ix_blocks_summary_fts ON blocks "
+        "USING GIN (to_tsvector('simple', coalesce(summary, '')))",
+    ),
+    (
+        "requests",
+        "ix_requests_raw_text_fts",
+        "CREATE INDEX ix_requests_raw_text_fts ON requests "
+        "USING GIN (to_tsvector('simple', raw_text))",
+    ),
 ]
 
 # Dedup statements to run before their matching index, keyed by index name —
 # only needed for indexes backfilled onto a table that could already hold
-# violating rows. Deletes every row except the earliest (by creado_en) per
-# the index's key columns.
+# violating rows (i.e. UNIQUE indexes). Deletes every row except the
+# earliest (by creado_en) per the index's key columns.
 DEDUP_ANTES_DE_INDICE: dict[str, str] = {
     "uq_generation_jobs_customer_fecha_path": """
         DELETE FROM generation_jobs a USING generation_jobs b

@@ -24,10 +24,12 @@ Backend only, no UI yet. Live in production on Railway:
 | AI Platform — `structure_request` + `research_and_write_block` (structuring, safety screen, research+writing) | ✅ Built & deployed | `app/services/ai_platform.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
 | Episode Generator — shared pipeline (load → research+write → assemble → trim → headline → voice → publish), on-demand and scheduled paths, idempotent per (customer, date, path) | ✅ Built & deployed, **with working TTS** | `app/services/episode_generator.py`, `app/api/routes/generation.py`, `app/services/scheduler.py` | Episode Generator PRD (Juan, Draft v1) |
 | Event, AICall | Data model, actively written by the AI Platform and Generator | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
-| Request refine() + Player rating, Home backend, Instrumentation dashboard | ✅ Built & deployed | `app/api/routes/requests.py`, `app/api/routes/home.py`, `app/api/routes/instrumentation.py` | Request Mgmt/Player/Home/Instrumentation PRDs |
-| Instrumentation event catalogue | This branch — audits every epic's `emitir()` calls against the Instrumentation PRD's own catalogue, fixing naming gaps (see below) | `app/api/routes/*.py`, `app/services/*.py` | Instrumentation & Cost PRD |
-| Search & AI, Notifications+Settings, AI Platform prompt registry | Built, in open PRs (see below), not yet merged | — | — |
-| Player (playback UI itself), semantic index | Not started | — | — |
+| Request refine() + Player rating | ✅ Built & deployed | `app/api/routes/requests.py` (`/refine`, `episodes_router`) | Request Management / Player PRD |
+| Home — banner state machine + recent episodes | ✅ Built & deployed. Suggestions/shared inventory deferred — need the AI Platform's semantic index and curated inventory, neither exists | `app/api/routes/home.py` | Home PRD (Andrés, Draft v1) |
+| Instrumentation dashboard — cost/event/funnel endpoints, shared-secret gated | ✅ Built & deployed | `app/api/routes/instrumentation.py` | Instrumentation & Cost PRD (Andrés, Draft v1) |
+| Notifications & Settings — Settings CRUD (voice/style/language/delivery time/max length, each with a "when it applies" message) + Account & data (export, cascading delete) | ✅ Built & deployed, push delivery and membership/biometrics deferred (see scope note) | `app/api/routes/profile.py` (PATCH), `app/api/routes/account.py` | Notifications & Settings PRD (Andrés, Draft v1) |
+| Search & AI — history + PostgreSQL full-text keyword search (headlines/block summaries/request text) | ✅ Built & deployed. Natural-language Q&A deferred — needs the AI Platform's semantic index | `app/api/routes/search.py` | Search & AI PRD (Juan, Draft v1) |
+| Player | Not started — no code anywhere yet, beyond the rating/refine backend above | — | — |
 
 Everything above has been **tested end-to-end against the live production deployment**,
 not just locally — see "Verifying a change" below for how to do the same. Most recently:
@@ -40,38 +42,38 @@ Generator scope" below for exactly what's built vs. deferred.
 volume attached to the Audio service — survives redeploys, unlike the plain container
 disk it used before.
 
-**Scheduled generation + idempotency** (this branch, merged into the table row above):
-a real T−60 per-customer-timezone scheduler (`app/services/scheduler.py`, in-process
-asyncio, no new infra), plus a DB-level uniqueness fix so `/generation/run` can't
-produce two episodes for the same customer/day. Included a critical migration-safety
-fix (verified against a real local Postgres): backfilling a `UNIQUE` constraint onto a
-table with pre-existing rows can crash startup if not handled carefully — it dedups
-first and isolates the attempt in its own savepoint.
+**Scheduled generation + idempotency** (merged via PR #1): a real T−60
+per-customer-timezone scheduler (`app/services/scheduler.py`, in-process asyncio, no
+new infra), plus a DB-level uniqueness fix so `/generation/run` can't produce two
+episodes for the same customer/day. Included a critical migration-safety fix (verified
+against a real local Postgres): backfilling a `UNIQUE` constraint onto a table with
+pre-existing rows can crash startup if not handled carefully — it dedups first and
+isolates the attempt in its own savepoint.
+
+**Request refine() + Home + Instrumentation dashboard** (merged via PR #2), and
+**pending-version promotion + Search & AI + Notifications/Settings** (this branch,
+PR #3) are both reflected directly in the status table above.
 
 ### Remaining open PRs — built, tested, not yet merged
 
-- **[PR #3](../../pull/3) — Pending-version promotion + Search keyword search +
-  Notifications/Settings.** Closes PR #2's own documented gap: a refined request's
-  pending version is now actually promoted to current at the next generation.
-  `GET /api/search/history` + `GET /api/search/query` (PostgreSQL full-text search,
-  real GIN indexes). `PATCH /api/profile`, `GET /api/account/export`,
-  `DELETE /api/account` with a full deletion cascade (Events *and* AICall rows
-  anonymized, not just deleted customer data). Reviewed by a separate adversarial
-  pass (security, cross-customer isolation) — findings fixed in the branch itself.
 - **[PR #4](../../pull/4) — AI Platform prompt registry.** Moves hardcoded prompt
   strings into a DB-backed, versioned registry with a fail-safe fallback to the
   original constants. Builder-tested against real Postgres, not yet independently
   reviewed.
 
-(This branch's own contents — the Instrumentation event catalogue audit — are
-reflected directly in the status table above, not listed here as a separate open PR.
-It has not had the extra adversarial review pass either — worth one before merging.)
+PRs #1, #2 and #3 (now merged) were reviewed by a separate adversarial pass focused
+on security and cross-customer data isolation before merging — findings from those
+reviews were fixed in the branches themselves, not left as follow-up items, except
+where explicitly noted as a documented, lower-priority gap. #4 has not had that extra
+pass yet (session time constraints) — worth one before merging. This branch's own
+contents (the Instrumentation event catalogue audit, reflected in the status table
+above rather than listed separately here) haven't either.
 
-**Note for whoever merges next**: each PR merge so far has reintroduced a conflict in
-this README and in code files two branches both touched (`app/main.py`'s router
-registration, `app/db/migraciones.py`'s index list) — re-sync each remaining branch
-against `main` right before merging it, don't assume an earlier mergeable-status
-check still holds.
+**Note for whoever merges #4 next**: this README's own history shows each PR
+merge can reintroduce a conflict here and in `app/main.py` (router registration) or
+`app/db/migraciones.py` (if two branches both add index entries) — re-sync each
+remaining branch against `main` right before merging it, don't assume the
+mergeable-status check from an hour ago still holds.
 
 **Still genuinely not started, PRD-read but no code**: the AI Platform's shared
 semantic index (a design decision, not a quick patch — needs an embeddings-provider
@@ -212,6 +214,50 @@ Deferred, and why (see the relevant module's own docstring for detail):
 - **Distributed locking for the scheduler** — fine at 1 replica (current), would
   double-fire customers at 2+; see `app/services/scheduler.py`'s docstring.
 
+### Notifications & Settings scope
+
+Built: `PATCH /api/profile` (Settings CRUD — partial updates to voice_id,
+narration_style, language, delivery_time/delivery_timezone,
+max_length_minutes, each returning a message stating when the change
+applies, per the PRD tenet "every change says when it applies... never
+silence"); `GET /api/account/export` (JSON of the customer's Requests with
+version history and Episodes with Blocks); `DELETE /api/account`
+(cascading deletion across Profile/OnboardingState/Request/RequestVersion/
+Episode/Block/GenerationJob, with Events anonymized rather than deleted).
+See the module docstrings in `app/api/routes/profile.py` and
+`app/api/routes/account.py` for the exact deletion order and reasoning.
+
+Deferred, and why:
+- **Push notification delivery** (APNs/FCM) — needs an Apple/Google push
+  provider credential that doesn't exist in this repo and isn't something
+  that can be set up without those consoles, same pattern as Google/Apple
+  OAuth below. The PRD's notification-permission-state flag is also
+  deliberately NOT persisted server-side — the PRD itself says permission
+  state should be read from the OS on open and never cached as truth.
+- **Biometric toggle** — per-device Face ID/fingerprint state; this is a
+  client/OS keychain concern, not a server-side preference. Nothing to
+  build on the backend.
+- **Membership row** — PRD says "visible, disabled, labelled Coming soon,"
+  a pure client-side stub with no pricing/CTA. Nothing to build.
+- **Confirmation email** on account deletion — needs an email-sending
+  provider/credential that isn't configured (no SMTP/SES/Postmark
+  settings exist anywhere in this repo). The deletion and cascade
+  themselves are fully built; only the email notice is deferred.
+- **Scheduler integration for delivery-time changes** — the PRD calls for
+  "reschedules generation to T-60," but there's no scheduler in this repo
+  yet (`app/services/scheduler.py` doesn't exist here; it's being built in
+  a separate, not-yet-merged branch). That other design reads
+  `Profile.delivery_time` fresh every tick rather than holding a schedule
+  to invalidate, so writing the new time to the DB (already done) is the
+  entire integration — there's nothing else to build against
+  infrastructure this branch can't see.
+- Verified locally against a real Postgres instance: seeded a full
+  customer (Cliente, Profile, OnboardingState, Request, RequestVersion,
+  Episode, Block, GenerationJob, Event) and ran the deletion logic for
+  real — every table was cleaned up in the right order with no foreign-key
+  violation, and the Event row ended up anonymized (`customer_id = NULL`)
+  rather than removed.
+
 ### The recurring migration gotcha
 
 SQLAlchemy's `create_all()` (run on every startup, see `app/main.py` lifespan) only
@@ -303,8 +349,14 @@ full so far:
   built, idempotent, voiced; see "Episode Generator scope" above for exactly what's
   still deferred (shared inventory, real novelty judgment, the +30 min late-job surface).
 
-Not yet read in this pass: Search & AI, Notifications+Settings, Instrumentation
-dashboard PRDs — find and read them before starting that module.
+- **Notifications & Settings PRD** (Andrés, Draft v1) — one push a day tied to
+  the episode, and a single settings screen for every "changeable later"
+  decision from other PRDs, plus account export/delete. Settings CRUD and
+  Account & data are built; push delivery, biometrics, and the membership
+  stub are deferred — see "Notifications & Settings scope" above.
+
+Not yet read in this pass: Search & AI, Instrumentation dashboard PRDs — find
+and read them before starting that module.
 
 ## Suggested next steps
 
