@@ -25,6 +25,9 @@
 		B7B9F2984EA2BFBC0ED93994 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE0828A73612D8093A11CDFB /* SettingsView.swift */; };
 		F538702789B39516E2650E67 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 560ACC0AFC14B01D723AAD2E /* Assets.xcassets */; };
 		2E50EF46C1A3C5D03A23FAAE /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F67D742DE0A8670B599C0577 /* Preview Assets.xcassets */; };
+		6583FE8D9FFCF7D95CC45170 /* AudioQueueItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 921822581440BF4F6CDCF594 /* AudioQueueItem.swift */; };
+		3E5D1377D432DB1B1D139CD5 /* AudioPlayerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 123F40BC12C216BE9E691675 /* AudioPlayerService.swift */; };
+		07F1B4FE2DDDA64CE1B00164 /* AudioEngineDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12E648D61E9CA316938C5BC9 /* AudioEngineDemoView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,6 +51,9 @@
 		F67D742DE0A8670B599C0577 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		F84A9469A955E4C09A07189F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A87FA0F994F5F875611545BE /* LucakuAudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LucakuAudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		921822581440BF4F6CDCF594 /* AudioQueueItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioQueueItem.swift; sourceTree = "<group>"; };
+		123F40BC12C216BE9E691675 /* AudioPlayerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayerService.swift; sourceTree = "<group>"; };
+		12E648D61E9CA316938C5BC9 /* AudioEngineDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngineDemoView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -124,6 +130,14 @@
 			path = Settings;
 			sourceTree = "<group>";
 		};
+		353C0013BE7672732D602DCA = {
+			isa = PBXGroup;
+			children = (
+				12E648D61E9CA316938C5BC9 /* AudioEngineDemoView.swift */,
+			);
+			path = AudioDemo;
+			sourceTree = "<group>";
+		};
 		3DEE482E18429A2ED0F9619E = {
 			isa = PBXGroup;
 			children = (
@@ -131,8 +145,26 @@
 				58C36A4F5BE2757FF3273C84 /* Home */,
 				7FEF5C79E4BA12B954D0FAD4 /* Library */,
 				3A74793DD825986B19E4CFE1 /* Settings */,
+				353C0013BE7672732D602DCA /* AudioDemo */,
 			);
 			path = Features;
+			sourceTree = "<group>";
+		};
+		CA6B37274ACD72658311BFD2 = {
+			isa = PBXGroup;
+			children = (
+				921822581440BF4F6CDCF594 /* AudioQueueItem.swift */,
+				123F40BC12C216BE9E691675 /* AudioPlayerService.swift */,
+			);
+			path = Audio;
+			sourceTree = "<group>";
+		};
+		A5B3B95F3B8E4C8A9C6F0D1E = {
+			isa = PBXGroup;
+			children = (
+				CA6B37274ACD72658311BFD2 /* Audio */,
+			);
+			path = Services;
 			sourceTree = "<group>";
 		};
 		C22A3EC4492D1DAF2818483B = {
@@ -151,6 +183,7 @@
 				6A9F0C82BB0FD22B2FA91ED6 /* Config.swift */,
 				8BA8EB0A399E6FB620C904B4 /* Networking */,
 				8FEFEEC964363CF7DAE4CF3B /* Session */,
+				A5B3B95F3B8E4C8A9C6F0D1E /* Services */,
 				3DEE482E18429A2ED0F9619E /* Features */,
 				560ACC0AFC14B01D723AAD2E /* Assets.xcassets */,
 				C22A3EC4492D1DAF2818483B /* Preview Content */,
@@ -261,6 +294,9 @@
 				74082829A40040CE9A2049FB /* LibraryView.swift in Sources */,
 				597FE6F1116A37B5D0B3D6F2 /* LibraryViewModel.swift in Sources */,
 				B7B9F2984EA2BFBC0ED93994 /* SettingsView.swift in Sources */,
+				6583FE8D9FFCF7D95CC45170 /* AudioQueueItem.swift in Sources */,
+				3E5D1377D432DB1B1D139CD5 /* AudioPlayerService.swift in Sources */,
+				07F1B4FE2DDDA64CE1B00164 /* AudioEngineDemoView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
