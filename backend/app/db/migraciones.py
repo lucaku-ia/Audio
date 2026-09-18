@@ -10,6 +10,12 @@ a model gains a new field.
 Add a row here whenever a column is added to an existing model. Nothing
 needed if the column is born on a brand-new table (create_all already
 creates it).
+
+The same gotcha applies to constraints and indexes: create_all() never adds
+a UniqueConstraint (or any other index) to a table Postgres already has —
+it only diffs for missing tables. INDICES_ESPERADOS below covers that case
+the same way COLUMNAS_ESPERADAS does: check pg_indexes first, only issue
+the CREATE if it's missing, so this is safe to rerun on every boot.
 """
 import logging
 from sqlalchemy import text
@@ -22,6 +28,16 @@ COLUMNAS_ESPERADAS: list[tuple[str, str, str]] = [
     ("clientes", "intentos_fallidos", "INTEGER DEFAULT 0"),
     ("clientes", "bloqueado_hasta", "TIMESTAMPTZ"),
     ("clientes", "token_version", "INTEGER DEFAULT 0"),
+]
+
+# (table, index name, "CREATE [UNIQUE] INDEX ... ON ..." statement, without "IF NOT EXISTS")
+INDICES_ESPERADOS: list[tuple[str, str, str]] = [
+    (
+        "generation_jobs",
+        "uq_generation_jobs_customer_fecha_path",
+        "CREATE UNIQUE INDEX uq_generation_jobs_customer_fecha_path "
+        "ON generation_jobs (customer_id, fecha, path)",
+    ),
 ]
 
 
@@ -40,6 +56,13 @@ async def _columna_existe(conn, tabla: str, columna: str) -> bool:
     return result.scalar() is not None
 
 
+async def _indice_existe(conn, tabla: str, indice: str) -> bool:
+    result = await conn.execute(text(
+        "SELECT 1 FROM pg_indexes WHERE tablename = :tabla AND indexname = :indice"
+    ), {"tabla": tabla, "indice": indice})
+    return result.scalar() is not None
+
+
 async def ejecutar_migraciones(engine: AsyncEngine):
     async with engine.begin() as conn:
         for tabla, columna, tipo in COLUMNAS_ESPERADAS:
@@ -48,3 +71,10 @@ async def ejecutar_migraciones(engine: AsyncEngine):
             if not await _columna_existe(conn, tabla, columna):
                 logger.info("Adding column %s to %s", columna, tabla)
                 await conn.execute(text(f"ALTER TABLE {tabla} ADD COLUMN {columna} {tipo}"))
+
+        for tabla, indice, sql_create in INDICES_ESPERADOS:
+            if not await _tabla_existe(conn, tabla):
+                continue  # new table — create_all() already created it with this index
+            if not await _indice_existe(conn, tabla, indice):
+                logger.info("Adding index %s on %s", indice, tabla)
+                await conn.execute(text(sql_create))
