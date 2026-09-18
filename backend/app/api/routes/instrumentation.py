@@ -63,6 +63,16 @@ Explicitly out of scope / skipped, and why:
 
 Every query here is read-only aggregation — no route in this file writes
 anything.
+
+Known caveat (pre-existing, not introduced here): day-bucketing in
+cost-summary and event-counts uses func.date() on `creado_en`/`ts`
+columns that this codebase populates everywhere with naive
+datetime.utcnow() rather than timezone-aware UTC. func.date() on a
+timestamptz column buckets per the DB session's own `timezone` setting,
+not necessarily UTC — if that setting isn't UTC, daily counts here could
+be off by up to a day relative to the UTC `since`/`days` cutoffs used
+elsewhere in these same queries. Worth confirming the production
+connection's session timezone before trusting day-level precision.
 """
 import uuid
 from datetime import date, datetime, timedelta

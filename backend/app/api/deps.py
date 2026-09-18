@@ -1,3 +1,4 @@
+import secrets
 import uuid
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -53,5 +54,7 @@ async def require_internal_dashboard_key(x_internal_dashboard_key: str | None = 
     """
     if not settings.INTERNAL_DASHBOARD_KEY:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Instrumentation dashboard is not configured")
-    if x_internal_dashboard_key != settings.INTERNAL_DASHBOARD_KEY:
+    # compare_digest, not `!=` — this gate is meant to behave like real auth,
+    # and a plain string comparison leaks per-byte timing information.
+    if not secrets.compare_digest(x_internal_dashboard_key or "", settings.INTERNAL_DASHBOARD_KEY):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing X-Internal-Dashboard-Key")
