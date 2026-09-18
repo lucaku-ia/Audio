@@ -25,6 +25,9 @@ struct NowPlayingView: View {
                     topBar
                     hero
                     progress
+                    if let message = viewModel.displayedErrorMessage {
+                        errorBanner(message)
+                    }
                     transport
                     secondaryRow
                     TranscriptPanelView(viewModel: viewModel)
@@ -150,6 +153,35 @@ struct NowPlayingView: View {
         .padding(.top, LucakuSpacing.sp4)
     }
 
+    /// Real error surfaced by the audio engine (or "no audio yet for this
+    /// episode") — a visible banner with a retry action instead of a silent
+    /// hang when the network/stream fails.
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: LucakuSpacing.sp2) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(message)
+                    .font(LucakuTypography.footnote)
+                    .foregroundStyle(LucakuColor.textPrimary)
+                Button("Retry") { viewModel.retryPlayback() }
+                    .font(LucakuTypography.footnote)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(LucakuColor.accent)
+            }
+            Spacer()
+        }
+        .padding(LucakuSpacing.sp3)
+        .background(LucakuColor.surface)
+        .clipShape(RoundedRectangle(cornerRadius: LucakuRadius.card))
+        .overlay(
+            RoundedRectangle(cornerRadius: LucakuRadius.card)
+                .stroke(Color.orange.opacity(0.4), lineWidth: 1)
+        )
+        .padding(.horizontal, LucakuSpacing.sp6)
+        .padding(.top, LucakuSpacing.sp3)
+    }
+
     private var transport: some View {
         HStack(spacing: LucakuSpacing.sp8) {
             Button { viewModel.skipToPreviousBlock() } label: {
@@ -161,12 +193,20 @@ struct NowPlayingView: View {
             .disabled(viewModel.currentBlockIndex == 0)
 
             Button { viewModel.togglePlay() } label: {
-                Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 26))
-                    .foregroundStyle(LucakuColor.bg)
-                    .frame(width: 72, height: 72)
-                    .background(Circle().fill(LucakuColor.textPrimary))
-                    .shadow(color: .black.opacity(0.2), radius: 10, y: 4)
+                ZStack {
+                    Circle().fill(LucakuColor.textPrimary)
+                    if viewModel.isBuffering {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(LucakuColor.bg)
+                    } else {
+                        Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 26))
+                            .foregroundStyle(LucakuColor.bg)
+                    }
+                }
+                .frame(width: 72, height: 72)
+                .shadow(color: .black.opacity(0.2), radius: 10, y: 4)
             }
 
             Button { viewModel.skipToNextBlock() } label: {
