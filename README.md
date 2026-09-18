@@ -13,8 +13,8 @@ This README is written as a handoff — read it top to bottom before making chan
 ## TL;DR for anyone new to this repo
 
 - **Backend**: fully built for every feature that doesn't need a new external credential. Live in production on Railway, real ElevenLabs TTS, real web-grounded research (Claude's `web_search` tool). See the status table below.
-- **Mobile**: a real native iOS app (SwiftUI, not a wrapper) now exists — Login, Home, Player, Settings screens, all hitting the live backend. See "Mobile app (iOS)" below for exactly what's real vs. still mocked. The biggest real gap: audio doesn't play yet (a real AVFoundation engine is in progress, not merged as of this writing).
-- **Design**: three screens (Home, Player, Search/Interests) are designed, approved, and share one consistent token system grounded in real Apple HIG/Spotify/Audible research rather than guesswork. Login just went through a second redesign pass after direct founder feedback. Look-and-feel links are in "Design system" below.
+- **Mobile**: a real native iOS app (SwiftUI, not a wrapper) now exists — Login, Home, Player, Settings screens, all hitting the live backend. A real AVFoundation audio engine is merged (PR #18) and **proven to actually stream and play real audio** in the Simulator (verified via real `AVPlayer`/Core Audio log output, not a compile check) — but as of this writing it's only wired into a standalone debug view, not the real Player screen yet. That integration, plus wiring the real per-block Home data (API already merged via #14) and real transcript timestamps, is in progress — see "Mobile app (iOS)" below for the exact real-vs-mocked breakdown.
+- **Design**: three screens (Home, Player, Search/Interests) are designed, approved, and share one consistent token system grounded in real Apple HIG/Spotify/Audible research rather than guesswork. Login has been through two rounds of direct founder feedback and is on a third pass focused on layout/composition ("weird organize"), grounded in real research on Spotify/Apple/Duolingo login patterns rather than another guess. Look-and-feel links are in "Design system" below.
 - **What's blocking further progress that only the founder can unblock**: Google Cloud Console (OAuth client ID for Google Sign-In) and Apple Developer Program enrollment ($99/yr — needed for push notifications, real-device testing, and eventually App Store submission). Also still undecided: embeddings provider (Voyage AI vs. OpenAI) for the AI Platform's semantic index.
 
 ## Current status (as of 2026-09-18)
@@ -413,51 +413,63 @@ real Xcode project (not a stub) that builds clean (`xcodebuild ... build` →
 production backend (real signup, real login, Home rendering real API data).
 
 **Screens built and merged to `main`** (PR #13, consolidating what were separately
-PR #9/#10/#11): Home, Player, Settings. **Screens built, PR open, not yet merged**:
-Login/Sign Up (PR #12, currently on its second design pass after direct founder
-feedback on the first — see "Design system" below).
+PR #9/#10/#11): Home, Player, Settings. **Audio engine merged** (PR #18, superseding
+an earlier #17 that hit a real pbxproj merge conflict against #13 — rebuilt cleanly
+on top of current `main` rather than force-merged). **Screens built, PR open, not
+yet merged**: Login/Sign Up (PR #12, on its third pass — see "Design system" below).
 
 **What's real vs. still mocked in the mobile app — read this before assuming
 something works:**
 - Real: signup/login/logout against the live backend; Home fetching and rendering
   real episode data; Settings reading/writing real profile fields (delivery time,
   timezone, narration style, voice, language) plus real account export/delete.
-- **Not real yet — the biggest gap**: audio does not actually play. The Player
-  screen's transport (play/pause/skip) is UI-state-only, advanced by a local timer.
-  A real AVFoundation playback engine (streaming, background audio, lock-screen
-  controls) has been built in isolation and is awaiting integration — see open PRs
-  below.
+- Real: the audio engine itself (`Services/Audio/AudioPlayerService.swift`,
+  merged) — genuinely streams and plays a real ElevenLabs-voiced MP3 from the live
+  backend, background playback, lock-screen controls, all verified via real
+  `AVPlayer`/Core Audio log output in the Simulator, not just a compile check.
+- **Not real yet — the actual gap now**: the engine above is only reachable from
+  a standalone debug view (`Features/AudioDemo/AudioEngineDemoView.swift`), not
+  from the real Player screen. `PlayerViewModel`'s transport is still driven by a
+  local fake timer as of `main`. Wiring this is in progress (see open PRs below).
 - Transcript word-highlighting in the Player is a mocked proportional approximation,
-  not real word-level sync — real ElevenLabs word timestamps now exist server-side
-  (see below) but aren't wired into the client yet.
+  not real word-level sync. Real ElevenLabs word timestamps exist server-side in an
+  open, unmerged PR (#15, still needs a live ElevenLabs call to verify); client-side
+  wiring for it is also in progress, built against #15's documented shape.
 - Refine/follow-up/rate-this-answer buttons in the Player are inert UI — the
   backend endpoints exist (`/refine`, rating), the mobile screens don't call them
   yet.
-- Home's block list currently renders one aggregate "whole episode" row because
-  `GET /api/home` didn't expose per-block detail — a backend PR fixing this is open
-  (see below) but not yet wired into the client.
+- Home's block list currently renders one aggregate "whole episode" row on `main`.
+  The backend fix is merged (`GET /api/home` now returns real per-block data, #14)
+  but wiring it into `HomeView`/`HomeViewModel` is in progress (see open PRs below).
 
-**Open PRs, in build order** (none merged yet as of this writing — read each PR's
-own description for exact scope/verification before merging):
-- **#12** — Login/Sign Up screen, v2 (real wordmark treatment, Google Sign-In
-  button per Google's own branding guidelines — action is a stub, no real OAuth
-  wired yet, see blockers below).
-- **#14** — `GET /api/home` now returns a real per-block breakdown (additive,
-  backward-compatible), verified against real Postgres. Needed before the mobile
-  Home screen can show real topic rows instead of one aggregate row.
+**Open PRs, in build order** (read each PR's own description for exact
+scope/verification before merging):
+- **#12** — Login/Sign Up, now on a third pass specifically targeting layout/
+  composition after founder feedback that it still "feels weird organized" —
+  grounded in real research on Spotify/Apple/Duolingo login patterns, not another
+  guess. Google Sign-In button's action is still a stub (no real OAuth wired,
+  see blockers below).
 - **#15** — Real word-level transcript timestamps via ElevenLabs' `with-timestamps`
-  endpoint, stored on `Block.word_timestamps`. Flagged by its own author as not yet
-  verified against a live ElevenLabs call (deliberately avoided scanning for the
-  API key) — verify this before merging.
-- An AVFoundation-based real audio playback engine, built standalone so it can be
-  wired into the Player screen — check `gh pr list` for its current PR number, as
-  it may not be open yet as of this writing.
+  endpoint, stored on `Block.word_timestamps`. Still not verified against a live
+  ElevenLabs call as of this writing — verify before merging.
+- A PR wiring the real audio engine (#18) into the actual Player screen — check
+  `gh pr list` for its current number, may still be in progress as of this writing.
+- A PR wiring the real per-block Home API (#14) into `HomeView` — same, check
+  `gh pr list` for current number/status.
+- A PR wiring #15's real transcript timestamps into the Player's transcript view
+  (built against #15's documented shape; its own real-timestamp path can't be
+  fully verified until #15 itself is verified and merged) — same, check `gh pr
+  list`.
 
 **Verification method used so far**: real `xcodebuild` builds (this machine has
 Xcode with an accepted license and an installed iOS 27 Simulator runtime), real
-installs/launches in the Simulator, and at least one real signup/login/Home-fetch
-round-trip against the live production API — not just "it compiles." Do the same
-for new mobile work rather than trusting a compile check alone.
+installs/launches in the Simulator, and real signup/login/Home-fetch/audio-playback
+round-trips against the live production API — not just "it compiles." Do the same
+for new mobile work rather than trusting a compile check alone. Also worth knowing:
+PR #17→#18 is a real example of why — two branches independently hand-editing the
+same `project.pbxproj` (this Xcode project predates synchronized-folder groups)
+produced a genuine merge conflict days apart; don't assume a clean individual PR
+merges cleanly against a moving `main` without checking.
 
 ## Design system
 
@@ -484,25 +496,35 @@ top-right control on each):
 - Player: https://claude.ai/artifact/JvLPUDmZNZ6kZdh3zbbecn
 - Search & Interests: https://claude.ai/artifact/RtEp2cpi65gtpurbXDKLi4
 
-**Login/Sign Up went through two rounds of direct, sharp founder feedback**: round
-one criticized the bare, unstyled scaffold entirely (no logo, no hierarchy);
-round two criticized the first redesign specifically for a duplicate mode-switch
-control (a segmented toggle at top AND a same-labeled button at bottom) and the
-lack of a real Google Sign-In option. PR #12's second pass addresses both. There
-is **no real Lucaku logo/brand mark yet** — the login screen uses a typography-led
-wordmark treatment deliberately, since an earlier low-fidelity brand system found
-in a sibling repo was explicitly rejected as not-good-enough to reuse. If a real
-logo file exists or gets made, it should replace the wordmark.
+**Login/Sign Up has been through three rounds of direct, sharp founder feedback**:
+round one criticized the bare, unstyled scaffold entirely (no logo, no hierarchy);
+round two criticized the first redesign for a duplicate mode-switch control (a
+segmented toggle at top AND a same-labeled button at bottom) and the lack of a
+real Google Sign-In option — both fixed, including a follow-up fix for the
+Google "G" mark itself rendering blurry (it was hand-drawn with overlapping
+SwiftUI `Canvas` strokes; replaced with Google's actual vector mark asset).
+Round three feedback was more specific: it still "feels weird organized" despite
+the components themselves being right — this is a composition/hierarchy problem,
+not a missing-component problem, and the current pass is grounded in real research
+on how Spotify/Apple/Duolingo structure login-screen layout rather than guessing
+again. There is **no real Lucaku logo/brand mark yet** — the login screen uses a
+typography-led wordmark treatment deliberately, since an earlier low-fidelity
+brand system found in a sibling repo was explicitly rejected as not-good-enough
+to reuse. If a real logo file exists or gets made, it should replace the wordmark.
+The founder has said this screen is not the current top priority — don't over-invest
+further polish here without checking first.
 
 ## Suggested next steps
 
-1. **Wire the real audio engine into the Player screen** — this is the single
-   biggest gap between "compiles and looks right" and "is actually a podcast app."
-   See "Mobile app (iOS)" above.
-2. **Merge the open mobile + backend PRs in dependency order** (#14 and #15 before
-   any client work that consumes them; verify #15 against a real ElevenLabs call
-   first) and wire the client to consume the new Home block-breakdown and
-   transcript-timestamp data once merged.
+1. **Merge the in-progress integration PRs** wiring the (already-merged) real audio
+   engine into the Player screen, the (already-merged) real Home per-block API into
+   `HomeView`, and #15's transcript timestamps into the Player's transcript view —
+   check `gh pr list` for their current numbers/status as of when you're reading
+   this. This is the single biggest gap between "compiles and looks right" and "is
+   actually a working podcast app." See "Mobile app (iOS)" above.
+2. **Verify #15 against a real live ElevenLabs call** before merging it — every
+   other check has passed, but nobody has yet confirmed the actual timestamped API
+   response round-trips correctly end to end.
 3. **The AI Platform's shared semantic index** — the prompt registry is now built (see
    "AI Platform scope" above); the semantic index is the one remaining AI Platform
    piece, and it's the real blocker for novelty judgment, Search & AI's Q&A, and
