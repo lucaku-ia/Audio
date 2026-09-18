@@ -7,12 +7,16 @@ from app.core.config import settings
 from app.db.session import engine, Base, AsyncSessionLocal
 from app.db.migraciones import ejecutar_migraciones
 # Import every model so create_all() sees them
-from app.models import cliente, request, profile, episode, generation_job, instrumentation, onboarding, prompt_registry  # noqa: F401
+from app.models import (
+    cliente, request, profile, episode, generation_job, instrumentation, onboarding, prompt_registry,
+    source_catalogue,
+)  # noqa: F401
 from app.services.ai_platform import (
     STRUCTURE_REQUEST_SYSTEM, STRUCTURE_REQUEST_VERSION,
     RESEARCH_AND_WRITE_BLOCK_SYSTEM, RESEARCH_AND_WRITE_BLOCK_VERSION,
 )
 from app.services.prompt_registry import seed_prompt_registry
+from app.services.source_catalogue import seed_source_catalogue
 from app.api.routes import (
     auth, requests as requests_routes, profile as profile_routes,
     onboarding as onboarding_routes, generation as generation_routes, internal as internal_routes,
@@ -38,6 +42,11 @@ async def lifespan(app: FastAPI):
             ("structure_request", STRUCTURE_REQUEST_VERSION, STRUCTURE_REQUEST_SYSTEM),
             ("research_and_write_block", RESEARCH_AND_WRITE_BLOCK_VERSION, RESEARCH_AND_WRITE_BLOCK_SYSTEM),
         ], created_by="seed:ai_platform.py")
+
+        # Episode Generator PRD §5's source catalogue (app/models/source_catalogue.py)
+        # — same insert-if-missing seeding pattern as seed_prompt_registry above,
+        # loaded fresh from app/data/source_catalogue_seeds.json on every boot.
+        await seed_source_catalogue(db)
 
     scheduler.start()  # Episode Generator PRD's scheduled path — see app.services.scheduler
     try:

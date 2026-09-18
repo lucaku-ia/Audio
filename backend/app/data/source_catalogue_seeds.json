@@ -1,0 +1,125 @@
+{
+  "_note": "Episode Generator PRD §5: 'Source catalogue. Config file: source, API, license, language, topics. Only licensed or API sources. No scraping.' This is that config file, loaded by app/services/source_catalogue.seed_source_catalogue on every boot (insert-if-domain-missing, never overwrites an existing row — see that function's docstring). No team was available to curate the launch catalogue in this session (PRD open question: 'Which sources in the catalogue at launch, and who maintains it?' is still unresolved) — these are a reasonable, genuinely real starter set: each entry documents in `notes` why it plausibly qualifies as a licensed or API source, not scraped. Replace/expand with whatever the team actually negotiates or licenses before relying on this list as a real compliance record. IMPORTANT — this catalogue is a provenance/licensing label attached AFTER the fact to whatever Claude's web_search tool returns; it does not and cannot restrict web_search to only these domains (see app/models/source_catalogue.py's module docstring for why).",
+  "sources": [
+    {
+      "name": "SEC EDGAR (full-text search & company facts APIs)",
+      "domain": "sec.gov",
+      "access_type": "api",
+      "license_name": "US Government Work (public domain, 17 U.S.C. §105)",
+      "language": "en",
+      "topics": ["markets", "personal_finance"],
+      "active": true,
+      "notes": "efts.sec.gov / data.sec.gov are documented, free, self-serve REST APIs over official filings. US federal government works carry no copyright, so republishing facts drawn from them is not scraping-under-a-ban, it's a public API over public-domain data."
+    },
+    {
+      "name": "Federal Reserve Economic Data (FRED) API",
+      "domain": "stlouisfed.org",
+      "access_type": "api",
+      "license_name": "Public domain (Federal Reserve Bank of St. Louis, free registration API key)",
+      "language": "en",
+      "topics": ["markets", "personal_finance"],
+      "active": true,
+      "notes": "api.stlouisfed.org is a documented REST/JSON API requiring only a free API key; FRED's own terms explicitly permit redistribution with attribution."
+    },
+    {
+      "name": "World Bank Open Data API",
+      "domain": "worldbank.org",
+      "access_type": "api",
+      "license_name": "CC BY-4.0",
+      "language": null,
+      "topics": ["world", "personal_finance", "climate"],
+      "active": true,
+      "notes": "api.worldbank.org is a free, keyless, documented REST API; World Bank open data is explicitly published under CC BY-4.0."
+    },
+    {
+      "name": "European Central Bank Statistical Data Warehouse (SDW) API",
+      "domain": "ecb.europa.eu",
+      "access_type": "api",
+      "license_name": "ECB Data Portal reuse policy (free reuse with attribution)",
+      "language": null,
+      "topics": ["markets"],
+      "active": true,
+      "notes": "The ECB's SDW/Data Portal exposes a documented REST API (SDMX) for exchange rates, rates and monetary statistics, published for free reuse."
+    },
+    {
+      "name": "U.S. Bureau of Labor Statistics Public Data API",
+      "domain": "bls.gov",
+      "access_type": "api",
+      "license_name": "US Government Work (public domain)",
+      "language": "en",
+      "topics": ["markets", "personal_finance", "local"],
+      "active": true,
+      "notes": "api.bls.gov is a documented public REST API (v2 requires a free registration key) over US federal statistics."
+    },
+    {
+      "name": "NASA open APIs (api.nasa.gov)",
+      "domain": "nasa.gov",
+      "access_type": "api",
+      "license_name": "US Government Work (public domain), free API key",
+      "language": "en",
+      "topics": ["science"],
+      "active": true,
+      "notes": "api.nasa.gov is a documented, free, keyed REST API aggregating NASA open data (APOD, near-Earth objects, etc.)."
+    },
+    {
+      "name": "NOAA Climate Data Online (CDO) API",
+      "domain": "ncdc.noaa.gov",
+      "access_type": "api",
+      "license_name": "US Government Work (public domain), free API token",
+      "language": "en",
+      "topics": ["climate", "science"],
+      "active": true,
+      "notes": "www.ncdc.noaa.gov/cdo-web/webservices/v2 is a documented free REST API for NOAA's climate datasets."
+    },
+    {
+      "name": "Associated Press Content API",
+      "domain": "ap.org",
+      "access_type": "api_and_license",
+      "license_name": "AP Content API commercial license agreement (per-use/subscription — not yet negotiated by Lucaku)",
+      "language": "en",
+      "topics": ["world", "politics", "local"],
+      "active": false,
+      "notes": "AP sells a documented REST Content API for its wire feed, but it requires a signed commercial license/subscription we have not purchased yet. Left inactive (not matched/used for license attribution) until that agreement exists — listed here so the catalogue shows the real intended news-wire source, not a fabricated 'already licensed' status."
+    },
+    {
+      "name": "GDELT Project API",
+      "domain": "gdeltproject.org",
+      "access_type": "api",
+      "license_name": "GDELT terms of use (free for research/analysis, attribution requested)",
+      "language": null,
+      "topics": ["world", "politics"],
+      "active": true,
+      "notes": "api.gdeltproject.org is a free, documented, keyless REST API over GDELT's global news-monitoring index (an aggregation/index product, not a paywalled wire, and not scraped by us — GDELT does the ingestion under its own terms)."
+    },
+    {
+      "name": "Wikimedia REST API (Wikipedia)",
+      "domain": "wikipedia.org",
+      "access_type": "api",
+      "license_name": "CC BY-SA 4.0 (text)",
+      "language": null,
+      "topics": ["world", "science", "technology", "entertainment"],
+      "active": true,
+      "notes": "en.wikipedia.org/api/rest_v1 (and per-language equivalents) is a documented, free REST API; Wikipedia article text is licensed CC BY-SA 4.0."
+    },
+    {
+      "name": "NewsAPI.org",
+      "domain": "newsapi.org",
+      "access_type": "api",
+      "license_name": "NewsAPI.org Terms (Developer tier is non-commercial only; commercial use requires a paid Business plan — not yet purchased by Lucaku)",
+      "language": null,
+      "topics": ["world", "technology", "entertainment", "sports"],
+      "active": false,
+      "notes": "Documented aggregation API over many publishers, but its free tier's terms explicitly forbid production/commercial use. Left inactive until a paid Business-tier subscription is in place — including it inactive keeps the catalogue honest about a source we plausibly want but have not actually licensed for production yet."
+    },
+    {
+      "name": "Financial Modeling Prep API",
+      "domain": "financialmodelingprep.com",
+      "access_type": "api",
+      "license_name": "Financial Modeling Prep API Terms of Service (paid tier for commercial redistribution)",
+      "language": "en",
+      "topics": ["markets", "personal_finance"],
+      "active": true,
+      "notes": "Documented REST API for market/company financial data with a paid commercial-use tier; genuinely API-delivered, not scraped off a finance site."
+    }
+  ]
+}

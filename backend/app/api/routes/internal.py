@@ -22,6 +22,15 @@ inventory" section for the full design. Manually triggered rather than
 scheduled: the Episode Generator PRD's own open question ("how often are
 shared samples refreshed?") is unresolved, so this stays a manually-
 triggered ops tool for now, same scope as this file's other endpoint.
+
+GET /internal/source-catalogue: read-only listing of the Episode
+Generator PRD §5 source catalogue (app/models/source_catalogue.py,
+seeded from app/data/source_catalogue_seeds.json). Exists so a developer
+can inspect what's catalogued — and which entries are active, i.e.
+actually eligible to have their license attached to a block's sources by
+app/services/source_catalogue.attach_licenses — without a DB console.
+Same auth gate as this file's other routes; see that module's docstring
+for the honest limits of what this catalogue does and doesn't do.
 """
 import json
 from pathlib import Path
@@ -34,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_internal_dashboard_key
 from app.db.session import get_db
 from app.models.prompt_registry import PromptVersion
+from app.models.source_catalogue import SourceCatalogueEntry
 from app.services.episode_generator import generate_shared_episode
 
 router = APIRouter(prefix="/internal", tags=["Internal"], dependencies=[Depends(require_internal_dashboard_key)])
@@ -87,3 +97,33 @@ async def generate_shared_inventory(db: AsyncSession = Depends(get_db)):
         job = await generate_shared_episode(db, tag=seed["tag"], seed_request_text=seed["seed_request_text"])
         results.append(SharedInventoryResultOut(tag=seed["tag"], job_id=str(job.id), status=job.status.value))
     return results
+
+
+class SourceCatalogueEntryOut(BaseModel):
+    name: str
+    domain: str
+    access_type: str
+    license_name: str
+    language: str | None
+    topics: list[str]
+    active: bool
+    notes: str | None
+
+
+@router.get("/source-catalogue", response_model=list[SourceCatalogueEntryOut])
+async def list_source_catalogue(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(SourceCatalogueEntry).order_by(SourceCatalogueEntry.name))
+    rows = result.scalars().all()
+    return [
+        SourceCatalogueEntryOut(
+            name=row.name,
+            domain=row.domain,
+            access_type=row.access_type.value,
+            license_name=row.license_name,
+            language=row.language,
+            topics=row.topics,
+            active=row.active,
+            notes=row.notes,
+        )
+        for row in rows
+    ]
