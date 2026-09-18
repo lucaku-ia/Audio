@@ -147,6 +147,104 @@ idempotent `ALTER TABLE` statements after `create_all()`.
 `UndefinedColumnError` the moment that column is queried. Brand-new tables don't need
 an entry — `create_all()` already creates them with every column.
 
+### Instrumentation catalogue audit (Instrumentation & Cost PRD §5)
+
+The PRD's own tenet — "if it is not in the catalogue, it does not exist" — cuts both
+ways: an event emitted under the wrong name is exactly the archaeology problem the PRD
+warns about. This is the audit that keeps that honest, current as of the last
+gap-filling pass. Every event below is only ever an `Event` row via
+`app.services.events.emitir()` — no ad-hoc events, no free request/episode text in a
+payload, only ids/enums/counts/booleans.
+
+**Already correct before this pass** (`app/api/routes/auth.py`):
+`account_created`, `login_success`, `login_failure` (with `method`), `logout`.
+
+**Added — Request Management** (`app/api/routes/requests.py`, `app/api/routes/profile.py`):
+- `request_created`, `request_edited`, `request_paused`, `request_resumed`,
+  `request_archived` — one per CRUD/lifecycle endpoint, matching the PRD's own
+  `request_*` naming pattern.
+- `request_answered` — emitted from two places that both need it: the
+  `POST /requests/mark_answered` contract endpoint (for whenever a caller other than
+  the Generator uses it), and `episode_generator.run_generation` itself, which today
+  marks requests answered by writing the fields directly rather than calling that
+  endpoint. `episode_published` alone doesn't cover this catalogue entry — it's an
+  episode-level event with no per-request ids, so it can't answer "which requests did
+  this episode satisfy, and which got trimmed (`had_more`)."
+- `profile_recomputed` — the PRD lists this under Request Management; the only Profile
+  write path that exists today is `PUT /profile`, so that's where it's emitted. (Real
+  recomputation from Player/Home behavioral `signals` doesn't exist yet — `signals` is
+  still empty until those epics are built.)
+
+**Added — Onboarding** (`app/api/routes/onboarding.py`):
+- `onboarding_step_entered` / `onboarding_step_completed` — the state machine's step
+  writes were consolidated into one `_transition_step()` helper so every transition
+  (interests→requests, the manual `/step` skip path, `/confirm`, `/notifications`,
+  `/complete`) emits both consistently, instead of writing `state.step` ad hoc in five
+  places with some emitting and some not.
+- `request_created` from Onboarding: verified, not duplicated — Onboarding creates
+  requests exclusively through `POST /requests` (Request Management's own endpoint),
+  so it already gets `request_created` from the emission point above; there is no
+  separate onboarding-side request-creation code path to double-emit from.
+- **Deferred, genuinely un-emittable**: `day_zero_sample_played`, `tour_completed`,
+  `tour_skipped`. No endpoint exists for a client to report any of these. Note
+  specifically: `OnboardingState.tour_completed` *is* set to `True` inside
+  `POST /onboarding/complete`, but unconditionally — there's no signal distinguishing
+  "customer actually finished the tour" from "customer would have skipped it," so
+  emitting either catalogue event from that one flag would misrepresent what happened.
+  Wait for the client work that actually drives a tour UI before wiring these.
+
+**Added — Episode Generator** (`app/services/episode_generator.py`):
+- `job_created` — at job creation, alongside the existing `empty_day` (now also
+  carries `job_id`) and `episode_published` (now also carries `job_id`, for
+  correlating episode-level events back to the job that produced them).
+- `job_failed` — added in the `except` block. Deliberately carries only `job_id`, not
+  the exception text (`job.stages` still holds the error detail — that's an internal
+  field, not the catalogue, so the PII/no-free-text rule doesn't loosen there).
+- `stage_started` / `stage_completed` around three real phases: `research` (the
+  per-request `research_and_write_block` loop), `assemble` (trim + episode/block
+  construction), and `voicing` (the ElevenLabs synthesis step, `skipped: true` when no
+  API key is configured). Each `stage_completed` carries `latency_ms`; the same
+  boundaries are also appended to `job.stages` for anyone reading the job row directly.
+  **Cost is not wired into these events** — `ai_platform`'s call functions
+  (`structure_request`, `research_and_write_block`, `synthesize`) compute cost
+  internally per `AICall` row but don't return it to their caller, and threading it
+  through three function signatures (plus their existing callers in
+  `requests.py`) was judged out of scope for a gap-filling pass. Latency is real;
+  cost needs that follow-up change.
+- **Documented, not fixed**: `JobStatus.late` exists in the enum but nothing ever
+  transitions a job into it — there's no timeout/lateness logic anywhere in the
+  pipeline. Pre-existing gap; adding it means real scheduling/timeout work, not an
+  event-naming fix.
+
+**Added — AI Platform** (`app/services/ai_platform.py`):
+- `ai_call` — emitted once per model call, in addition to (not instead of) the
+  existing `AICall` table row. Judgment call: the PRD's System Contracts define
+  `AICall` as its own distinct object, while §5's Event catalogue separately lists
+  `ai_call` as an event name. Read literally against the PRD's own "if it's not in the
+  catalogue it doesn't exist" tenet, an `AICall` row is not an `ai_call` *Event* — the
+  two are different objects with different consumers (a queryable cost ledger vs. an
+  event stream other epics/dashboards subscribe to). The write cost of one extra
+  narrow-payload row per call is small next to that ambiguity, so this pass emits both.
+  Wired into `_log_call()` (used by `structure_request` and
+  `research_and_write_block`) and into both branches of `synthesize()` (which logs its
+  `AICall` directly rather than through `_log_call`).
+- `ai_rejected` — emitted in addition to `ai_call`, only when `structure_request`'s
+  safety verdict is `rejected`. Verified live-migrated behavior: a call to `synthesize`
+  failing at the HTTP layer (bad ElevenLabs response) is **not** treated as
+  `ai_rejected` — that's a technical/provider failure, not a safety rejection, so it
+  only emits `ai_call` with `failed: true`. `refine_request` does not exist on this
+  branch (separate PR), so there is no fourth call site to wire.
+
+**Deferred entirely — no endpoints exist in this branch to attach to**: Player (all
+events — no Player exists), Home (`home_viewed`, `banner_*`, `recent_tapped`,
+`suggestion_*`, `inventory_played`, `reentry_shown` — Home doesn't exist, and several
+of these are client-observed interactions a backend can't see regardless), Search & AI
+(entire epic doesn't exist), Notifications + Settings (`push_sent/delivered/opened`,
+`setting_changed`, `export_requested`, `delete_requested` — no Settings/Account epic
+in this branch; it's a separate not-yet-merged PR off plain `origin/main`). `logout`
+under this epic is the one exception and was already correctly emitted from
+`auth.py` before this pass.
+
 ## Running locally
 
 ```bash

@@ -38,6 +38,7 @@ from app.models.cliente import Cliente
 from app.models.onboarding import OnboardingState, OnboardingStep
 from app.models.profile import Profile
 from app.models.request import Request, RequestStatus
+from app.services.events import emitir
 
 router = APIRouter(prefix="/onboarding", tags=["Onboarding"])
 
@@ -88,6 +89,18 @@ async def _get_or_create_state(db: AsyncSession, cliente: Cliente) -> Onboarding
         db.add(state)
         await db.flush()
     return state
+
+
+async def _transition_step(db: AsyncSession, cliente: Cliente, state: OnboardingState, new_step: OnboardingStep):
+    """The state machine's one write path for `step` — every caller that moves it
+    goes through here so onboarding_step_completed/entered (PRD §5) can't drift
+    out of sync with the actual transitions."""
+    old_step = state.step
+    if old_step == new_step:
+        return
+    await emitir(db, "onboarding_step_completed", customer_id=cliente.id, source="onboarding", step=old_step.value)
+    state.step = new_step
+    await emitir(db, "onboarding_step_entered", customer_id=cliente.id, source="onboarding", step=new_step.value)
 
 
 def _label(interest: dict, idioma: str) -> str:
@@ -156,7 +169,7 @@ async def set_interests(
     state = await _get_or_create_state(db, cliente)
     state.selected_interests = body.interests
     if state.step == OnboardingStep.interests:
-        state.step = OnboardingStep.requests
+        await _transition_step(db, cliente, state, OnboardingStep.requests)
     await db.commit()
     return await get_state(cliente, db)
 
@@ -187,7 +200,7 @@ async def set_step(
     """Manual step transitions — used for the skip paths (voice, notifications,
     additional requests are all skippable per PRD tenet 3)."""
     state = await _get_or_create_state(db, cliente)
-    state.step = body.step
+    await _transition_step(db, cliente, state, body.step)
     await db.commit()
     return await get_state(cliente, db)
 
@@ -226,7 +239,7 @@ async def confirm(
     minutes_until = (t_today - now_local).total_seconds() / 60
 
     state = await _get_or_create_state(db, cliente)
-    state.step = OnboardingStep.confirm
+    await _transition_step(db, cliente, state, OnboardingStep.confirm)
 
     if minutes_until >= 60:
         path = "scheduled"
@@ -250,7 +263,7 @@ async def set_notifications(
     """Declining never blocks progress and is never re-prompted during onboarding (PRD)."""
     state = await _get_or_create_state(db, cliente)
     state.notifications_enabled = body.enabled
-    state.step = OnboardingStep.tour
+    await _transition_step(db, cliente, state, OnboardingStep.tour)
     await db.commit()
     return await get_state(cliente, db)
 
@@ -267,8 +280,13 @@ async def complete_onboarding(
         raise HTTPException(400, "At least one standing request is required to complete onboarding.")
 
     state = await _get_or_create_state(db, cliente)
+    # NOTE: tour_completed is set unconditionally here, whether the customer actually
+    # watched the tour or would have skipped it — there's no client endpoint that
+    # distinguishes the two (see module docstring / README audit note). Emitting the
+    # catalogue's tour_completed/tour_skipped from here would misrepresent what
+    # happened, so those stay un-emittable until a real tour UI exists.
     state.tour_completed = True
-    state.step = OnboardingStep.done
+    await _transition_step(db, cliente, state, OnboardingStep.done)
     state.completed_at = datetime.utcnow()
     cliente.onboarding_complete = True
     await db.commit()
