@@ -48,3 +48,15 @@ class Block(Base):
     sources: Mapped[list] = mapped_column(JSON, default=lambda: [])  # [{url, title, publisher, license, retrieved_at}]
     had_more: Mapped[bool] = mapped_column(Boolean, default=False)
     no_news: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Word-level timing for karaoke-style transcript highlighting (Player PRD).
+    # Populated from ElevenLabs' character-level alignment (the `/with-timestamps`
+    # variant of the TTS endpoint — see app/services/ai_platform.synthesize),
+    # collapsed from characters to words here since the Player highlights whole
+    # words, not individual characters. Shape: a list of
+    # {"word": str, "start_s": float, "end_s": float}, in script order. Null
+    # (not []) when this block's audio wasn't synthesized with timestamps (e.g.
+    # ELEVENLABS_API_KEY unset, or synthesized before this field existed) — the
+    # iOS client's own proportional-highlight fallback should key off null vs.
+    # populated, not off an empty list, since a no_news/empty-script block would
+    # legitimately have an empty list otherwise.
+    word_timestamps: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)

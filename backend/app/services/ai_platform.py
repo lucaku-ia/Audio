@@ -40,6 +40,7 @@ and version at call time, passing its own *_SYSTEM/*_VERSION constant as
 the fallback. Do not delete these constants — they are load-bearing for
 both seeding and the fallback path, not dead code.
 """
+import base64
 import json
 import os
 import re
@@ -392,10 +393,30 @@ async def refine_request(
 #
 # The AI Platform PRD names ElevenLabs as the pilot's TTS provider (§9, and
 # the pilot budget in the Umbrella PRD §9 is costed off ElevenLabs Scale-tier
-# rates). Deliberately minimal: one REST call per script, no voice cloning,
-# no timestamp alignment (ElevenLabs' character-level alignment lives behind
-# a separate `/with-timestamps` endpoint — the Generator falls back to the
-# word-count estimate for block offsets either way, per its own PRD §5).
+# rates). One REST call per script, no voice cloning.
+#
+# Word-level timestamps (Player PRD's karaoke-style transcript view): ElevenLabs
+# exposes character-level alignment only via a separate endpoint variant,
+# POST /v1/text-to-speech/{voice_id}/with-timestamps (not a query param on the
+# plain endpoint) — confirmed against ElevenLabs' own current API reference
+# (https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps,
+# fetched 2026-09-17). That endpoint returns JSON, not a raw audio/mpeg body:
+#   {"audio_base64": "...", "alignment": {"characters": [...],
+#    "character_start_times_seconds": [...], "character_end_times_seconds": [...]},
+#    "normalized_alignment": {...same shape...}}
+# instead of the plain endpoint's raw `audio/mpeg` bytes. synthesize() below
+# always requests it now (with_timestamps=True by default) and collapses the
+# character alignment into word-level spans, since the Player highlights whole
+# words. Response-size/cost note (per the PRD's own instrumentation tenet —
+# see this function's docstring): billed TTS characters and $/1k-char rate are
+# unchanged (ElevenLabs prices both endpoint variants identically — you pay for
+# characters synthesized, not for getting alignment back), but the HTTP response
+# body is meaningfully larger than before: audio now travels as base64 (~33%
+# larger than the raw bytes the plain endpoint returned) plus the alignment
+# arrays themselves (3 entries per character of the script). For a ~150-word
+# block this is a few hundred KB of extra JSON, not bytes — fine for a single
+# server-side call, but worth knowing if this is ever called at higher volume
+# or the JSON is ever proxied directly to a client.
 
 _ELEVENLABS_MODEL = "eleven_multilingual_v2"
 _ELEVENLABS_PRICE_PER_1K_CHARS = 0.18  # USD — matches the Umbrella PRD §9 pilot-budget assumption; update if ElevenLabs pricing changes
@@ -436,6 +457,50 @@ async def _default_voice_id(api_key: str) -> str:
     return _default_voice_id_cache
 
 
+def _collapse_alignment_to_words(text: str, alignment: dict) -> list[dict]:
+    """
+    ElevenLabs' alignment is per-character (`characters`,
+    `character_start_times_seconds`, `character_end_times_seconds` — three
+    parallel lists, one entry per character of `text` as ElevenLabs actually
+    voiced it). The Player highlights whole words, not characters, so this
+    collapses runs of non-whitespace characters into one span each:
+    {"word": str, "start_s": float, "end_s": float}. Whitespace characters
+    (which ElevenLabs includes in the alignment with their own, usually
+    zero-length, timing) are dropped rather than turned into "words".
+
+    Defensive about length mismatches (a provider-side truncation or a future
+    API change) — zips only over the shortest of the three lists rather than
+    indexing, so a short list never raises IndexError; any character short of
+    truncated timing data is simply dropped instead of forming a partial word.
+    """
+    chars = alignment.get("characters") or []
+    starts = alignment.get("character_start_times_seconds") or []
+    ends = alignment.get("character_end_times_seconds") or []
+
+    words: list[dict] = []
+    current_word = ""
+    current_start: float | None = None
+    current_end: float | None = None
+
+    def _flush():
+        if current_word:
+            words.append({"word": current_word, "start_s": current_start, "end_s": current_end})
+
+    for ch, s, e in zip(chars, starts, ends):
+        if ch.isspace():
+            _flush()
+            current_word = ""
+            current_start = None
+            current_end = None
+            continue
+        if current_start is None:
+            current_start = s
+        current_word += ch
+        current_end = e
+    _flush()
+    return words
+
+
 async def synthesize(
     db: AsyncSession,
     text: str,
@@ -443,15 +508,24 @@ async def synthesize(
     customer_id: uuid.UUID,
     request_id: uuid.UUID | None = None,
     episode_id: uuid.UUID | None = None,
-) -> tuple[bytes, float]:
+    with_timestamps: bool = True,
+) -> tuple[bytes, float, list[dict] | None]:
     """
     Text-to-speech for one script (a block, or the whole assembled episode).
-    Returns (raw audio bytes (mp3), cost) — the cost is the same value
-    logged on the AICall row below, returned directly rather than making
+    Returns (raw audio bytes (mp3), cost, word_timestamps) — cost is the same
+    value logged on the AICall row below, returned directly rather than making
     the Generator query AICall back out to attribute it to the voicing
     stage. See episode_generator.run_generation's "Cost per stage" note.
     Logs one AICall with `characters` set (PRD: AICall.characters is "for
-    TTS calls") and cost from the pilot's per-1000-character rate.
+    TTS calls") and cost from the pilot's per-1000-character rate — pricing is
+    per character regardless of with_timestamps (see module docstring above).
+
+    with_timestamps (default True) selects ElevenLabs' `/with-timestamps`
+    endpoint variant and returns per-word timing (see
+    _collapse_alignment_to_words) as the third tuple element; pass False to
+    use the plain endpoint and get back (audio_bytes, cost, None) exactly as
+    before this field was added — kept as an escape hatch, e.g. if a caller
+    needs the smaller/simpler plain response and has no use for timestamps.
 
     Raises on any failure (missing key, non-2xx from ElevenLabs) — callers
     must check elevenlabs_configured() first if a missing key should
@@ -462,11 +536,14 @@ async def synthesize(
         raise RuntimeError("ELEVENLABS_API_KEY is not set")
 
     voice_id = voice_id or await _default_voice_id(api_key)
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    if with_timestamps:
+        url += "/with-timestamps"
 
     start = time.monotonic()
     async with httpx.AsyncClient(timeout=120.0) as client:
         response = await client.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+            url,
             headers={"xi-api-key": api_key, "Accept": "audio/mpeg", "Content-Type": "application/json"},
             json={"text": text, "model_id": _ELEVENLABS_MODEL},
         )
@@ -505,4 +582,12 @@ async def synthesize(
         creado_en=datetime.utcnow(),
     ))
     await emitir(db, "ai_call", customer_id=customer_id, source="ai_platform", purpose="synthesize", failed=False)
-    return response.content, cost
+
+    if not with_timestamps:
+        return response.content, cost, None
+
+    # The /with-timestamps variant returns JSON, not a raw audio/mpeg body.
+    payload = response.json()
+    audio_bytes = base64.b64decode(payload["audio_base64"])
+    word_timestamps = _collapse_alignment_to_words(text, payload.get("alignment") or {})
+    return audio_bytes, cost, word_timestamps

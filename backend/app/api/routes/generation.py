@@ -47,6 +47,12 @@ class BlockOut(BaseModel):
     script: str
     sources: list
     had_more: bool
+    # [{"word": str, "start_s": float, "end_s": float}, ...] relative to this
+    # block's own audio (add start_s above for the episode-relative offset), or
+    # null if this block's audio wasn't synthesized with ElevenLabs timestamps
+    # (e.g. TTS not configured, or the block predates this field) — see
+    # Block.word_timestamps' docstring in app/models/episode.py.
+    word_timestamps: list | None = None
 
 
 class EpisodeOut(BaseModel):
@@ -124,6 +130,7 @@ async def latest_episode(
             BlockOut(
                 request_id=str(b.request_id) if b.request_id else None, start_s=b.start_s, end_s=b.end_s,
                 summary=b.summary, script=b.script, sources=b.sources, had_more=b.had_more,
+                word_timestamps=b.word_timestamps,
             )
             for b in blocks
         ],
