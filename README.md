@@ -522,15 +522,23 @@ further polish here without checking first.
    check `gh pr list` for their current numbers/status as of when you're reading
    this. This is the single biggest gap between "compiles and looks right" and "is
    actually a working podcast app." See "Mobile app (iOS)" above.
-2. **Verify #15 against a real live ElevenLabs call** before merging it — every
-   other check has passed, but nobody has yet confirmed the actual timestamped API
-   response round-trips correctly end to end.
+2. **Verify the ElevenLabs `with-timestamps` integration against a real live call**
+   before trusting it in production — it's merged (originally #15, folded into #22),
+   every other check has passed, but nobody has yet confirmed the actual timestamped
+   API response round-trips correctly end to end.
 3. **The AI Platform's shared semantic index** — the prompt registry is now built (see
    "AI Platform scope" above); the semantic index is the one remaining AI Platform
    piece, and it's the real blocker for novelty judgment, Search & AI's Q&A, and
-   Home's suggestions. Needs an embeddings-provider decision (a new external API
-   credential — e.g. Voyage AI or OpenAI embeddings — or a local model) first.
-   **Still not decided as of this writing.**
+   Home's suggestions.
+   **Embeddings provider decided: Voyage AI** (voyage-3.5 — chosen for meaningfully
+   better retrieval quality than OpenAI's text-embedding-3-large on real benchmarks,
+   less than half the price at $0.06/1M tokens, and a longer 32K-token context window
+   that comfortably fits a full block transcript without chunking). **Not yet set
+   up as of this writing** — the founder needs to create a Voyage AI account and
+   API key (same pattern as the existing Anthropic/ElevenLabs keys) before this can
+   be built. Once that key exists, this becomes buildable: wire it into the AI
+   Platform, build the embedding/indexing step for episodes+blocks, and the shared
+   semantic index itself.
 4. **Shared inventory** — curated seed requests per interest cluster, to fill
    Onboarding's day-zero sample and Home's empty-day state.
 5. **Google/Apple OAuth for real** — the login screen's Google Sign-In button is
