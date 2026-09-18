@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.source_catalogue import SourceCatalogueEntry
@@ -55,28 +56,40 @@ async def seed_source_catalogue(db: AsyncSession) -> None:
     `active` off on a source, or editing its license_name, survives
     redeploys instead of being silently reset by the seed file.
 
+    Uses a single `INSERT ... ON CONFLICT (domain) DO NOTHING` statement
+    rather than a per-row check-then-insert: the latter has a race window
+    between the SELECT and the INSERT, so two callers seeding concurrently
+    (e.g. multiple app workers/replicas booting at once, or a rolling
+    deploy) can both decide a domain is missing and both try to insert it,
+    crashing one of them with an uncaught IntegrityError on the `domain`
+    unique constraint. ON CONFLICT DO NOTHING pushes the missing-check down
+    into Postgres itself, atomically, so concurrent callers can't race.
+
     Called once from app/main.py's lifespan, same place/pattern as
     seed_prompt_registry.
     """
     seeds = json.loads(_SEEDS_PATH.read_text(encoding="utf-8"))["sources"]
-    for seed in seeds:
-        domain = _normalize_domain(seed["domain"])
-        existing = await db.execute(
-            select(SourceCatalogueEntry.id).where(SourceCatalogueEntry.domain == domain)
-        )
-        if existing.scalars().first() is not None:
-            continue
-        db.add(SourceCatalogueEntry(
-            id=uuid.uuid4(),
-            name=seed["name"],
-            domain=domain,
-            access_type=seed["access_type"],
-            license_name=seed["license_name"],
-            language=seed.get("language"),
-            topics=seed.get("topics", []),
-            active=seed.get("active", True),
-            notes=seed.get("notes"),
-        ))
+    if not seeds:
+        return
+
+    rows = [
+        {
+            "id": uuid.uuid4(),
+            "name": seed["name"],
+            "domain": _normalize_domain(seed["domain"]),
+            "access_type": seed["access_type"],
+            "license_name": seed["license_name"],
+            "language": seed.get("language"),
+            "topics": seed.get("topics", []),
+            "active": seed.get("active", True),
+            "notes": seed.get("notes"),
+        }
+        for seed in seeds
+    ]
+
+    stmt = pg_insert(SourceCatalogueEntry).values(rows)
+    stmt = stmt.on_conflict_do_nothing(index_elements=["domain"])
+    await db.execute(stmt)
     await db.commit()
 
 
