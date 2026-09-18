@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     # audio still resolves without extra config; override via env if that changes.
     PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "https://audio-production-2a77.up.railway.app")
 
+    # Shared-secret gate for internal-only endpoints (e.g. GET /api/internal/prompts).
+    # No real admin auth/roles exist yet, so this is a stand-in: a single header value
+    # checked against this env var, fail CLOSED (endpoint 404s) if it's unset, so an
+    # internal route can never accidentally ship open. Named to match the equivalent
+    # gate the Instrumentation dashboard PRD introduces, so the two are compatible
+    # once both land on the same branch.
+    INTERNAL_DASHBOARD_KEY: str | None = os.getenv("INTERNAL_DASHBOARD_KEY")
+
     class Config:
         env_file = ".env"
         extra = "ignore"

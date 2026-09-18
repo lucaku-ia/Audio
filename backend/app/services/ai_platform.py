@@ -27,6 +27,18 @@ Tenets followed here:
   catalog.
 - Prompts are versioned artifacts: each *_VERSION constant is bumped
   whenever its matching *_SYSTEM prompt changes.
+
+Prompt registry (PRD §9's next delivery-order item, now built — see
+app/models/prompt_registry.py and app/services/prompt_registry.py for the
+full scope note): the *_SYSTEM / *_VERSION constants below are no longer
+what callers use directly. They're now the SEED DATA — the source of
+truth the registry's `prompt_versions` table is populated from on first
+boot (app/main.py's lifespan), and the safety fallback if the registry
+lookup ever comes up empty. Each function below calls
+prompt_registry.get_active_prompt() to get its actual system prompt text
+and version at call time, passing its own *_SYSTEM/*_VERSION constant as
+the fallback. Do not delete these constants — they are load-bearing for
+both seeding and the fallback path, not dead code.
 """
 import json
 import os
@@ -41,6 +53,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.instrumentation import AICall
+from app.services.prompt_registry import get_active_prompt
 
 _client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 
@@ -121,13 +134,18 @@ async def structure_request(
     object plus a safety verdict out. See STRUCTURE_REQUEST_SYSTEM for the
     exact contract; bump STRUCTURE_REQUEST_VERSION when it changes.
     """
+    system_prompt, version = await get_active_prompt(
+        db, "structure_request",
+        fallback_version=STRUCTURE_REQUEST_VERSION, fallback_system_prompt=STRUCTURE_REQUEST_SYSTEM,
+    )
+
     start = time.monotonic()
     response = _client.messages.parse(
         model=MODEL,
         max_tokens=1024,
         thinking={"type": "adaptive"},
         output_config={"effort": "low"},
-        system=STRUCTURE_REQUEST_SYSTEM,
+        system=system_prompt,
         messages=[{"role": "user", "content": raw_text}],
         output_format=StructuredRequest,
     )
@@ -135,7 +153,7 @@ async def structure_request(
     result = response.parsed_output
 
     _log_call(
-        db, prompt="structure_request", version=STRUCTURE_REQUEST_VERSION, purpose="structure_request",
+        db, prompt="structure_request", version=version, purpose="structure_request",
         usage=response.usage, latency_ms=latency_ms,
         context={"customer_id": str(customer_id), "request_id": str(request_id) if request_id else None},
         rejected_reason=result.rejected_reason,
@@ -199,7 +217,11 @@ async def research_and_write_block(
     style = style if style in _STYLE_DESCRIPTIONS else "news"
     language_name = "Spanish" if language == "es" else "English"
 
-    system = RESEARCH_AND_WRITE_BLOCK_SYSTEM.format(
+    system_template, version = await get_active_prompt(
+        db, "research_and_write_block",
+        fallback_version=RESEARCH_AND_WRITE_BLOCK_VERSION, fallback_system_prompt=RESEARCH_AND_WRITE_BLOCK_SYSTEM,
+    )
+    system = system_template.format(
         style_description=_STYLE_DESCRIPTIONS[style],
         language=language_name,
         word_target=_DEPTH_WORDS[depth],
@@ -222,7 +244,7 @@ async def research_and_write_block(
     latency_ms = int((time.monotonic() - start) * 1000)
 
     _log_call(
-        db, prompt="research_and_write_block", version=RESEARCH_AND_WRITE_BLOCK_VERSION,
+        db, prompt="research_and_write_block", version=version,
         purpose="research_and_write_block", usage=response.usage, latency_ms=latency_ms,
         context={"customer_id": str(customer_id), "request_id": str(request_id)},
     )

@@ -4,13 +4,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
-from app.db.session import engine, Base
+from app.db.session import engine, Base, AsyncSessionLocal
 from app.db.migraciones import ejecutar_migraciones
 # Import every model so create_all() sees them
-from app.models import cliente, request, profile, episode, generation_job, instrumentation, onboarding  # noqa: F401
+from app.models import cliente, request, profile, episode, generation_job, instrumentation, onboarding, prompt_registry  # noqa: F401
+from app.services.ai_platform import (
+    STRUCTURE_REQUEST_SYSTEM, STRUCTURE_REQUEST_VERSION,
+    RESEARCH_AND_WRITE_BLOCK_SYSTEM, RESEARCH_AND_WRITE_BLOCK_VERSION,
+)
+from app.services.prompt_registry import seed_prompt_registry
 from app.api.routes import (
     auth, requests as requests_routes, profile as profile_routes,
-    onboarding as onboarding_routes, generation as generation_routes,
+    onboarding as onboarding_routes, generation as generation_routes, internal as internal_routes,
 )
 
 
@@ -19,6 +24,18 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await ejecutar_migraciones(engine)
+
+    # Migrate the current hardcoded ai_platform.py prompt constants into the
+    # prompt registry as the initial is_active version of each — idempotent,
+    # a no-op on every boot after the first. See
+    # app/services/prompt_registry.seed_prompt_registry for the guarantee
+    # that this never overwrites a prompt a developer has since edited.
+    async with AsyncSessionLocal() as db:
+        await seed_prompt_registry(db, [
+            ("structure_request", STRUCTURE_REQUEST_VERSION, STRUCTURE_REQUEST_SYSTEM),
+            ("research_and_write_block", RESEARCH_AND_WRITE_BLOCK_VERSION, RESEARCH_AND_WRITE_BLOCK_SYSTEM),
+        ], created_by="seed:ai_platform.py")
+
     yield
 
 
@@ -42,6 +59,7 @@ app.include_router(requests_routes.router, prefix="/api")
 app.include_router(profile_routes.router, prefix="/api")
 app.include_router(onboarding_routes.router, prefix="/api")
 app.include_router(generation_routes.router, prefix="/api")
+app.include_router(internal_routes.router, prefix="/api")
 
 settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)  # StaticFiles needs the dir to exist at mount time
 app.mount("/media", StaticFiles(directory=settings.MEDIA_DIR), name="media")

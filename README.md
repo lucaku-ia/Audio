@@ -22,6 +22,7 @@ Backend only, no UI yet. Live in production on Railway:
 | Profile (voice, narration style, delivery time, length) | ✅ Built & deployed | `app/api/routes/profile.py`, `app/models/profile.py` | Request Management / Onboarding |
 | Onboarding (resumable state, interests, seed-list suggestions, T-60 confirmation) | ✅ Built & deployed | `app/api/routes/onboarding.py`, `app/models/onboarding.py`, `app/data/onboarding_seeds.json` | Onboarding PRD (Andrés, Draft v4) |
 | AI Platform — `structure_request` + `research_and_write_block` (structuring, safety screen, research+writing) | ✅ Built & deployed | `app/services/ai_platform.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
+| AI Platform — prompt registry (DB-backed prompt versioning, `GET /api/internal/prompts`) | ✅ Built & deployed | `app/models/prompt_registry.py`, `app/services/prompt_registry.py`, `app/api/routes/internal.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
 | Episode Generator — on-demand path only: load → research+write → assemble → trim → headline → publish | ✅ Built & deployed, text-only (no TTS) | `app/services/episode_generator.py`, `app/api/routes/generation.py` | Episode Generator PRD (Juan, Draft v1) |
 | Event, AICall | Data model, actively written by the AI Platform and Generator | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
 | Home, Player, Search & AI, Notifications+Settings, Instrumentation dashboard | Not started | — | — |
@@ -92,6 +93,26 @@ Pydantic output schema) to both structure a raw request into
 including rejected ones — as an `AICall` row. Building the next PRD-priority item
 (the prompt registry, to unblock the Generator) is the natural next AI Platform step
 when picked back up.
+
+**Update:** the prompt registry is now built too — `app/models/prompt_registry.py`
+(the `PromptVersion` table) and `app/services/prompt_registry.py`
+(`get_active_prompt` / `seed_prompt_registry`). `structure_request` and
+`research_and_write_block` now fetch their system prompt text and version from the
+DB (the active `PromptVersion` row for their name) instead of the hardcoded
+`*_SYSTEM`/`*_VERSION` module constants directly — those constants still exist and
+are now the seed data (loaded into the table on first boot, in `app/main.py`'s
+lifespan) and the safety fallback if a lookup ever comes up empty (missing/deactivated
+row), which logs a warning and returns the hardcoded prompt rather than raising and
+breaking request creation. `GET /api/internal/prompts` lists every prompt's active
+version and full text, gated by `require_internal_dashboard_key`
+(`app/api/deps.py`) — a shared-secret header pattern, fail-closed if
+`INTERNAL_DASHBOARD_KEY` is unset, named to match the equivalent gate the
+(separate, not yet merged) Instrumentation dashboard PR introduces. Still explicitly
+NOT built: the shared semantic index (needs an embeddings provider decision — a new
+external API credential or a local model — not made here) and evals (running a
+prompt candidate against history before activating it); the registry's shape is
+meant to make evals buildable later without a data-model change, but no eval-running
+logic exists yet.
 
 **Requires `ANTHROPIC_API_KEY`** to be set (Railway Variables in production, `.env`
 locally) or every `POST`/`PATCH /requests` call will fail with a 500
@@ -225,9 +246,11 @@ dashboard PRDs — find and read them before starting that module.
    but needs the key to actually run; until then episodes stay text-only. Once set,
    also move audio off local container disk onto real object storage (S3/R2/etc.) —
    see "Episode Generator scope" above.
-2. **AI Platform, next delivery-order item** — the prompt registry (per the PRD's own
-   §9 delivery order) and the shared semantic index, to unblock real novelty judgment
-   and Search & AI.
+2. **AI Platform, next delivery-order item** — the prompt registry is now built (see
+   "AI Platform scope" above); the shared semantic index is still open and is the
+   remaining blocker for real novelty judgment and Search & AI. It needs an
+   embeddings provider decision (a new external API credential — e.g. Voyage AI or
+   OpenAI embeddings — or a local model) before any of it can be built.
 3. **Home** and **Player** — both read already; Player is a hard dependency of Request
    Management's `refine()`, which is still unbuilt.
 4. **Scheduled path + idempotency** for the Generator — cron at T−60 per customer
