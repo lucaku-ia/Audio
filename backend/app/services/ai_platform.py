@@ -256,9 +256,10 @@ def _parse_block_result(text: str) -> BlockResult:
 # a separate `/with-timestamps` endpoint — the Generator falls back to the
 # word-count estimate for block offsets either way, per its own PRD §5).
 
-ELEVENLABS_VOICE_ID_DEFAULT = "21m00Tcm4TlvDq8ikWAM"  # ElevenLabs' public "Rachel" voice — used when the customer's profile has no voice_id yet
 _ELEVENLABS_MODEL = "eleven_multilingual_v2"
 _ELEVENLABS_PRICE_PER_1K_CHARS = 0.18  # USD — matches the Umbrella PRD §9 pilot-budget assumption; update if ElevenLabs pricing changes
+
+_default_voice_id_cache: str | None = None  # process-lifetime cache; see _default_voice_id()
 
 
 def elevenlabs_configured() -> bool:
@@ -267,6 +268,31 @@ def elevenlabs_configured() -> bool:
     behavior (script-only episode, status stays "voicing") instead of
     failing the whole job."""
     return bool(os.getenv("ELEVENLABS_API_KEY"))
+
+
+async def _default_voice_id(api_key: str) -> str:
+    """
+    Used when the customer's profile has no voice_id yet. A hardcoded
+    "well-known" voice ID (e.g. the public "Rachel" voice) isn't reliable
+    across accounts/plans — free-tier accounts get HTTP 402
+    "Free users cannot use library voices via the API" for voices that
+    aren't already in their own account. Instead, ask the account what it
+    actually has access to (GET /v1/voices, which always includes at least
+    the account's premade defaults) and use the first one.
+    """
+    global _default_voice_id_cache
+    if _default_voice_id_cache:
+        return _default_voice_id_cache
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get("https://api.elevenlabs.io/v1/voices", headers={"xi-api-key": api_key})
+    response.raise_for_status()
+    voices = response.json().get("voices", [])
+    if not voices:
+        raise RuntimeError("ElevenLabs account has no voices available (GET /v1/voices returned none)")
+
+    _default_voice_id_cache = voices[0]["voice_id"]
+    return _default_voice_id_cache
 
 
 async def synthesize(
@@ -291,7 +317,7 @@ async def synthesize(
     if not api_key:
         raise RuntimeError("ELEVENLABS_API_KEY is not set")
 
-    voice_id = voice_id or ELEVENLABS_VOICE_ID_DEFAULT
+    voice_id = voice_id or await _default_voice_id(api_key)
 
     start = time.monotonic()
     async with httpx.AsyncClient(timeout=120.0) as client:
@@ -305,16 +331,20 @@ async def synthesize(
     if response.status_code >= 400:
         # Log the failed call too (PRD: "every call is logged, including rejected ones")
         # before raising, so the cost/failure is still visible in Instrumentation.
+        # rejected_reason is String(200) — truncate the whole formatted message, not
+        # just response.text, or the INSERT itself fails (StringDataRightTruncationError)
+        # and takes down the caller's transaction along with it.
+        reason = f"HTTP {response.status_code}: {response.text}"[:200]
         db.add(AICall(
             call_id=uuid.uuid4(), prompt="synthesize", version="v1", purpose="synthesize",
             model=_ELEVENLABS_MODEL, provider="elevenlabs", characters=len(text), cost=0,
             latency_ms=latency_ms,
             context={"customer_id": str(customer_id), "request_id": str(request_id) if request_id else None,
                      "episode_id": str(episode_id) if episode_id else None},
-            rejected_reason=f"HTTP {response.status_code}: {response.text[:200]}",
+            rejected_reason=reason,
             creado_en=datetime.utcnow(),
         ))
-        raise RuntimeError(f"ElevenLabs synthesize failed: HTTP {response.status_code}: {response.text[:200]}")
+        raise RuntimeError(f"ElevenLabs synthesize failed: {reason}")
 
     db.add(AICall(
         call_id=uuid.uuid4(), prompt="synthesize", version="v1", purpose="synthesize",
