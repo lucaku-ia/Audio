@@ -40,13 +40,36 @@ class JobOut(BaseModel):
 
 
 class BlockOut(BaseModel):
+    id: str
     request_id: str | None
     start_s: int
     end_s: int
+    duration_s: int
     summary: str
     script: str
     sources: list
     had_more: bool
+
+
+def _block_common_fields(b: Block) -> dict:
+    """Fields shared by every Block serialization in the API.
+
+    Generation's full BlockOut (script + sources, for Player) and Home's
+    lighter BlockSummaryOut (no script, for the Home block-breakdown list —
+    see app/api/routes/home.py) both build on this, so field naming and the
+    duration_s = end_s - start_s computation can't drift between the two
+    call sites.
+    """
+    return {
+        "id": str(b.id),
+        "request_id": str(b.request_id) if b.request_id else None,
+        "start_s": b.start_s,
+        "end_s": b.end_s,
+        "duration_s": b.end_s - b.start_s,
+        "summary": b.summary,
+        "sources": b.sources,
+        "had_more": b.had_more,
+    }
 
 
 class EpisodeOut(BaseModel):
@@ -121,10 +144,7 @@ async def latest_episode(
         style=episode.style, voice_id=episode.voice_id, duration_s=episode.duration_s,
         audio_url=episode.audio_url, had_more_any=episode.had_more_any, published_at=episode.published_at,
         blocks=[
-            BlockOut(
-                request_id=str(b.request_id) if b.request_id else None, start_s=b.start_s, end_s=b.end_s,
-                summary=b.summary, script=b.script, sources=b.sources, had_more=b.had_more,
-            )
+            BlockOut(**_block_common_fields(b), script=b.script)
             for b in blocks
         ],
     )

@@ -10,6 +10,11 @@ Built:
   `_derive_banner` for the exact rules and the judgment calls below).
 - Recent: last 3 Episodes for this customer (all paths), each with date,
   headline, duration_s, style, and a coarse `state`.
+- Banner.blocks: per-block breakdown of the ready episode (id, request_id,
+  sequence, start_s/end_s/duration_s, summary, had_more) alongside the
+  existing aggregate headline/duration_s/requests_count fields — additive,
+  see BlockSummaryOut's docstring. Reuses generation.py's `_block_common_fields`
+  helper rather than a second, divergent block serialization.
 - POST /home/request-today: thin wrapper around the existing
   POST /requests one-off flow, tagged created_from=home_empty_day.
 
@@ -69,6 +74,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
+from app.api.routes.generation import _block_common_fields
 from app.api.routes.requests import CrearRequestBody, RequestOut, crear_request
 from app.db.session import get_db
 from app.models.cliente import Cliente
@@ -82,6 +88,34 @@ router = APIRouter(prefix="/home", tags=["Home"])
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+class BlockSummaryOut(BaseModel):
+    """Per-block breakdown for the ready episode's banner, additive alongside
+    the existing aggregate headline/duration_s/requests_count fields — the
+    Home design (per-topic rows, currently-playing highlight) needs the list,
+    but nothing about the aggregate fields changes for clients that don't
+    read `blocks` yet (see ios/.../Networking/Models/HomeModels.swift, which
+    doesn't decode this field today and isn't broken by its addition).
+
+    Built from the same `_block_common_fields` helper generation.py's
+    BlockOut uses, minus `script` (Home renders a list row, not a script
+    reader — that stays a Player/Generation-only field).
+
+    No "currently playing" field: there is no server-side concept of
+    playback position anywhere in this codebase (see this module's own
+    docstring, "Playback position" scope note) — which block is currently
+    playing is purely client-side Player state, not something to invent a
+    column for here.
+    """
+    id: str
+    request_id: str | None  # null = intro/outro block
+    sequence: int  # 0-based position in playback order (== this array's own order)
+    start_s: int
+    end_s: int
+    duration_s: int
+    summary: str  # Block.summary — the one-line topic/question text for this block
+    had_more: bool
+
+
 class BannerOut(BaseModel):
     state: str  # ready | making | late | empty_day | re_entry
     headline: str | None = None
@@ -89,6 +123,7 @@ class BannerOut(BaseModel):
     duration_s: int | None = None
     style: str | None = None
     eta: datetime | None = None  # making/late only; see module scope note for how the Generator sets/refreshes it
+    blocks: list[BlockSummaryOut] = Field(default_factory=list)  # ready only; see BlockSummaryOut docstring
 
 
 class RecentEpisodeOut(BaseModel):
@@ -168,15 +203,20 @@ async def _derive_banner(db: AsyncSession, cliente: Cliente) -> BannerOut:
             return BannerOut(state="making", requests_count=len(active_requests), eta=None)
 
         blocks_result = await db.execute(
-            select(Block).where(Block.episode_id == episode.id, Block.request_id.is_not(None))
+            select(Block).where(Block.episode_id == episode.id).order_by(Block.start_s)
         )
-        answered_blocks = blocks_result.scalars().all()
+        all_blocks = blocks_result.scalars().all()
+        answered_blocks = [b for b in all_blocks if b.request_id is not None]
         return BannerOut(
             state="ready",
             headline=episode.headline,
             requests_count=len(answered_blocks),
             duration_s=episode.duration_s,
             style=episode.style,
+            blocks=[
+                BlockSummaryOut(**_block_common_fields(b), sequence=i)
+                for i, b in enumerate(all_blocks)
+            ],
         )
 
     # job.status == JobStatus.failed: an internal failure, not something the
