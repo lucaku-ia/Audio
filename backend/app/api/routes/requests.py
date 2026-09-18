@@ -6,15 +6,44 @@ structure_request and validate_request now go through the AI Platform
 object {topic, scope, geography, depth} and a safety verdict, filling in
 what used to be a length-only placeholder heuristic.
 
-Still deliberately missing:
-- refine() and adopt(): depend on Player and Home, which don't exist yet.
+refine() and adopt() are now built (Player and Home engineering-notes level
+only — neither app screen exists, both endpoints are curled manually):
 
-raw_text is sacred — the system never overwrites it; every edit creates a
-new RequestVersion and the previous one is marked superseded
-(System Contracts §3).
+- refine(): POST /requests/{id}/refine. Stores a *pending* RequestVersion
+  (source=refine_less|refine_deeper) via a new ai_platform.refine_request
+  call — never applied immediately, per the Player PRD's "Applied from
+  tomorrow." copy. Scope gap: nothing yet promotes pending_version_id to
+  current_version_id at the next generation — app/services/episode_generator.py's
+  run_generation() doesn't read or apply it (see that function; only
+  active_for_generation() surfaces pending_versions_to_apply, unconsumed).
+  Wiring that promotion is a Generator-side change, deliberately left out
+  here since it touches episode_generator.py's snapshot/versioning logic,
+  not Request Management's.
+- adopt(): NOT a new endpoint. Home's own contract ("adopt suggestion ->
+  Request Management create (created_from = suggestion)") already maps
+  onto the existing POST /requests with created_from="suggestion" — that
+  enum value already existed. Home's suggestion *generation* (the AI
+  Platform semantic index) doesn't exist yet, so there is no suggestion id
+  to accept or suppress; building suppression-list plumbing now would be
+  bookkeeping for objects nothing produces. See crear_request() below —
+  it already accepts created_from=suggestion with zero changes.
+
+Player rating (thumbs up/down at episode end, System Contracts: profile
+signal) is built as POST /episodes/{episode_id}/rating, in this file's
+second router (episodes_router) since it doesn't belong under /requests
+but there's no episodes.py yet. Per the Player PRD's own §9 open question
+("thumbs or 1-5? per episode or per block?"), this implements the
+requirements table's simpler, explicitly-named case: thumbs up/down, per
+episode — per-block/1-5-scale is deferred, unresolved by the PRD itself.
+
+raw_text is sacred — the system never overwrites it; every edit (and every
+refine()) creates a new RequestVersion and the previous one is marked
+superseded (System Contracts §3). refine() never touches raw_text at all —
+see ai_platform.refine_request's docstring for why.
 """
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -24,6 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_cliente
 from app.db.session import get_db
 from app.models.cliente import Cliente
+from app.models.episode import Block, Episode
 from app.models.profile import Profile
 from app.models.request import (
     CreatedFrom, Request, RequestKind, RequestStatus, RequestVersion,
@@ -33,6 +63,7 @@ from app.services import ai_platform
 from app.services.events import emitir
 
 router = APIRouter(prefix="/requests", tags=["Request Management"])
+episodes_router = APIRouter(prefix="/episodes", tags=["Player"])
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -265,6 +296,74 @@ async def editar_request(
     return _request_out(req)
 
 
+class RefineRequestBody(BaseModel):
+    intent: Literal["less", "deeper"]
+    block_id: uuid.UUID
+    episode_id: uuid.UUID
+
+
+class RefineResponse(BaseModel):
+    pending_version_id: str
+    message: str = "Applied from tomorrow."
+
+
+@router.post("/{request_id}/refine", response_model=RefineResponse)
+async def refinar_request(
+    request_id: uuid.UUID,
+    body: RefineRequestBody,
+    cliente: Cliente = Depends(get_current_cliente),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Player PRD §5: "tapping 'less of this'/'go deeper' under the current
+    block sends the intent and block to Request Management; a confirmation
+    reads 'Applied from tomorrow.'" The player only sends intent + context
+    (block_id, episode_id) — this looks up everything else itself.
+
+    Stores a pending version rather than applying immediately; see this
+    module's top-of-file scope note for the gap in promoting it to
+    current_version_id at the next generation.
+    """
+    req = await _obtener_request_del_cliente(db, request_id, cliente)
+
+    block_result = await db.execute(
+        select(Block).where(
+            Block.id == body.block_id,
+            Block.episode_id == body.episode_id,
+            Block.request_id == req.id,
+        )
+    )
+    block = block_result.scalar_one_or_none()
+    if not block:
+        raise HTTPException(404, "Block not found for this request/episode")
+
+    refined = await ai_platform.refine_request(
+        db, req.raw_text, req.structured, body.intent, block.summary, block.script,
+        cliente.id, req.id,
+    )
+    structured = {"topic": refined.topic, "scope": refined.scope, "geography": refined.geography, "depth": refined.depth}
+
+    if req.pending_version_id:
+        anterior_pendiente = await db.get(RequestVersion, req.pending_version_id)
+        if anterior_pendiente and anterior_pendiente.status == VersionStatus.pending:
+            anterior_pendiente.status = VersionStatus.superseded
+
+    source = VersionSource.refine_less if body.intent == "less" else VersionSource.refine_deeper
+    nueva_version = RequestVersion(
+        request_id=req.id,
+        raw_text=req.raw_text,  # raw_text is sacred — refine() never rewrites it, only `structured`
+        structured=structured,
+        source=source,
+        status=VersionStatus.pending,
+    )
+    db.add(nueva_version)
+    await db.flush()
+
+    req.pending_version_id = nueva_version.id
+    await db.commit()
+    return RefineResponse(pending_version_id=str(nueva_version.id))
+
+
 @router.patch("/{request_id}/pause", response_model=RequestOut)
 async def pausar_request(
     request_id: uuid.UUID,
@@ -339,6 +438,51 @@ async def mark_answered(
         actualizados.append(str(req.id))
     await db.commit()
     return {"actualizados": actualizados}
+
+
+class RateEpisodeBody(BaseModel):
+    rating: Literal["up", "down"]
+
+
+@episodes_router.post("/{episode_id}/rating")
+async def calificar_episodio(
+    episode_id: uuid.UUID,
+    body: RateEpisodeBody,
+    cliente: Cliente = Depends(get_current_cliente),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Player PRD requirements table: "thumbs up/down at episode end or from
+    the full player menu. Stored per episode and sent to Request Management
+    as a profile signal." Per-block/1-5-scale was the PRD's own open
+    question (§9) and is deferred, not decided by this endpoint.
+
+    Lives here (not under /requests) because it's an episode-level action,
+    but in this file since there's no episodes.py yet and the payload is a
+    Profile signal, which is this module's territory.
+    """
+    episode_result = await db.execute(
+        select(Episode).where(Episode.id == episode_id, Episode.customer_id == cliente.id)
+    )
+    episode = episode_result.scalar_one_or_none()
+    if not episode:
+        raise HTTPException(404, "Episode not found")
+
+    perfil_result = await db.execute(select(Profile).where(Profile.customer_id == cliente.id))
+    perfil = perfil_result.scalar_one_or_none()
+    if not perfil:
+        perfil = Profile(customer_id=cliente.id)
+        db.add(perfil)
+        await db.flush()
+
+    signals = dict(perfil.signals or {})
+    ratings = dict(signals.get("ratings", {}))
+    ratings[str(episode_id)] = {"rating": body.rating, "rated_at": datetime.utcnow().isoformat()}
+    signals["ratings"] = ratings
+    perfil.signals = signals  # reassign the whole dict — JSON columns don't track in-place mutation
+
+    await db.commit()
+    return {"episode_id": str(episode_id), "rating": body.rating}
 
 
 def _request_out(req: Request) -> RequestOut:

@@ -1,12 +1,15 @@
 """
 Episode Generator PRD (Juan, Draft v1) — HTTP surface for the pipeline in
 app/services/episode_generator.py. See that module's docstring for what's
-built vs. deferred (most notably: no TTS yet, no real scheduler).
+built vs. deferred.
 
-POST /generation/run stands in for both PRD paths for now: it's what the
-on-demand path actually is (trigger now, run the shared pipeline), and it's
-also the manual stand-in for the scheduled path until a real cron exists —
-per the PRD, the two paths differ only in trigger, not in pipeline.
+POST /generation/run is the on-demand path: trigger now, run the shared
+pipeline for the calling customer. The scheduled path (T-60 per customer's
+own timezone, per the PRD) now runs separately via
+app/services/scheduler.py, started from app.main's lifespan — it calls the
+same run_generation() this route calls, just with path=EpisodePath.scheduled
+and no HTTP request involved, per the PRD's "they share the pipeline and
+differ only in trigger and latency budget."
 """
 import uuid
 from datetime import date, datetime
