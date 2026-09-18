@@ -13,9 +13,10 @@ This README is written as a handoff — read it top to bottom before making chan
 ## TL;DR for anyone new to this repo
 
 - **Backend**: fully built for every feature that doesn't need a new external credential. Live in production on Railway, real ElevenLabs TTS, real web-grounded research (Claude's `web_search` tool). See the status table below.
-- **Mobile**: a real native iOS app (SwiftUI, not a wrapper) now exists — Login, Home, Player, Settings screens, all hitting the live backend. A real AVFoundation audio engine is merged (PR #18) and **proven to actually stream and play real audio** in the Simulator (verified via real `AVPlayer`/Core Audio log output, not a compile check) — but as of this writing it's only wired into a standalone debug view, not the real Player screen yet. That integration, plus wiring the real per-block Home data (API already merged via #14) and real transcript timestamps, is in progress — see "Mobile app (iOS)" below for the exact real-vs-mocked breakdown.
-- **Design**: three screens (Home, Player, Search/Interests) are designed, approved, and share one consistent token system grounded in real Apple HIG/Spotify/Audible research rather than guesswork. Login has been through two rounds of direct founder feedback and is on a third pass focused on layout/composition ("weird organize"), grounded in real research on Spotify/Apple/Duolingo login patterns rather than another guess. Look-and-feel links are in "Design system" below.
-- **What's blocking further progress that only the founder can unblock**: Google Cloud Console (OAuth client ID for Google Sign-In) and Apple Developer Program enrollment ($99/yr — needed for push notifications, real-device testing, and eventually App Store submission). Also still undecided: embeddings provider (Voyage AI vs. OpenAI) for the AI Platform's semantic index.
+- **Mobile**: a real native iOS app (SwiftUI, not a wrapper) now exists, and overnight the app's actual navigation architecture got fixed for real — the tab bar had drifted from the approved Home/Search/Interests/Settings design into leftover scaffold (Home/Library/Player/Settings), which was a real, user-visible bug (Home's mini-player and the separate Player tab disagreed about play/pause state because they read from two disconnected sources). That's fixed, live-verified in the Simulator (real per-block Home data, real Search, real Interests, "generate episode now" preserved), and one re-entrancy bug the fix's own adversarial review caught (double-tap on "generate now" could fire two concurrent generation calls) is also fixed. Full detail, and the one real known-gap this surfaced (expired login tokens don't route back to the Login screen), in "Mobile app (iOS)" below.
+- **In flight, not yet pushed**: a free-text "type anything into Interests and have it AI-categorized" feature — the plumbing is built on both backend and iOS and looked correct in a live Simulator test, but the actual AI categorization output was never seen because of a bad API key in an isolated worktree. This is the single most actionable unfinished thing — see "Free-text AI-categorized interests" below.
+- **Design**: three screens (Home, Player, Search/Interests) are designed, approved, and share one consistent token system grounded in real Apple HIG/Spotify/Audible research rather than guesswork. Login has been through three rounds of direct founder feedback and the founder has said it's not the current priority — don't invest further there without checking first. Look-and-feel links are in "Design system" below.
+- **What's blocking further progress that only the founder can unblock**: a working `ANTHROPIC_API_KEY` for the free-text-interests worktree (see below — this is the fastest unblock available), Google Cloud Console (OAuth client ID for Google Sign-In), and Apple Developer Program enrollment ($99/yr — needed for push notifications, real-device testing, and eventually App Store submission). Voyage AI is now the decided embeddings provider (see "Suggested next steps") but the account/key still needs to be created — founder said tomorrow.
 
 ## Current status (as of 2026-09-18)
 
@@ -415,61 +416,181 @@ production backend (real signup, real login, Home rendering real API data).
 **Screens built and merged to `main`** (PR #13, consolidating what were separately
 PR #9/#10/#11): Home, Player, Settings. **Audio engine merged** (PR #18, superseding
 an earlier #17 that hit a real pbxproj merge conflict against #13 — rebuilt cleanly
-on top of current `main` rather than force-merged). **Screens built, PR open, not
-yet merged**: Login/Sign Up (PR #12, on its third pass — see "Design system" below).
+on top of current `main` rather than force-merged). **Audio engine + real transcript
+timestamps wired into the real Player screen, merged** (PR #22, consolidating #20 and
+#21 — this also carried forward #15's backend work since #21 had branched off #15;
+see "PR #15's real fate" below). **Tab architecture fixed + Home/Search/Interests
+wired for real — built, live-verified, currently an open PR awaiting merge** (PR #27;
+see "The overnight architecture fix" below). **Screens built, PR open, explicitly
+deprioritized by the founder for now**: Login/Sign Up (PR #12, on its third pass —
+see "Design system" below).
+
+### The overnight architecture fix (PR #27)
+
+A real, founder-caught bug: the app's tab bar had drifted from the approved design
+(Home / Search / Interests / Settings, with the Player as a persistent overlay that
+is never its own tab) into leftover scaffold structure (Home / Library / Player /
+Settings) that nobody had gone back and corrected. This wasn't cosmetic — it caused
+a real, user-visible bug where Home's mini-player showed a static "Playing" label
+while the separate Player tab correctly showed "Paused," because the two screens
+were reading from two disconnected pieces of state.
+
+Four branches were opened to fix pieces of this (#23 tab architecture, #24 Interests
+screen, #25 real Home blocks, #26 Search screen) and all four overlapped on the same
+files (`ContentView.swift`, `HomeView.swift`, `project.pbxproj`). Rather than merge
+them sequentially and fight conflicts each time, they were hand-consolidated into one
+integration branch, **PR #27**, which:
+- Rebuilds `ContentView.swift` to the real Home/Search/Interests/Settings tab bar.
+- Makes `PlayerViewModel` a single `@StateObject` at the app root, injected via
+  `.environmentObject()` — one source of truth for play/pause state instead of two.
+  Deleted `Features/Home/MiniPlayerBar.swift` entirely (the old, second source).
+- Wires real per-block Home data (from #14's API) into `HomeView` — live-verified: 3
+  real generated topics rendered as 3 real rows, live highlight tracking through
+  blocks 1→2→3 as playback advanced, tap-to-open working.
+- Adds a real Search screen (episode history + keyword search via `/search`, "add as
+  new interest" via `POST /requests`) and a real Interests screen (onboarding-catalogue
+  add/remove; cadence/pause correctly left as disabled stubs since no backend field
+  exists for them yet).
+- Restores "generate episode now" — which lived on the old, now-removed Library tab —
+  into Home's empty-day state instead of silently dropping it, reusing the same
+  unchanged `POST /api/generation/run` call.
+
+**Live-verified end-to-end tonight**: fresh login, added a real standing request,
+tapped "Generate today's episode now," confirmed via a direct API call that the
+backend genuinely ran generation (that particular topic honestly came back
+`no_news` for the night — matches the PRD's "never fill" tenet, not a bug). Search
+and Interests both loaded cleanly with real data, no crashes.
+
+A separate, adversarial code review (not the live walkthrough above) then found and
+fixed one real bug before this was called done: `LibraryViewModel.runGeneration()`
+had no re-entrancy guard, so a fast double-tap on "generate now" could fire two
+concurrent `POST /api/generation/run` calls. The backend's own idempotency prevented
+actual data corruption, but the "losing" request returning early could flip the UI to
+a misleading "finished" state while generation was still actually running. Fixed with
+a synchronous guard-and-set check before the first `await`, verified with a clean
+rebuild, pushed directly to #27.
+
+That same review found, confirmed, and **deliberately did not fix** (correctly
+scoped as a separate, pre-existing issue) a real gap worth prioritizing soon: a
+stale/expired auth token doesn't route the user back to the Login screen — every
+screen just shows a generic "not signed in" error forever. `SessionStore.clear()` is
+only ever wired to the manual Settings "Log out" button, never to an actual 401
+response anywhere else in the app. A real customer will eventually hit token expiry
+and get stuck on this.
+
+Two more things flagged but not fixed, both low-urgency: pausing playback mid-block
+makes Home's "currently playing" row highlight disappear entirely (cosmetic, not a
+data bug); and `Features/Home/PlayerListView.swift` (the old Player-tab-specific
+screen) is now dead code since the Player tab no longer exists — safe to delete
+later.
+
+**Where this actually stands right now**: as of this writing, **PR #27 is open, not
+yet merged** — `gh pr list` is the source of truth, don't assume it landed just
+because this README describes it in the past tense above. Its own PR description
+still lists "log in with a real account and confirm..." as an unchecked test-plan
+item, alongside the live verification recorded above. **#23, #24, #25, and #26 are
+also all still open** — #27's own description says to close them without merging
+once #27 lands, but that hasn't happened yet either. Next session: merge #27, then
+close #23–#26 without merging them.
+
+### PR #15's real fate
+
+#15 (real word-level transcript timestamps via ElevenLabs' `with-timestamps`
+endpoint, `Block.word_timestamps`) was never merged on its own — **#21** (wiring
+those timestamps into the Player) branched off #15 before it merged, and #21 was
+itself folded into **#22** alongside the audio-engine wiring. So #22's merge to
+`main` carried #15's backend changes along with it, and #15 was correctly closed
+without a separate merge — it's superseded, not lost. **The one thing this does NOT
+mean**: the actual ElevenLabs `with-timestamps` API call is still unverified against
+a real, live ElevenLabs response. That verification gap is real and outstanding —
+see "Suggested next steps" below.
 
 **What's real vs. still mocked in the mobile app — read this before assuming
 something works:**
 - Real: signup/login/logout against the live backend; Home fetching and rendering
-  real episode data; Settings reading/writing real profile fields (delivery time,
-  timezone, narration style, voice, language) plus real account export/delete.
-- Real: the audio engine itself (`Services/Audio/AudioPlayerService.swift`,
-  merged) — genuinely streams and plays a real ElevenLabs-voiced MP3 from the live
-  backend, background playback, lock-screen controls, all verified via real
-  `AVPlayer`/Core Audio log output in the Simulator, not just a compile check.
-- **Not real yet — the actual gap now**: the engine above is only reachable from
-  a standalone debug view (`Features/AudioDemo/AudioEngineDemoView.swift`), not
-  from the real Player screen. `PlayerViewModel`'s transport is still driven by a
-  local fake timer as of `main`. Wiring this is in progress (see open PRs below).
-- Transcript word-highlighting in the Player is a mocked proportional approximation,
-  not real word-level sync. Real ElevenLabs word timestamps exist server-side in an
-  open, unmerged PR (#15, still needs a live ElevenLabs call to verify); client-side
-  wiring for it is also in progress, built against #15's documented shape.
+  real episode data (including real per-block rows, see above); Settings reading/
+  writing real profile fields (delivery time, timezone, narration style, voice,
+  language) plus real account export/delete; Search and Interests against the live
+  backend (pending #27's merge).
+- Real: the audio engine (`Services/Audio/AudioPlayerService.swift`) wired into the
+  actual Player screen as of #22 — genuinely streams and plays a real
+  ElevenLabs-voiced MP3, background playback, lock-screen controls.
+- Real transcript timestamps are wired client-side as of #22, riding on #15's
+  backend `Block.word_timestamps` field — but see "PR #15's real fate" above: the
+  underlying ElevenLabs call itself is still not verified live.
 - Refine/follow-up/rate-this-answer buttons in the Player are inert UI — the
   backend endpoints exist (`/refine`, rating), the mobile screens don't call them
   yet.
-- Home's block list currently renders one aggregate "whole episode" row on `main`.
-  The backend fix is merged (`GET /api/home` now returns real per-block data, #14)
-  but wiring it into `HomeView`/`HomeViewModel` is in progress (see open PRs below).
+- **Known gaps as of tonight** (see "The overnight architecture fix" above for
+  detail): expired-session tokens don't route back to Login (real bug, worth an
+  early priority); pausing mid-block drops Home's highlight (cosmetic); dead
+  `PlayerListView.swift` (safe to delete, not urgent).
 
-**Open PRs, in build order** (read each PR's own description for exact
-scope/verification before merging):
-- **#12** — Login/Sign Up, now on a third pass specifically targeting layout/
-  composition after founder feedback that it still "feels weird organized" —
-  grounded in real research on Spotify/Apple/Duolingo login patterns, not another
-  guess. Google Sign-In button's action is still a stub (no real OAuth wired,
-  see blockers below).
-- **#15** — Real word-level transcript timestamps via ElevenLabs' `with-timestamps`
-  endpoint, stored on `Block.word_timestamps`. Still not verified against a live
-  ElevenLabs call as of this writing — verify before merging.
-- A PR wiring the real audio engine (#18) into the actual Player screen — check
-  `gh pr list` for its current number, may still be in progress as of this writing.
-- A PR wiring the real per-block Home API (#14) into `HomeView` — same, check
-  `gh pr list` for current number/status.
-- A PR wiring #15's real transcript timestamps into the Player's transcript view
-  (built against #15's documented shape; its own real-timestamp path can't be
-  fully verified until #15 itself is verified and merged) — same, check `gh pr
-  list`.
+**PR list, current reality** (verified against `gh pr list --repo lucaku-ia/Audio
+--state all` — re-check it yourself before relying on this, PR state moves fast):
+- **#27** — OPEN. The real, consolidated architecture fix described above. Ready to
+  merge pending a final "log in with a real account" pass per its own checklist.
+- **#23, #24, #25, #26** — OPEN, each superseded by #27's consolidation. Close all
+  four without merging once #27 lands (do not merge them individually — they'd
+  reintroduce the file conflicts #27 already resolved by hand).
+- **#22** — MERGED. Real audio engine + real transcript timestamps wired into the
+  actual Player screen (consolidates #20 and #21).
+- **#21, #20** — CLOSED, superseded by #22.
+- **#18** — MERGED. Real AVFoundation audio engine (superseded #17, which hit a real
+  pbxproj conflict against #13).
+- **#15** — CLOSED, superseded by #22 (see "PR #15's real fate" above) — not lost,
+  but its live-ElevenLabs-call verification is still outstanding.
+- **#14** — MERGED. Real per-block Home API.
+- **#13** — MERGED. Home + Player + Settings screens (consolidating #9/#10/#11).
+- **#12** — OPEN, not urgent. Login/Sign Up, third round of founder feedback
+  addressed (see "Design system" below); founder said explicitly this isn't the
+  current priority.
 
 **Verification method used so far**: real `xcodebuild` builds (this machine has
 Xcode with an accepted license and an installed iOS 27 Simulator runtime), real
-installs/launches in the Simulator, and real signup/login/Home-fetch/audio-playback
-round-trips against the live production API — not just "it compiles." Do the same
-for new mobile work rather than trusting a compile check alone. Also worth knowing:
-PR #17→#18 is a real example of why — two branches independently hand-editing the
-same `project.pbxproj` (this Xcode project predates synchronized-folder groups)
-produced a genuine merge conflict days apart; don't assume a clean individual PR
-merges cleanly against a moving `main` without checking.
+installs/launches in the Simulator, and real signup/login/Home-fetch/audio-playback/
+generation round-trips against the live production API — not just "it compiles." Do
+the same for new mobile work rather than trusting a compile check alone. Also worth
+knowing: PR #17→#18 is a real example of why — two branches independently
+hand-editing the same `project.pbxproj` (this Xcode project predates synchronized-
+folder groups) produced a genuine merge conflict days apart; don't assume a clean
+individual PR merges cleanly against a moving `main` without checking. #27's own
+four-way consolidation is the same lesson at a larger scale.
+
+## Free-text AI-categorized interests (in progress, not yet pushed)
+
+The founder wants customers to be able to type free text into Interests (e.g.
+"Arsenal FC") and have it auto-categorized (e.g. "Sports") instead of only picking
+from the fixed 8-category onboarding catalogue. Before writing code, this was
+checked against the actual `Lucaku_Onboarding_PRD.docx`, and the architecture is
+confirmed correct: standing `Request`s (already built, already carrying a
+`structured` JSON column populated by `ai_platform.structure_request`) already ARE
+the real interest model — **no new "Interest" table was created.** That matters:
+this session already hit one duplicate-source-of-truth bug tonight (the tab-bar/
+player-state issue above), and building a second, parallel interest model would have
+been the same bug class again.
+
+**Built tonight**: backend — exposing `RequestOut.structured` and a
+`GET /requests?kind=standing` filter; iOS — a "Search for anything" section in
+Interests, wired to `POST /requests`. Both looked functionally correct in a live
+Simulator test (the UI correctly showed an error rather than crashing), **but the
+actual AI categorization was never actually observed** — the isolated worktree used
+for this work has an empty/invalid `ANTHROPIC_API_KEY` in its `.env`, so every real
+classification call 500'd. The plumbing is proven; whether the model actually
+returns something sane for "Arsenal FC" vs. "La Liga" has not been seen.
+
+**This work is sitting, uncommitted and unpushed**, in a local worktree at
+`/private/tmp/audio_work_free_text_interests`, on a branch called
+`feature/free-text-interests`, with modified-but-uncommitted changes to
+`backend/app/api/routes/requests.py`, `ios/LucakuAudio/LucakuAudio/Config.swift`,
+`Features/Interests/InterestsView.swift`, `Features/Interests/InterestsViewModel.swift`,
+`LucakuAudioApp.swift`, `Networking/APIClient.swift`, and
+`Networking/Models/HomeModels.swift`.
+
+**This is the single most actionable unfinished thing for tomorrow**: drop a working
+`ANTHROPIC_API_KEY` into that worktree's `backend/.env`, re-run the two test searches
+("Arsenal FC", "La Liga") and actually read the categorization output this time, then
+commit and push the branch and open a PR.
 
 ## Design system
 
@@ -516,17 +637,29 @@ further polish here without checking first.
 
 ## Suggested next steps
 
-1. **Merge the in-progress integration PRs** wiring the (already-merged) real audio
-   engine into the Player screen, the (already-merged) real Home per-block API into
-   `HomeView`, and #15's transcript timestamps into the Player's transcript view —
-   check `gh pr list` for their current numbers/status as of when you're reading
-   this. This is the single biggest gap between "compiles and looks right" and "is
-   actually a working podcast app." See "Mobile app (iOS)" above.
+1. **Finish the free-text-interests worktree** — this is the fastest unblock
+   available. Drop a working `ANTHROPIC_API_KEY` into
+   `/private/tmp/audio_work_free_text_interests/backend/.env`, re-run the two test
+   searches ("Arsenal FC", "La Liga") and actually look at what comes back this
+   time, then commit/push `feature/free-text-interests` and open a PR. See
+   "Free-text AI-categorized interests" above for full context — the plumbing is
+   already built and looked correct, only the actual AI output was never seen.
 2. **Verify the ElevenLabs `with-timestamps` integration against a real live call**
-   before trusting it in production — it's merged (originally #15, folded into #22),
-   every other check has passed, but nobody has yet confirmed the actual timestamped
-   API response round-trips correctly end to end.
-3. **The AI Platform's shared semantic index** — the prompt registry is now built (see
+   before trusting it in production. This is still outstanding — it did NOT get
+   resolved by #15 being closed; #15's backend changes merged via #22, but nobody
+   has yet confirmed the actual timestamped API response round-trips correctly
+   end to end. See "PR #15's real fate" above.
+3. **Fix the session-expiry gap**: a stale/expired auth token doesn't route the user
+   back to Login — every screen just shows a generic "not signed in" error forever,
+   because `SessionStore.clear()` is only wired to the manual "Log out" button, never
+   to an actual 401 response. Found and correctly scoped out of #27 tonight as its
+   own ticket; a real customer will eventually hit this. See "The overnight
+   architecture fix" above.
+4. **Merge PR #27**, then close #23, #24, #25, and #26 without merging them (they're
+   all superseded by #27's consolidation — merging them individually would
+   reintroduce conflicts #27 already resolved by hand). Re-run #27's own "log in
+   with a real account" checklist item before merging. See "Mobile app (iOS)" above.
+5. **The AI Platform's shared semantic index** — the prompt registry is now built (see
    "AI Platform scope" above); the semantic index is the one remaining AI Platform
    piece, and it's the real blocker for novelty judgment, Search & AI's Q&A, and
    Home's suggestions.
@@ -536,22 +669,29 @@ further polish here without checking first.
    that comfortably fits a full block transcript without chunking). **Not yet set
    up as of this writing** — the founder needs to create a Voyage AI account and
    API key (same pattern as the existing Anthropic/ElevenLabs keys) before this can
-   be built. Once that key exists, this becomes buildable: wire it into the AI
-   Platform, build the embedding/indexing step for episodes+blocks, and the shared
-   semantic index itself.
-4. **Shared inventory** — curated seed requests per interest cluster, to fill
+   be built; founder said tomorrow. Once that key exists, this becomes buildable:
+   wire it into the AI Platform, build the embedding/indexing step for
+   episodes+blocks, and the shared semantic index itself.
+6. **Shared inventory** — curated seed requests per interest cluster, to fill
    Onboarding's day-zero sample and Home's empty-day state.
-5. **Google/Apple OAuth for real** — the login screen's Google Sign-In button is
+7. **Google/Apple OAuth for real** — the login screen's Google Sign-In button is
    currently a visual stub. Needs the founder to create an OAuth client ID in
    Google Cloud Console, and separately enroll in the Apple Developer Program
    ($99/yr — also required for push notifications and real-device testing, not
    just Sign in with Apple). Neither can be done by an agent; both need the
    founder's own accounts.
-6. **Push notifications** — blocked on the Apple Developer Program enrollment above
+8. **Push notifications** — blocked on the Apple Developer Program enrollment above
    (APNs) plus, for Android later, Firebase Cloud Messaging.
-7. **Wire refine/follow-up/rating actions** in the Player screen to the backend
+9. **Wire refine/follow-up/rating actions** in the Player screen to the backend
    endpoints that already exist.
+10. **Two low-urgency cleanups from tonight's review**: Home's "currently playing"
+    highlight disappears when playback is paused mid-block (cosmetic only), and
+    `Features/Home/PlayerListView.swift` is now dead code since the Player tab no
+    longer exists (safe to delete).
 
 Done as of 2026-09-18: ElevenLabs TTS verified working end-to-end in production; audio
 storage moved to a durable Railway volume; Episode Generator scheduled path and
-idempotency built (see "Episode Generator scope" above).
+idempotency built (see "Episode Generator scope" above); real audio engine + real
+transcript timestamps wired into the Player screen (#22); tab-bar architecture fixed
+and real Home/Search/Interests wired end-to-end, live-verified, with a re-entrancy
+bug caught and fixed (#27, pending merge).
