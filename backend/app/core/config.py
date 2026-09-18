@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     # Where the Episode Generator writes synthesized audio and where FastAPI serves
     # it from (app.main mounts this at /media). In production this is set to
     # /data/media, a Railway persistent volume attached to the Audio service —
-    # survives redeploys and restarts (fixed 2026-09-18; previously plain
-    # container disk, wiped on every deploy). Locally it falls back to /tmp, which
+    # survives redeploys and restarts (previously plain container disk, wiped
+    # on every deploy). Locally it falls back to /tmp, which
     # is fine for dev since nobody expects local audio to persist across restarts.
     # Still single-instance, local-disk storage, not object storage — revisit with
     # S3/R2/etc. if this service ever needs to scale beyond one replica, since a

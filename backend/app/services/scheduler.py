@@ -153,7 +153,11 @@ async def _tick() -> None:
                 await run_generation(db, cliente, path=EpisodePath.scheduled, fecha=delivery_date)
             except Exception:
                 # One customer's bad data or a transient failure shouldn't stop the
-                # rest of this tick, or the next one, from running.
+                # rest of this tick, or the next one, from running. Roll back first —
+                # an error from the pre-checks above (outside run_generation's own
+                # try/except) can leave this shared session's transaction aborted,
+                # which would otherwise fail every subsequent customer in this tick too.
+                await db.rollback()
                 logger.exception("scheduler: failed to trigger scheduled generation for customer %s", cliente.id)
 
 

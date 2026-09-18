@@ -126,7 +126,11 @@ headline → voice → publish.
   caught and recovered rather than surfaced as a 500) and at the DB level (a
   `UniqueConstraint` on `generation_jobs`, backfilled onto the existing production table
   via `app/db/migraciones.py`'s `INDICES_ESPERADOS` list — see "The recurring migration
-  gotcha" below, the same pattern applies to indexes as to columns).
+  gotcha" below, the same pattern applies to indexes as to columns). Since this table had
+  zero duplicate protection before this shipped, the backfill migration also dedups any
+  pre-existing (customer_id, fecha, path) collisions before adding the index, and the
+  index attempt is isolated in its own savepoint so a problem there logs an error and
+  boots without the index rather than crashing the app.
 
 Voicing (TTS) is wired via ElevenLabs (`ai_platform.synthesize`) — **requires
 `ELEVENLABS_API_KEY`** (Railway Variables / `.env`, see `.env.example`; the key needs
