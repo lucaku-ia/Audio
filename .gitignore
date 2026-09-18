@@ -5,3 +5,10 @@ venv/
 .venv/
 node_modules/
 .DS_Store
+
+# Xcode / iOS
+ios/LucakuAudio/xcuserdata/
+ios/LucakuAudio/*.xcodeproj/xcuserdata/
+ios/LucakuAudio/*.xcodeproj/project.xcworkspace/xcuserdata/
+ios/LucakuAudio/DerivedData/
+ios/LucakuAudio/build/
