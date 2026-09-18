@@ -23,13 +23,15 @@ struct MainTabView: View {
     // Small, self-contained addition: a `.player` tab plus one shared
     // `PlayerViewModel` so the mini player / Now Playing overlay can be
     // mounted ONCE here, above the TabView, and survive tab navigation per
-    // DESIGN_SPEC_V3.md's "single global overlay" rule. Nothing above this
-    // block (HomeView, HomeViewModel) was touched. If HomeView later grows
-    // its own mini-player, this is the seam to unify at.
+    // DESIGN_SPEC_V3.md's "single global overlay" rule. Also injected into
+    // Home's environment (see below) so Home's real per-block list can read
+    // real playback state for its currently-playing highlight, and can open
+    // Player at a tapped block — see HomeView.swift's file-level doc.
     private enum Tab: Hashable {
         case home, library, player, settings
     }
 
+    @EnvironmentObject private var session: SessionStore
     @State private var selection: Tab = .home
     @StateObject private var playerViewModel = PlayerViewModel()
     // -----------------------------------------------------------------------
@@ -37,7 +39,8 @@ struct MainTabView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             TabView(selection: $selection) {
-                HomeView()
+                HomeView(onOpenBlock: { block in openInPlayer(block) })
+                    .environmentObject(playerViewModel)
                     .tabItem { Label("Home", systemImage: selection == .home ? "house.fill" : "house") }
                     .tag(Tab.home)
 
@@ -82,6 +85,25 @@ struct MainTabView: View {
                     .zIndex(1)
             }
             // -----------------------------------------------------------------
+        }
+    }
+
+    /// Home tapped a real block row — load the shared `PlayerViewModel`'s
+    /// episode if it isn't already, select the matching block (matched by
+    /// start/end offset; see HomeView.swift's doc on why not `id`), and
+    /// switch to the Player tab. Mirrors the mini player's own "tap opens
+    /// Player at this block" behavior, just entering from Home instead.
+    private func openInPlayer(_ block: BlockSummaryOut) {
+        Task {
+            if !playerViewModel.hasEpisode, let token = session.accessToken {
+                await playerViewModel.load(token: token)
+            }
+            if let index = playerViewModel.blocks.firstIndex(where: {
+                $0.startS == block.startS && $0.endS == block.endS
+            }) {
+                playerViewModel.selectBlock(index)
+            }
+            selection = .player
         }
     }
 }

@@ -8,27 +8,38 @@ import SwiftUI
 /// font size, spacing value, or radius.
 ///
 /// DATA HONESTY NOTE (see HomeModels.swift / backend/app/api/routes/home.py):
-/// the approved mockup's block list shows 5 independently-tappable topic
-/// rows for today's episode. The real `GET /api/home` response does not
-/// expose a per-block breakdown — `BannerOut` (ready state) only has
-/// `headline` / `duration_s` / `style` / `requests_count` for the whole
-/// episode; there is no `blocks: [...]` array anywhere in `HomeOut`. Rather
-/// than fabricate topic text/durations that don't exist, the block list
-/// below renders exactly one row — the real episode as a whole, in the
-/// "currently playing" visual state the mockup uses for its first row
-/// (waveform, tint, sub-progress, go-deeper/follow-up disclosure). The
-/// `requests_count` field (real) is surfaced in the hero-meta line as
-/// "N topics" instead. If/when the backend adds a real per-block list to
-/// `HomeOut`, `BlockRowView` already supports N rows — only the mapping in
-/// `todayBlocks` below needs to grow from one row to `home.blocks.map { ... }`.
+/// `GET /api/home`'s `banner.blocks` (ready state only) now carries a real
+/// per-block breakdown — `BlockSummaryOut`'s `id`/`request_id`/`sequence`/
+/// `start_s`/`end_s`/`duration_s`/`summary`/`had_more`, one entry per block
+/// in playback order. The block list below renders one real row per entry
+/// (topic text + duration), replacing the earlier single synthesized "whole
+/// episode" row this screen used before that field existed.
+///
+/// CURRENT-BLOCK HIGHLIGHT: there is still no server-side playback-position
+/// concept (home.py's own docstring is explicit about this). The signal used
+/// here is the shared `PlayerViewModel` mounted once in `MainTabView` and
+/// injected into this screen's environment — when it has an episode loaded
+/// and playing, its `currentBlock` (matched by `start_s`/`end_s`, since the
+/// Player's `BlockOut` model doesn't decode the real block `id` yet) tells
+/// Home which row, if any, is actually playing. If that object were ever
+/// missing from the environment, no row is highlighted — this screen never
+/// invents a "currently playing" block.
 struct HomeView: View {
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var playerViewModel: PlayerViewModel
     @StateObject private var viewModel = HomeViewModel()
 
-    @State private var isCurrentBlockExpanded = false
-    // Playback has no real engine wired up in this screen's scope (see
-    // MiniPlayerBar's TODO) — this purely drives the demo waveform/segment
-    // animation and mirrors the mockup's own JS play/pause toggle.
+    /// Tapping a block row hands the tapped block up to whoever mounts this
+    /// screen (MainTabView), which owns the shared `PlayerViewModel` and tab
+    /// selection — same "open Player at this block" responsibility the mini
+    /// player's row-tap already has, just entering from Home instead.
+    var onOpenBlock: (BlockSummaryOut) -> Void = { _ in }
+
+    // Playback has no real engine wired up for the HERO controls in this
+    // screen's scope (see MiniPlayerBar's TODO) — this purely drives the
+    // demo waveform/segment animation and mirrors the mockup's own JS
+    // play/pause toggle. The block LIST below no longer uses this; it reads
+    // real state from `playerViewModel` instead (see the type doc above).
     @State private var isPlaying = true
 
     var body: some View {
@@ -179,24 +190,56 @@ struct HomeView: View {
             }
             .padding(.bottom, LucakuSpacing.sp5)
 
-            // See the file-level "DATA HONESTY NOTE": one real row standing
-            // in for the mockup's five-topic block list, since HomeOut has
-            // no per-block breakdown to render.
-            HomeBlockRowView(
-                number: nil,
-                title: banner.headline ?? "Today's episode",
-                metaText: currentBlockMeta(banner: banner),
-                isCurrent: true,
-                subprogress: isPlaying ? 0.38 : nil,
-                isExpanded: isCurrentBlockExpanded,
-                isLast: true,
-                onTap: { withAnimation(LucakuMotion.house) { isCurrentBlockExpanded.toggle() } },
-                onGoDeeper: {},
-                onAskFollowUp: {}
-            )
+            blockListSection(banner.blocks)
         }
         .padding(.top, LucakuSpacing.sp2)
         .padding(.bottom, LucakuSpacing.sp8)
+    }
+
+    // MARK: - Block list (real per-block rows — see file-level doc)
+
+    @ViewBuilder
+    private func blockListSection(_ blocks: [BlockSummaryOut]) -> some View {
+        if blocks.isEmpty {
+            // Defensive only — the backend always sends `blocks` for a
+            // "ready" banner. Nothing fabricated if it ever doesn't.
+            EmptyView()
+        } else {
+            VStack(spacing: 0) {
+                ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
+                    let current = isCurrentBlock(block)
+                    HomeBlockRowView(
+                        number: current ? nil : block.sequence + 1,
+                        title: block.summary,
+                        metaText: metaText(for: block, isCurrent: current),
+                        isCurrent: current,
+                        subprogress: current ? playerViewModel.currentBlockProgressFraction : nil,
+                        isExpanded: false,
+                        isLast: index == blocks.count - 1,
+                        onTap: { onOpenBlock(block) }
+                    )
+                }
+            }
+        }
+    }
+
+    /// Matches by `start_s`/`end_s` rather than `id` — the shared
+    /// `PlayerViewModel`'s `BlockOut` model (Networking/Models/
+    /// GenerationModels.swift, owned by the Player feature) doesn't decode
+    /// the real backend block `id` yet, only synthesizing a local one from
+    /// its start/end offsets. Both endpoints serialize the same `Block` rows
+    /// via the backend's shared `_block_common_fields` helper, so start/end
+    /// offsets are a reliable, real join key between the two screens today.
+    private func isCurrentBlock(_ block: BlockSummaryOut) -> Bool {
+        guard playerViewModel.hasEpisode, playerViewModel.isPlaying,
+              let currentBlock = playerViewModel.currentBlock else { return false }
+        return currentBlock.startS == block.startS && currentBlock.endS == block.endS
+    }
+
+    private func metaText(for block: BlockSummaryOut, isCurrent: Bool) -> String {
+        guard isCurrent else { return HomeFormat.clock(block.durationS) }
+        let elapsed = Int(playerViewModel.elapsedInBlockS)
+        return "Now playing  ·  \(HomeFormat.clock(elapsed)) of \(HomeFormat.clock(block.durationS))"
     }
 
     private func heroMeta(banner: BannerOut, minutesLabel: String?) -> String {
@@ -215,12 +258,6 @@ struct HomeView: View {
             return "\(headline), \(minutesLabel) total"
         }
         return minutesLabel.map { "\($0) total" } ?? "Starts now"
-    }
-
-    private func currentBlockMeta(banner: BannerOut) -> String {
-        guard let durationS = banner.durationS else { return "Now playing" }
-        let elapsed = isPlaying ? Int(Double(durationS) * 0.38) : 0
-        return "Now playing  ·  \(HomeFormat.clock(elapsed)) of \(HomeFormat.clock(durationS))"
     }
 
     // MARK: - Recent shelf
@@ -298,4 +335,5 @@ struct HomeView: View {
 #Preview {
     HomeView()
         .environmentObject(SessionStore())
+        .environmentObject(PlayerViewModel())
 }
