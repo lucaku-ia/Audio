@@ -53,6 +53,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.instrumentation import AICall
+from app.services.events import emitir
 from app.services.prompt_registry import get_active_prompt
 
 _client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
@@ -73,8 +74,8 @@ def _cost(usage) -> float:
     return (usage.input_tokens / 1_000_000) * prices["input"] + (usage.output_tokens / 1_000_000) * prices["output"]
 
 
-def _log_call(db: AsyncSession, *, prompt: str, version: str, purpose: str, usage, latency_ms: int,
-              context: dict, rejected_reason: str | None = None) -> None:
+async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, version: str, purpose: str,
+                     usage, latency_ms: int, context: dict, rejected_reason: str | None = None) -> None:
     db.add(AICall(
         call_id=uuid.uuid4(),
         prompt=prompt,
@@ -90,6 +91,17 @@ def _log_call(db: AsyncSession, *, prompt: str, version: str, purpose: str, usag
         rejected_reason=rejected_reason,
         creado_en=datetime.utcnow(),
     ))
+    # The AICall row above is the detailed cost/latency record (System Contracts'
+    # own object); the Instrumentation catalogue (§5) additionally lists "ai_call"
+    # as its own Event, distinct from AICall, so it's emitted here too — the
+    # catalogue's "if it's not in the catalogue it doesn't exist" tenet is read
+    # literally: an AICall row alone doesn't make an `ai_call` Event exist.
+    # `ai_rejected` fires in addition to (not instead of) `ai_call`, since a
+    # rejected request still consumed a call — losing that from the ai_call
+    # count would undercount volume/cost.
+    await emitir(db, "ai_call", customer_id=customer_id, source="ai_platform", purpose=purpose)
+    if rejected_reason:
+        await emitir(db, "ai_rejected", customer_id=customer_id, source="ai_platform", purpose=purpose)
 
 
 class StructuredRequest(BaseModel):
@@ -152,9 +164,9 @@ async def structure_request(
     latency_ms = int((time.monotonic() - start) * 1000)
     result = response.parsed_output
 
-    _log_call(
-        db, prompt="structure_request", version=version, purpose="structure_request",
-        usage=response.usage, latency_ms=latency_ms,
+    await _log_call(
+        db, customer_id=customer_id, prompt="structure_request", version=version,
+        purpose="structure_request", usage=response.usage, latency_ms=latency_ms,
         context={"customer_id": str(customer_id), "request_id": str(request_id) if request_id else None},
         rejected_reason=result.rejected_reason,
     )
@@ -243,8 +255,8 @@ async def research_and_write_block(
     )
     latency_ms = int((time.monotonic() - start) * 1000)
 
-    _log_call(
-        db, prompt="research_and_write_block", version=version,
+    await _log_call(
+        db, customer_id=customer_id, prompt="research_and_write_block", version=version,
         purpose="research_and_write_block", usage=response.usage, latency_ms=latency_ms,
         context={"customer_id": str(customer_id), "request_id": str(request_id)},
     )
@@ -332,8 +344,8 @@ async def refine_request(
     latency_ms = int((time.monotonic() - start) * 1000)
     result = response.parsed_output
 
-    _log_call(
-        db, prompt="refine_request", version=REFINE_REQUEST_VERSION, purpose="refine_request",
+    await _log_call(
+        db, customer_id=customer_id, prompt="refine_request", version=REFINE_REQUEST_VERSION, purpose="refine_request",
         usage=response.usage, latency_ms=latency_ms,
         context={"customer_id": str(customer_id), "request_id": str(request_id), "intent": intent},
     )
@@ -437,6 +449,10 @@ async def synthesize(
             rejected_reason=reason,
             creado_en=datetime.utcnow(),
         ))
+        # Not ai_rejected: this is a technical/provider failure, not a safety
+        # rejection — ai_rejected is reserved for structure_request's safety verdict.
+        await emitir(db, "ai_call", customer_id=customer_id, source="ai_platform",
+                     purpose="synthesize", failed=True, status_code=response.status_code)
         raise RuntimeError(f"ElevenLabs synthesize failed: {reason}")
 
     db.add(AICall(
@@ -448,4 +464,5 @@ async def synthesize(
                  "episode_id": str(episode_id) if episode_id else None},
         creado_en=datetime.utcnow(),
     ))
+    await emitir(db, "ai_call", customer_id=customer_id, source="ai_platform", purpose="synthesize", failed=False)
     return response.content

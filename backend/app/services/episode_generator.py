@@ -89,6 +89,7 @@ it later would silently overwrite the fresh edit with stale content. Fixed
 at the source in app/api/routes/requests.py: editar_request now supersedes
 any pending version instead of leaving it to be wrongly promoted here.
 """
+import time
 import uuid
 from datetime import date, datetime
 
@@ -215,8 +216,14 @@ async def run_generation(
             return existing_job
         raise  # constraint violation for a reason other than the expected race
     await db.refresh(job)  # below can mark *this* row failed instead of losing it to rollback
+    await emitir(db, "job_created", customer_id=cliente.id, source="episode_generator",
+                 job_id=str(job.id), path=job.path.value)
+    await db.commit()
 
     try:
+        research_start = time.monotonic()
+        await emitir(db, "stage_started", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), stage="research")
         snapshot = await active_for_generation(at=None, cliente=cliente, db=db)
         # snapshot's request lists are RequestOut pydantic models — not JSON-serializable
         # as-is for the `snapshot` JSON column, so dump them before storing.
@@ -260,15 +267,24 @@ async def run_generation(
             )
             blocks.append({"request": req, "result": block_result})
 
+        research_latency_ms = int((time.monotonic() - research_start) * 1000)
+        job.stages = [*job.stages, {"stage": "research", "latency_ms": research_latency_ms}]
+        await emitir(db, "stage_completed", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), stage="research", latency_ms=research_latency_ms)
+
         job.status = JobStatus.writing
         answerable = [b for b in blocks if not b["result"].no_news]
 
         if not answerable:
             job.status = JobStatus.empty
-            await emitir(db, "empty_day", customer_id=cliente.id, source="episode_generator")
+            await emitir(db, "empty_day", customer_id=cliente.id, source="episode_generator", job_id=str(job.id))
             await db.commit()
             await db.refresh(job)
             return job
+
+        assemble_start = time.monotonic()
+        await emitir(db, "stage_started", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), stage="assemble")
 
         trim_factor = 1.0
         if max_length_minutes is not None:
@@ -331,9 +347,25 @@ async def run_generation(
             if req.kind.value == "one_off":
                 req.status = RequestStatus.fulfilled
                 req.fulfilled_episode_id = episode.id
+            # The real on-demand path marks requests answered here directly rather than
+            # through POST /requests/mark_answered (that endpoint is still the contract
+            # path for when a caller other than this pipeline needs it) — so this is the
+            # only place that can emit request_answered for what actually happens today.
+            await emitir(db, "request_answered", customer_id=cliente.id, source="episode_generator",
+                         request_id=str(req.id), episode_id=str(episode.id), had_more=trim_factor < 1.0)
+
+        assemble_latency_ms = int((time.monotonic() - assemble_start) * 1000)
+        job.stages = [*job.stages, {"stage": "assemble", "latency_ms": assemble_latency_ms}]
+        await emitir(db, "stage_completed", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), stage="assemble", latency_ms=assemble_latency_ms)
+
+        voicing_start = time.monotonic()
+        await emitir(db, "stage_started", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), stage="voicing")
 
         job.status = JobStatus.voicing  # text/sources done; audio pending unless synthesis below succeeds
-        if ai_platform.elevenlabs_configured():
+        voicing_skipped = not ai_platform.elevenlabs_configured()
+        if not voicing_skipped:
             try:
                 audio_bytes = b"".join([
                     await ai_platform.synthesize(
@@ -349,10 +381,15 @@ async def run_generation(
             except Exception as exc:
                 # Don't fail the whole job over a TTS problem — the text episode is
                 # still good and published; audio_url just stays null this time.
-                job.stages = [{"stage": "voicing", "error": str(exc)}]
+                job.stages = [*job.stages, {"stage": "voicing", "error": str(exc)}]
+
+        voicing_latency_ms = int((time.monotonic() - voicing_start) * 1000)
+        job.stages = [*job.stages, {"stage": "voicing", "latency_ms": voicing_latency_ms, "skipped": voicing_skipped}]
+        await emitir(db, "stage_completed", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), stage="voicing", latency_ms=voicing_latency_ms, skipped=voicing_skipped)
 
         await emitir(db, "episode_published", customer_id=cliente.id, source="episode_generator",
-                     episode_id=str(episode.id), had_more_any=episode.had_more_any)
+                     job_id=str(job.id), episode_id=str(episode.id), had_more_any=episode.had_more_any)
         await db.commit()
         await db.refresh(job)
         return job
@@ -363,4 +400,12 @@ async def run_generation(
         job.stages = [{"error": str(exc)}]
         await db.commit()
         await db.refresh(job)
+        # No free-text error content in the Event payload (PII tenet) — the exception
+        # message stays only in job.stages, which is internal-only, not the catalogue.
+        # customer_id comes from job (just refreshed), not the `cliente` argument —
+        # rollback() expires every object tied to this session, and `cliente` wasn't
+        # reloaded, so reading cliente.id here would trigger a lazy load outside the
+        # async greenlet context and crash with MissingGreenlet.
+        await emitir(db, "job_failed", customer_id=job.customer_id, source="episode_generator", job_id=str(job.id))
+        await db.commit()
         return job

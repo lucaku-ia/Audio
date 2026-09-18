@@ -73,6 +73,7 @@ from app.api.deps import get_current_cliente
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.profile import Language, NarrationStyle, Profile
+from app.services.events import emitir
 
 router = APIRouter(prefix="/profile", tags=["Profile"])
 
@@ -145,6 +146,13 @@ async def update_profile(
     perfil.delivery_timezone = body.delivery_timezone
     perfil.max_length_minutes = body.max_length_minutes
 
+    # This is the only Profile write path today (Request Management catalogue's
+    # profile_recomputed) — signals-driven recomputation doesn't exist yet since
+    # the Player/Home epics that would write `signals` haven't been built.
+    await emitir(db, "profile_recomputed", customer_id=cliente.id, source="profile",
+                 narration_style=perfil.narration_style.value,
+                 has_delivery_time=perfil.delivery_time is not None,
+                 has_voice_id=perfil.voice_id is not None)
     await db.commit()
     await db.refresh(perfil)
     return _out(perfil)

@@ -60,6 +60,7 @@ from app.models.request import (
     VersionSource, VersionStatus,
 )
 from app.services import ai_platform
+from app.services.events import emitir
 
 router = APIRouter(prefix="/requests", tags=["Request Management"])
 episodes_router = APIRouter(prefix="/episodes", tags=["Player"])
@@ -166,6 +167,8 @@ async def crear_request(
     await db.flush()
 
     req.current_version_id = version.id
+    await emitir(db, "request_created", customer_id=cliente.id, source="requests",
+                 request_id=str(req.id), kind=req.kind.value, created_from=req.created_from.value)
     await db.commit()
     await db.refresh(req)
     return _request_out(req)
@@ -295,6 +298,7 @@ async def editar_request(
     req.raw_text = body.raw_text
     req.structured = structured
     req.current_version_id = nueva_version.id
+    await emitir(db, "request_edited", customer_id=cliente.id, source="requests", request_id=str(req.id))
     await db.commit()
     await db.refresh(req)
     return _request_out(req)
@@ -376,6 +380,7 @@ async def pausar_request(
 ):
     req = await _obtener_request_del_cliente(db, request_id, cliente)
     req.status = RequestStatus.paused
+    await emitir(db, "request_paused", customer_id=cliente.id, source="requests", request_id=str(req.id))
     await db.commit()
     await db.refresh(req)
     return _request_out(req)
@@ -389,6 +394,7 @@ async def reanudar_request(
 ):
     req = await _obtener_request_del_cliente(db, request_id, cliente)
     req.status = RequestStatus.active
+    await emitir(db, "request_resumed", customer_id=cliente.id, source="requests", request_id=str(req.id))
     await db.commit()
     await db.refresh(req)
     return _request_out(req)
@@ -403,6 +409,7 @@ async def archivar_request(
     """Reversible — confirming before archiving is the client's (UI's) responsibility."""
     req = await _obtener_request_del_cliente(db, request_id, cliente)
     req.status = RequestStatus.archived
+    await emitir(db, "request_archived", customer_id=cliente.id, source="requests", request_id=str(req.id))
     await db.commit()
     await db.refresh(req)
     return _request_out(req)
@@ -430,6 +437,12 @@ async def mark_answered(
         if req.kind == RequestKind.one_off:
             req.status = RequestStatus.fulfilled
             req.fulfilled_episode_id = body.episode_id
+        # request_answered, not episode_published, is the per-request signal here —
+        # one episode can answer several requests, and this is the only place that
+        # knows which ones and whether each got trimmed (had_more).
+        await emitir(db, "request_answered", customer_id=cliente.id, source="requests",
+                     request_id=str(req.id), episode_id=str(body.episode_id),
+                     had_more=body.had_more.get(str(rid), False))
         actualizados.append(str(req.id))
     await db.commit()
     return {"actualizados": actualizados}

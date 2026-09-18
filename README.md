@@ -24,7 +24,7 @@ Backend only, no UI yet. Live in production on Railway:
 | AI Platform — `structure_request` + `research_and_write_block` (structuring, safety screen, research+writing) | ✅ Built & deployed | `app/services/ai_platform.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
 | AI Platform — prompt registry (DB-backed prompt versioning, fail-safe fallback, `GET /api/internal/prompts`) | ✅ Built & deployed | `app/models/prompt_registry.py`, `app/services/prompt_registry.py`, `app/api/routes/internal.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
 | Episode Generator — shared pipeline (load → research+write → assemble → trim → headline → voice → publish), on-demand and scheduled paths, idempotent per (customer, date, path) | ✅ Built & deployed, **with working TTS** | `app/services/episode_generator.py`, `app/api/routes/generation.py`, `app/services/scheduler.py` | Episode Generator PRD (Juan, Draft v1) |
-| Event, AICall | Data model, actively written by the AI Platform and Generator | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
+| Event, AICall | Data model, actively written by the AI Platform and Generator; event names audited against the Instrumentation PRD's own catalogue | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
 | Request refine() + Player rating | ✅ Built & deployed | `app/api/routes/requests.py` (`/refine`, `episodes_router`) | Request Management / Player PRD |
 | Home — banner state machine + recent episodes | ✅ Built & deployed. Suggestions/shared inventory deferred — need the AI Platform's semantic index and curated inventory, neither exists | `app/api/routes/home.py` | Home PRD (Andrés, Draft v1) |
 | Instrumentation dashboard — cost/event/funnel endpoints, shared-secret gated | ✅ Built & deployed | `app/api/routes/instrumentation.py` | Instrumentation & Cost PRD (Andrés, Draft v1) |
@@ -51,35 +51,27 @@ against a real local Postgres): backfilling a `UNIQUE` constraint onto a table w
 pre-existing rows can crash startup if not handled carefully — it dedups first and
 isolates the attempt in its own savepoint.
 
-**Request refine() + Home + Instrumentation dashboard** (merged via PR #2), and
-**pending-version promotion + Search & AI + Notifications/Settings** (this branch,
-PR #3) are both reflected directly in the status table above.
+**Request refine() + Home + Instrumentation dashboard** (merged via PR #2),
+**pending-version promotion + Search & AI + Notifications/Settings** (merged via
+PR #3), the **AI Platform prompt registry** (merged via PR #4), and the
+**Instrumentation event catalogue audit** (this branch, PR #5 — fixed event-naming
+gaps against the Instrumentation PRD's own catalogue) are all reflected directly in
+the status table above. As of this branch merging, every PR from this session's
+batch of parallel work is in `main`.
 
-### Remaining open PRs — built, tested, not yet merged
-
-- **[PR #5](../../pull/5) — Instrumentation event catalogue completeness.** Audits
-  every epic's event emissions against the Instrumentation PRD's own catalogue,
-  fixing naming gaps. Builder-tested against real Postgres, not yet independently
-  reviewed.
-
-PRs #1, #2 and #3 (now merged) were reviewed by a separate adversarial pass focused
-on security and cross-customer data isolation before merging — findings from those
-reviews were fixed in the branches themselves, not left as follow-up items, except
-where explicitly noted as a documented, lower-priority gap. #5 (and this branch, the
-AI Platform prompt registry) have not had that extra pass yet (session time
-constraints) — worth one before merging.
-
-**Note for whoever merges #5 next**: this README's own history shows each PR merge
-can reintroduce a conflict here and in `app/main.py` (router registration) or
-`app/db/migraciones.py` (if two branches both add index entries) — re-sync the
-branch against `main` right before merging it, don't assume the mergeable-status
-check from an hour ago still holds.
+PRs #1 through #4 were reviewed by a separate adversarial pass focused on security
+and cross-customer data isolation before merging — findings from those reviews were
+fixed in the branches themselves, not left as follow-up items, except where
+explicitly noted as a documented, lower-priority gap. This branch's own contents
+(the event catalogue audit) have not had that extra pass — worth one if anything
+here is relied on for real cost/funnel decisions before it gets one.
 
 **Still genuinely not started, PRD-read but no code**: the AI Platform's shared
 semantic index (a design decision, not a quick patch — needs an embeddings-provider
 choice), the actual mobile client, Google/Apple OAuth for Login, push notification
 delivery (needs an APNs/FCM credential), and the mobile-platform decision itself
 (§12 of the Umbrella PRD, still open).
+
 ## Read this before touching anything
 
 1. **Find and read the PRD first.** Every module here was built from a PRD doc in the
