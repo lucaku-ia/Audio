@@ -2,7 +2,7 @@
 import enum
 import uuid
 from datetime import datetime, date as date_type
-from sqlalchemy import DateTime, Date, JSON, ForeignKey, Enum as SAEnum, String
+from sqlalchemy import DateTime, Date, JSON, ForeignKey, Enum as SAEnum, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
@@ -22,6 +22,12 @@ class JobStatus(str, enum.Enum):
 
 class GenerationJob(Base):
     __tablename__ = "generation_jobs"
+    # One job per (customer, date, path) — see app.services.episode_generator.run_generation,
+    # which checks for an existing row before inserting. On an existing DB (create_all won't
+    # add this to a table that already exists) this is also backfilled in app/db/migraciones.py.
+    __table_args__ = (
+        UniqueConstraint("customer_id", "fecha", "path", name="uq_generation_jobs_customer_fecha_path"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     customer_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("clientes.id"), index=True)

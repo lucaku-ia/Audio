@@ -11,15 +11,27 @@ Add a row here whenever a column is added to an existing model. Nothing
 needed if the column is born on a brand-new table (create_all already
 creates it).
 
-The same gotcha applies to indexes: create_all() never adds an index to a
-table Postgres already has — it only diffs for missing tables. INDICES_ESPERADOS
-below covers that case the same way COLUMNAS_ESPERADAS does: check pg_indexes
-first, only issue the CREATE if it's missing, so this is safe to rerun on
-every boot. Each CREATE runs in its own SAVEPOINT (conn.begin_nested()) and
-is wrapped in its own try/except — one index failing to apply (e.g. a
-transient lock) logs an error and lets the app boot without it, rather than
-crashing startup and boot-looping the whole service. Search & AI's keyword
-search (app/api/routes/search.py) relies on the GIN indexes below.
+The same gotcha applies to constraints and indexes: create_all() never adds
+a UniqueConstraint (or any other index) to a table Postgres already has —
+it only diffs for missing tables. INDICES_ESPERADOS below covers that case
+the same way COLUMNAS_ESPERADAS does: check pg_indexes first, only issue
+the CREATE if it's missing, so this is safe to rerun on every boot. Each
+CREATE runs in its own SAVEPOINT (conn.begin_nested()) and is wrapped in
+its own try/except — one index failing to apply (e.g. a transient lock, or
+a UNIQUE index whose table still has violating rows DEDUP_ANTES_DE_INDICE
+didn't anticipate) logs an error and lets the app boot without it, rather
+than crashing startup and boot-looping the whole service.
+
+A UNIQUE index backfilled onto a table that already has rows can fail if
+any of those rows violate the new uniqueness — e.g. generation_jobs had no
+duplicate protection at all before its index was added, so any
+(customer_id, fecha, path) collision created before that shipped would
+make a plain CREATE UNIQUE INDEX raise. DEDUP_ANTES_DE_INDICE runs a
+dedup pass (delete all but the earliest row per key) before such an index
+is attempted.
+
+Search & AI's keyword search (app/api/routes/search.py) relies on the
+plain (non-unique) GIN indexes below, which don't need deduping.
 """
 import logging
 from sqlalchemy import text
@@ -35,10 +47,16 @@ COLUMNAS_ESPERADAS: list[tuple[str, str, str]] = [
 ]
 
 # (table, index name, "CREATE [UNIQUE] INDEX ... ON ..." statement, without "IF NOT EXISTS")
-# GIN indexes over the exact `to_tsvector('simple', ...)` expression the search
-# queries use in app/api/routes/search.py — the expression must match verbatim
-# for Postgres to use the index instead of a sequential scan.
 INDICES_ESPERADOS: list[tuple[str, str, str]] = [
+    (
+        "generation_jobs",
+        "uq_generation_jobs_customer_fecha_path",
+        "CREATE UNIQUE INDEX uq_generation_jobs_customer_fecha_path "
+        "ON generation_jobs (customer_id, fecha, path)",
+    ),
+    # GIN indexes over the exact `to_tsvector('simple', ...)` expression the
+    # search queries use in app/api/routes/search.py — the expression must
+    # match verbatim for Postgres to use the index instead of a seq scan.
     (
         "episodes",
         "ix_episodes_headline_fts",
@@ -58,6 +76,20 @@ INDICES_ESPERADOS: list[tuple[str, str, str]] = [
         "USING GIN (to_tsvector('simple', raw_text))",
     ),
 ]
+
+# Dedup statements to run before their matching index, keyed by index name —
+# only needed for indexes backfilled onto a table that could already hold
+# violating rows (i.e. UNIQUE indexes). Deletes every row except the
+# earliest (by creado_en) per the index's key columns.
+DEDUP_ANTES_DE_INDICE: dict[str, str] = {
+    "uq_generation_jobs_customer_fecha_path": """
+        DELETE FROM generation_jobs a USING generation_jobs b
+        WHERE a.customer_id = b.customer_id
+          AND a.fecha = b.fecha
+          AND a.path = b.path
+          AND (a.creado_en, a.id) > (b.creado_en, b.id)
+    """,
+}
 
 
 async def _tabla_existe(conn, tabla: str) -> bool:
@@ -96,12 +128,20 @@ async def ejecutar_migraciones(engine: AsyncEngine):
                 continue  # new table — create_all() already created it with this index
             if await _indice_existe(conn, tabla, indice):
                 continue
+            dedup_sql = DEDUP_ANTES_DE_INDICE.get(indice)
             try:
                 # A SAVEPOINT (begin_nested), not the outer transaction directly — if
                 # this specific index fails, only its own work rolls back; the outer
                 # `async with engine.begin()` transaction (and anything COLUMNAS_ESPERADAS
                 # already did in it) stays intact and still commits normally on exit.
                 async with conn.begin_nested():
+                    if dedup_sql:
+                        result = await conn.execute(text(dedup_sql))
+                        if result.rowcount:
+                            logger.warning(
+                                "Deleted %d duplicate row(s) from %s before adding unique index %s",
+                                result.rowcount, tabla, indice,
+                            )
                     logger.info("Adding index %s on %s", indice, tabla)
                     await conn.execute(text(sql_create))
             except Exception:

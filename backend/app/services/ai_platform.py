@@ -247,6 +247,77 @@ def _parse_block_result(text: str) -> BlockResult:
     return BlockResult(summary="", script="", sources=[], no_news=True)
 
 
+class RefinedStructured(BaseModel):
+    topic: str
+    scope: str
+    geography: str | None
+    depth: str
+
+
+REFINE_REQUEST_VERSION = "v1"
+
+REFINE_REQUEST_SYSTEM = """You adjust a customer's standing research request based on quick in-player feedback ("less of this" or "go deeper"), without asking them anything new.
+
+You are given the customer's original request (their raw words, unchanged and never to be rewritten by you) together with its current structured form, and the block that most recently answered it — the actual spoken segment they reacted to — so you know exactly what "this" means to them right now.
+
+Return a revised structured object with the same fields as the input — topic, scope, geography, depth:
+- intent "less": narrow the scope and/or drop depth one level (deep -> standard -> brief; already brief stays brief) — shrink it to be closer to what the block already covered, not away from the topic entirely.
+- intent "deeper": broaden the scope where it makes sense and/or raise depth one level (brief -> standard -> deep; already deep stays deep).
+
+Keep topic and geography stable unless the block itself shows the request has clearly drifted — do not invent a different subject from a single block."""
+
+
+async def refine_request(
+    db: AsyncSession,
+    raw_text: str,
+    structured: dict,
+    intent: str,
+    block_summary: str,
+    block_script: str,
+    customer_id: uuid.UUID,
+    request_id: uuid.UUID,
+) -> RefinedStructured:
+    """
+    refine_request — backs Request Management's POST /requests/{id}/refine
+    (Player PRD §5: "refine_request(request_id, intent, block_id, episode_id)
+    to Request Management. RM rewrites via the AI Platform and stores a
+    pending version. The player only sends intent and context.").
+
+    raw_text is passed through only as context for the model, never
+    returned or stored as a new version's raw_text — "less of this"/"go
+    deeper" is feedback on depth and scope, not a new request in the
+    customer's own words, so raw_text stays sacred and unchanged here
+    (System Contracts §3). Only `structured` (and therefore how future
+    episodes research/write this request) changes.
+    """
+    start = time.monotonic()
+    user_content = (
+        f"Original request (customer's own words, do not rewrite): {raw_text}\n"
+        f"Current structured form: {json.dumps(structured)}\n"
+        f"Intent: {intent}\n"
+        f"Most recent block summary: {block_summary}\n"
+        f"Most recent block script: {block_script}"
+    )
+    response = _client.messages.parse(
+        model=MODEL,
+        max_tokens=1024,
+        thinking={"type": "adaptive"},
+        output_config={"effort": "low"},
+        system=REFINE_REQUEST_SYSTEM,
+        messages=[{"role": "user", "content": user_content}],
+        output_format=RefinedStructured,
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+    result = response.parsed_output
+
+    _log_call(
+        db, prompt="refine_request", version=REFINE_REQUEST_VERSION, purpose="refine_request",
+        usage=response.usage, latency_ms=latency_ms,
+        context={"customer_id": str(customer_id), "request_id": str(request_id), "intent": intent},
+    )
+    return result
+
+
 # ── synthesize() — TTS via ElevenLabs ────────────────────────────────────────
 #
 # The AI Platform PRD names ElevenLabs as the pilot's TTS provider (§9, and
