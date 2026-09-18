@@ -13,9 +13,12 @@ Episode Generator epics exist:
 - "Suggest for me": the PRD explicitly allows a curated seed list (config,
   not code) for the pilot, not AI — that part IS buildable now and lives in
   app/data/onboarding_seeds.json.
-- Day-zero sample matching to shared inventory: needs Episode/InventoryItem
-  rows that don't exist yet (Episode Generator hasn't produced any). Not
-  implemented.
+- Day-zero sample matching to shared inventory: Episode/InventoryItem rows
+  now exist (app/services/episode_generator.py's "Built: shared inventory"
+  section) and app/api/routes/home.py's _derive_shared_inventory already
+  queries them by interest tag. Not yet wired into Onboarding's own
+  confirm()/get_state() — that's a smaller follow-up left for later, not
+  attempted in this pass; it would reuse the same query.
 - First-episode generation itself (scheduled or on-demand): Episode
   Generator epic. Onboarding only computes and returns the T-60 scheduling
   message described in PRD §5 — it does not create a GenerationJob.

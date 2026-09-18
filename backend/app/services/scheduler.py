@@ -44,14 +44,20 @@ Deliberately simplified:
   never stop the ticker or block the other customers due in that same
   tick.
 
+Built: the late-job watchdog. Every tick, after triggering this minute's
+due customers, also calls episode_generator.check_late_jobs(db) — it scans
+every non-terminal GenerationJob (any path, any customer) whose eta plus
+the PRD's +30 min hard limit has passed and relabels it JobStatus.late
+(see that function's docstring for exactly what "relabel" means and why
+this never tries to cancel the in-flight run). Reusing this tick rather
+than adding a second ticker: the check applies uniformly to both paths
+now that both set a real `eta` (see episode_generator._compute_eta), it's
+a cheap query, and there's no new process/dependency to add — the same
+tradeoffs (closest-minute granularity, no distributed lock) already
+documented above for triggering apply here too, and are fine given the
+PRD's own 30 min slack.
+
 Deferred:
-- The PRD's "hard limit +30 min, stated plainly if missed": detecting a
-  job still running past its budget and surfacing that to the customer
-  needs a place to surface it — Home/Player/Notifications are all "not
-  started" per the README status table. This module only triggers jobs on
-  time; it doesn't watch them afterward. Worth a follow-up pass ("find
-  scheduled jobs still not ready/empty/failed N minutes after trigger and
-  flag them") once there's a UI surface for that flag to reach.
 - Explicit reschedule-on-delivery_time-change (PRD: "delivery_time changes
   reschedule via Notifications + Settings"): not needed as a separate step
   here, because this ticker reads Profile.delivery_time fresh every
@@ -76,7 +82,7 @@ from app.models.episode import EpisodePath
 from app.models.generation_job import GenerationJob
 from app.models.profile import Profile
 from app.models.request import Request, RequestStatus
-from app.services.episode_generator import run_generation
+from app.services.episode_generator import check_late_jobs, run_generation
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +165,15 @@ async def _tick() -> None:
                 # which would otherwise fail every subsequent customer in this tick too.
                 await db.rollback()
                 logger.exception("scheduler: failed to trigger scheduled generation for customer %s", cliente.id)
+
+        try:
+            await check_late_jobs(db)
+        except Exception:
+            # Same isolation principle as the per-customer loop above: a problem in the
+            # watchdog scan (e.g. a transient DB error) shouldn't stop this tick's
+            # triggering from having happened, or block the next tick from running.
+            await db.rollback()
+            logger.exception("scheduler: check_late_jobs failed")
 
 
 async def _run_forever() -> None:
