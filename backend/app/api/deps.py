@@ -1,10 +1,11 @@
 import uuid
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.security import decode_token
 from app.db.session import get_db
 from app.models.cliente import Cliente
@@ -38,3 +39,19 @@ async def get_current_cliente(
         # the token was issued before the last logout — Login PRD: "logout revokes it"
         raise credentials_exception
     return cliente
+
+
+async def require_internal_dashboard_key(x_internal_dashboard_key: str | None = Header(default=None)) -> None:
+    """
+    Gate for the founder/ops-only Instrumentation dashboard routes (see
+    app/api/routes/instrumentation.py's module docstring for the full
+    security posture). There is no admin role on Cliente yet, so this is a
+    plain shared-secret header check, same "read from env, fail closed if
+    missing" shape as app/services/ai_platform.elevenlabs_configured() —
+    if INTERNAL_DASHBOARD_KEY isn't set, the routes are unreachable rather
+    than silently open.
+    """
+    if not settings.INTERNAL_DASHBOARD_KEY:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Instrumentation dashboard is not configured")
+    if x_internal_dashboard_key != settings.INTERNAL_DASHBOARD_KEY:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing X-Internal-Dashboard-Key")
