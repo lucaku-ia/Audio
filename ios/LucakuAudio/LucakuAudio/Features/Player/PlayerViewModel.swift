@@ -75,6 +75,28 @@ final class PlayerViewModel: ObservableObject {
         return min(1, elapsedInBlockS / duration)
     }
 
+    /// ABSOLUTE playback position in seconds — i.e. into the whole episode's
+    /// `audio_url`, the same frame `AudioPlayerService.currentTime` uses —
+    /// for `TranscriptLine.realLines`' `currentTime` parameter.
+    ///
+    /// INTEGRATION GAP: this class has no real audio engine wired in yet
+    /// (see the class doc above); it derives this from the existing
+    /// UI-only `elapsedInBlockS`/`Timer` transport, which is block-relative,
+    /// by adding `currentBlock.startS`. That transport isn't a new fake
+    /// clock invented for transcript highlighting — it's the pre-existing
+    /// simulated transport this whole view model already runs on. Once
+    /// `AudioPlayerService` (Services/Audio/AudioPlayerService.swift, real
+    /// AVFoundation playback, already merged) is wired into this view model
+    /// in place of the timer, replace this computed property's body with
+    /// `audioPlayerService.currentTime` directly — no change needed on the
+    /// `TranscriptLine.realLines`/`TranscriptPanelView` side, since both
+    /// already consume an absolute `currentTime: Double` and don't know or
+    /// care where it comes from.
+    var absolutePlaybackTimeS: Double {
+        guard let block = currentBlock else { return 0 }
+        return Double(block.startS) + elapsedInBlockS
+    }
+
     var isCaughtUp: Bool {
         if case .loaded = loadState {
             return blocks.isEmpty

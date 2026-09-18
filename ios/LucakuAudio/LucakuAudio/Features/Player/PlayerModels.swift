@@ -51,21 +51,12 @@ extension Double {
     var asMinutesSeconds: String { Int(self.rounded()).asMinutesSeconds }
 }
 
-// MARK: - Transcript (mocked highlight state)
+// MARK: - Transcript (real timestamp highlight, with mocked fallback)
 
-/// A single displayable transcript line, derived client-side from
-/// `BlockOut.script` by splitting on sentence boundaries.
-///
-/// IMPORTANT GAP: the backend (backend/app/api/routes/generation.py's
-/// `BlockOut`) exposes only a flat `script: String` per block — there is no
-/// word-level or sentence-level timing/timestamp data anywhere in the API.
-/// True karaoke-style word highlighting synced to audio is therefore not
-/// possible against the real backend today. What follows is a clearly-marked
-/// PROPORTIONAL MOCK: sentences are marked played/active/upcoming based on
-/// what fraction of the block's declared duration has elapsed, purely for
-/// visual demonstration of the pattern described in DESIGN_SPEC_V3.md's
-/// "Transcript" section. This should be replaced once (if) the backend adds
-/// per-word or per-sentence timestamps.
+/// A single displayable transcript line, derived client-side either from
+/// real per-word timing (`realLines`, backed by `BlockOut.wordTimestamps`)
+/// or — when a block has no timing data yet — from a proportional mock over
+/// `BlockOut.script` (`mockLines`).
 struct TranscriptLine: Identifiable {
     enum State {
         case played, active, upcoming
@@ -74,11 +65,96 @@ struct TranscriptLine: Identifiable {
     let id: Int
     let text: String
     let state: State
-    /// Only set when `state == .active` — the mock "currently spoken word",
-    /// which is just the first word of the active sentence (see gap note
-    /// above; there is no real per-word timing to derive this from).
-    let mockCurrentWord: String?
+    /// Only set when `state == .active` — the currently-spoken word to bold
+    /// within `text`. Real when built via `realLines`; a same-shaped
+    /// approximation (the sentence's first word) when built via `mockLines`.
+    let activeWord: String?
+    /// Individual word tokens making up `text`, in order — only populated by
+    /// `realLines`. Lets the view bold the exact active word wherever it
+    /// falls in the sentence (`activeWordIndex`), rather than `mockLines`'
+    /// simpler "active word is always the first word" shape, for which a
+    /// prefix check on `text` is enough.
+    let words: [String]?
+    /// Index into `words` of the currently-spoken word, only set alongside
+    /// `words` when `state == .active`.
+    let activeWordIndex: Int?
+    /// Block-relative seconds at which this line starts, when known from
+    /// real word timestamps — lets tap-to-seek land exactly on the line
+    /// instead of the coarse `id / count` fraction `mockLines` requires.
+    let blockRelativeStartS: Double?
 
+    /// Real, timestamp-based lines from `BlockOut.wordTimestamps` (see that
+    /// property's doc and PR #15's integration note). `currentTime` is the
+    /// ABSOLUTE playback position in seconds — i.e. into the whole episode's
+    /// `audio_url`, matching `AudioPlayerService.currentTime` — since each
+    /// word's own `startS`/`endS` is block-relative, `blockStartS` recovers
+    /// the absolute window: `blockStartS + word.startS ..< blockStartS + word.endS`.
+    ///
+    /// Sentences are grouped the same way `mockLines` splits `script` (on
+    /// ".", "!", "?") so switching between the real and mock path doesn't
+    /// visibly reflow the transcript.
+    static func realLines(wordTimestamps: [WordTimestamp], blockStartS: Int, currentTime: Double) -> [TranscriptLine] {
+        guard !wordTimestamps.isEmpty else { return [] }
+
+        var sentenceRanges: [Range<Int>] = []
+        var start = 0
+        for (index, word) in wordTimestamps.enumerated() {
+            if let last = word.word.last, ".!?".contains(last) {
+                sentenceRanges.append(start..<(index + 1))
+                start = index + 1
+            }
+        }
+        if start < wordTimestamps.count {
+            sentenceRanges.append(start..<wordTimestamps.count)
+        }
+        guard !sentenceRanges.isEmpty else { return [] }
+
+        func absoluteWindow(_ word: WordTimestamp) -> (start: Double, end: Double) {
+            (Double(blockStartS) + word.startS, Double(blockStartS) + word.endS)
+        }
+
+        let activeWordIndex = wordTimestamps.firstIndex { word in
+            let window = absoluteWindow(word)
+            return currentTime >= window.start && currentTime < window.end
+        }
+
+        return sentenceRanges.enumerated().map { lineIndex, range in
+            let words = wordTimestamps[range]
+            let text = words.map(\.word).joined(separator: " ")
+            let sentenceStart = absoluteWindow(words[range.lowerBound]).start
+            let sentenceEnd = absoluteWindow(words[range.upperBound - 1]).end
+
+            let state: State
+            if currentTime < sentenceStart {
+                state = .upcoming
+            } else if currentTime >= sentenceEnd {
+                state = .played
+            } else {
+                state = .active
+            }
+
+            var activeWord: String?
+            var localActiveWordIndex: Int?
+            if state == .active, let activeWordIndex, range.contains(activeWordIndex) {
+                activeWord = wordTimestamps[activeWordIndex].word
+                localActiveWordIndex = activeWordIndex - range.lowerBound
+            }
+
+            return TranscriptLine(
+                id: lineIndex, text: text, state: state, activeWord: activeWord,
+                words: words.map(\.word), activeWordIndex: localActiveWordIndex,
+                blockRelativeStartS: words[range.lowerBound].startS
+            )
+        }
+    }
+
+    /// PROPORTIONAL MOCK, kept as the fallback for blocks whose
+    /// `wordTimestamps` is `null` (not synthesized with ElevenLabs
+    /// timestamps yet — see `BlockOut.wordTimestamps`'s doc). Sentences are
+    /// marked played/active/upcoming based on what fraction of the block's
+    /// declared duration has elapsed; there is no real per-word timing to
+    /// derive `activeWord` from, so it's approximated as the active
+    /// sentence's first word.
     static func mockLines(script: String, progressFraction: Double) -> [TranscriptLine] {
         guard !script.isEmpty else { return [] }
 
@@ -98,7 +174,10 @@ struct TranscriptLine: Identifiable {
         return sentences.enumerated().map { index, sentence in
             let state: State = index < activeIndex ? .played : (index == activeIndex ? .active : .upcoming)
             let firstWord = state == .active ? sentence.split(separator: " ").first.map(String.init) : nil
-            return TranscriptLine(id: index, text: sentence, state: state, mockCurrentWord: firstWord)
+            return TranscriptLine(
+                id: index, text: sentence, state: state, activeWord: firstWord,
+                words: nil, activeWordIndex: nil, blockRelativeStartS: nil
+            )
         }
     }
 }
