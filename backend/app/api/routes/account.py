@@ -74,7 +74,7 @@ rely on the client to confirm before calling).
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,7 +83,7 @@ from app.api.deps import get_current_cliente
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.episode import Block, Episode
-from app.models.generation_job import GenerationJob, InventoryItem
+from app.models.generation_job import GenerationJob, InventoryItem, JobStatus
 from app.models.instrumentation import AICall, Event
 from app.models.onboarding import OnboardingState
 from app.models.profile import Profile
@@ -221,6 +221,26 @@ async def delete_account(
     db: AsyncSession = Depends(get_db),
 ):
     customer_id: uuid.UUID = cliente.id
+
+    # A review of this cascade found a real (if narrow) race: run_generation()
+    # commits a GenerationJob up front, then later inserts Blocks with a live FK
+    # to requests.id — if a deletion's DELETE FROM requests lands in between,
+    # that insert hits a ForeignKeyViolation instead of a clean outcome on
+    # either side. Full row-locking (SELECT ... FOR UPDATE) would close this
+    # completely, but a simple in-flight check is enough for a single-instance
+    # pilot deployment: refuse deletion while a job for this customer is still
+    # actively running, rather than let the two operations interleave.
+    in_flight_result = await db.execute(
+        select(GenerationJob.id).where(
+            GenerationJob.customer_id == customer_id,
+            GenerationJob.status.in_([JobStatus.queued, JobStatus.researching, JobStatus.writing, JobStatus.voicing]),
+        )
+    )
+    if in_flight_result.first() is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "An episode is currently being generated for this account. Try deleting again in a moment.",
+        )
 
     req_ids_result = await db.execute(select(Request.id).where(Request.customer_id == customer_id))
     request_ids = [r for (r,) in req_ids_result.all()]

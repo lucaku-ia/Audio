@@ -62,7 +62,7 @@ Deferred, and why (Notifications & Settings PRD):
   design, not by oversight.
 """
 from datetime import datetime, time as time_type, timedelta
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -213,6 +213,10 @@ async def update_settings(
 
     if "delivery_time" in campos or "delivery_timezone" in campos:
         if body.delivery_timezone:
+            try:
+                ZoneInfo(body.delivery_timezone)  # validate before persisting — an invalid
+            except ZoneInfoNotFoundError:          # IANA name would otherwise only fail later,
+                raise HTTPException(400, f"Unknown timezone: {body.delivery_timezone!r}")  # as a 500 in the Generator/scheduler
             perfil.delivery_timezone = body.delivery_timezone
         if body.delivery_time:
             h, m = body.delivery_time.split(":")

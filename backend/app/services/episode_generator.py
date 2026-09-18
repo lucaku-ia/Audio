@@ -107,15 +107,18 @@ async def _promote_pending_version(db: AsyncSession, req: Request) -> None:
         return
 
     pendiente = await db.get(RequestVersion, req.pending_version_id)
-    if not pendiente or pendiente.status != VersionStatus.pending:
-        # Already applied/superseded by something else (e.g. an intervening edit) —
-        # nothing to promote, just drop the stale pointer.
+    if not pendiente or pendiente.status != VersionStatus.pending or pendiente.request_id != req.id:
+        # Already applied/superseded by something else (e.g. an intervening edit),
+        # or (defensively — should never happen) pointing at another request's
+        # version, which we refuse to trust rather than overwrite req.structured
+        # with the wrong request's data. Either way: nothing to promote, drop
+        # the stale pointer.
         req.pending_version_id = None
         return
 
     if req.current_version_id:
         actual = await db.get(RequestVersion, req.current_version_id)
-        if actual:
+        if actual and actual.request_id == req.id:
             actual.status = VersionStatus.superseded
 
     pendiente.status = VersionStatus.applied
