@@ -94,6 +94,11 @@ struct HomeBlockRowView: View {
     /// duration like "5:30" for any other row.
     let metaText: String
     let isCurrent: Bool
+    /// Whether the shared player is actually playing this row right now —
+    /// drives the waveform animation. Comes from the app-root `PlayerViewModel`
+    /// (see ContentView.swift), never local/hardcoded state, so this row can't
+    /// claim "playing" while the real shared player disagrees.
+    var isPlaying: Bool = true
     /// 0...1, only meaningful (and only shown) when `isCurrent` is true.
     let subprogress: Double?
     let isExpanded: Bool
@@ -108,7 +113,12 @@ struct HomeBlockRowView: View {
                 HStack(spacing: LucakuSpacing.sp3) {
                     Group {
                         if isCurrent {
-                            AnimatedWaveform(size: .regular, isAnimating: true)
+                            // Shared with the Player tab's block list (see
+                            // Features/Player/WaveformGlyph.swift) — the
+                            // "currently playing" indicator is the same
+                            // component everywhere, driven by the same
+                            // shared PlayerViewModel, not a Home-local copy.
+                            WaveformGlyph(isAnimating: isPlaying)
                         } else if let number {
                             Text("\(number)")
                                 .font(LucakuTypography.footnote)
