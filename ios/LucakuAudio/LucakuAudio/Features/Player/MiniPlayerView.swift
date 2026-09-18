@@ -82,6 +82,19 @@ struct MiniPlayerView: View {
 
     private var controls: some View {
         HStack(spacing: 0) {
+            if viewModel.displayedErrorMessage != nil {
+                // Visible error affordance instead of a silently-hanging
+                // transport — tapping retries the real audio engine.
+                Button {
+                    viewModel.retryPlayback()
+                } label: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.orange)
+                        .frame(width: 44, height: 44)
+                }
+            }
+
             Button {
                 viewModel.skipToPreviousBlock()
             } label: {
@@ -95,10 +108,16 @@ struct MiniPlayerView: View {
             Button {
                 viewModel.togglePlay()
             } label: {
-                Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(LucakuColor.textPrimary)
-                    .frame(width: 44, height: 44)
+                if viewModel.isBuffering {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .frame(width: 44, height: 44)
+                } else {
+                    Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(LucakuColor.textPrimary)
+                        .frame(width: 44, height: 44)
+                }
             }
 
             Button {

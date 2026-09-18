@@ -650,12 +650,18 @@ async def run_generation(
                 # that actually happened (and got AICall rows written) even on failure.
                 audio_parts: list[bytes] = []
                 for block in block_rows:
-                    audio_bytes_part, call_cost = await ai_platform.synthesize(
+                    audio_bytes_part, call_cost, word_timestamps = await ai_platform.synthesize(
                         db, block.script, voice_id, customer_id=cliente.id,
                         request_id=block.request_id, episode_id=episode.id,
                     )
                     audio_parts.append(audio_bytes_part)
                     voicing_cost += call_cost
+                    # Timestamps are relative to this block's OWN synthesized audio
+                    # (0.0 = the first word of block.script), not to the assembled
+                    # episode timeline — the Player must add block.start_s itself
+                    # when mapping episode playhead position -> word to highlight,
+                    # the same way it already uses block.start_s/end_s today.
+                    block.word_timestamps = word_timestamps
                 audio_bytes = b"".join(audio_parts)
                 settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
                 (settings.MEDIA_DIR / f"{episode.id}.mp3").write_bytes(audio_bytes)
