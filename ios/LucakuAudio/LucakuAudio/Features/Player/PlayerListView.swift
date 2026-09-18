@@ -31,7 +31,16 @@ struct PlayerListView: View {
             }
             .background(LucakuColor.bg)
             .navigationBarHidden(true)
-            .task { await refresh() }
+            .task {
+                // Guarded by `hasEpisode` so re-appearing on this tab (e.g.
+                // after Home's "open Player at this block" navigation, which
+                // already loaded the episode and selected a specific block
+                // via the shared PlayerViewModel — see ContentView.swift's
+                // `openInPlayer`) doesn't blow away that selection with a
+                // redundant reload back to block 0. Pull-to-refresh below is
+                // unguarded, so an explicit refresh still always reloads.
+                if !viewModel.hasEpisode { await refresh() }
+            }
             .refreshable { await refresh() }
         }
     }

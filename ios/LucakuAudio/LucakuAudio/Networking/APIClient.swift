@@ -99,6 +99,25 @@ actor APIClient {
         try await send(path: "/profile", method: "PATCH", jsonBody: body, token: token)
     }
 
+    // MARK: - Onboarding / Interests (backend/app/api/routes/onboarding.py)
+
+    /// The curated interest catalogue, localized server-side. Used by the
+    /// Interests screen both to label a customer's `selected_interests` ids
+    /// and to populate "Explore more" (every option not already selected).
+    func interestOptions(token: String) async throws -> [InterestOption] {
+        try await send(path: "/onboarding/interest_options", method: "GET", token: token)
+    }
+
+    func onboardingState(token: String) async throws -> OnboardingStateOut {
+        try await send(path: "/onboarding/state", method: "GET", token: token)
+    }
+
+    /// Replaces the customer's ENTIRE standing-interests list — there is no
+    /// per-interest add/remove endpoint server-side (see OnboardingModels.swift).
+    func setInterests(_ interests: [String], token: String) async throws -> OnboardingStateOut {
+        try await send(path: "/onboarding/interests", method: "PATCH", jsonBody: InterestsBody(interests: interests), token: token)
+    }
+
     // MARK: - Account & data (backend/app/api/routes/account.py)
 
     /// Returns the raw JSON body of the customer's full data export — see
@@ -127,6 +146,30 @@ actor APIClient {
             path: "/search/query",
             method: "GET",
             query: [URLQueryItem(name: "q", value: query), URLQueryItem(name: "limit", value: "\(limit)")],
+            token: token
+        )
+    }
+
+    // MARK: - Request Management (backend/app/api/routes/requests.py)
+
+    /// GET /requests?status=... — used by Search to check which topics
+    /// already have an active standing request, so "Add as a new interest"
+    /// doesn't offer to create a duplicate for something already tracked.
+    func listRequests(status: String? = nil, token: String) async throws -> [RequestOut] {
+        var query: [URLQueryItem] = []
+        if let status {
+            query.append(URLQueryItem(name: "status", value: status))
+        }
+        return try await send(path: "/requests", method: "GET", query: query, token: token)
+    }
+
+    /// POST /requests — used by Search's "Add as a new interest" action (see
+    /// `CreateRequestBody`'s doc comment for why this, and not a dedicated
+    /// interests endpoint, is the real backend operation behind that UI).
+    func createRequest(rawText: String, kind: String = "standing", createdFrom: String, token: String) async throws -> RequestOut {
+        try await send(
+            path: "/requests", method: "POST",
+            jsonBody: CreateRequestBody(rawText: rawText, kind: kind, createdFrom: createdFrom),
             token: token
         )
     }

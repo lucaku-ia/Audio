@@ -1,17 +1,16 @@
 import SwiftUI
 
 /// The persistent mini player bar — player_v3.html's `.miniplayer`. Per
-/// DESIGN_SPEC_V3.md's "Mini-player / persistent playback" section this is
-/// meant to be a SINGLE global overlay mounted once above the tab bar,
-/// surviving navigation across every tab, not re-instantiated per screen.
+/// DESIGN_SPEC_V3.md's "Mini-player / persistent playback" section this is a
+/// SINGLE global overlay mounted once above the tab bar (in
+/// ContentView.swift's `MainTabView`), surviving navigation across every tab,
+/// never re-instantiated per screen.
 ///
-/// TODO(unify with Home): HomeView's own mini-player component doesn't exist
-/// yet — it's being built concurrently on another branch (see the iOS Player
-/// task brief). This view is Player-feature-owned for now, mounted once in
-/// ContentView.swift's `MainTabView` (see that file's small, commented
-/// integration hook). Once both branches merge, this should become the one
-/// shared mini-player instance Home also renders against, instead of two
-/// parallel implementations.
+/// This is now the ONE shared mini-player instance every tab renders
+/// against, backed by the single `PlayerViewModel` owned at the app root
+/// (`LucakuAudioApp`) and injected via `.environmentObject()`. Home no
+/// longer has its own separate mini player (`MiniPlayerBar` was deleted) —
+/// it reads this same `viewModel` for its "currently playing" highlight.
 struct MiniPlayerView: View {
     @ObservedObject var viewModel: PlayerViewModel
 
