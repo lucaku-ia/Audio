@@ -6,19 +6,42 @@ Scope note — what's built vs. deferred:
 Built: the on-demand path's pipeline — load -> research+write (per active
 request, via app.services.ai_platform.research_and_write_block) -> assemble
 -> trim -> headline -> publish. Triggered manually via
-POST /api/generation/run (app/api/routes/generation.py) rather than a real
-scheduler.
+POST /api/generation/run (app/api/routes/generation.py).
+
+Built: the scheduled path's trigger — app.services.scheduler runs an
+in-process asyncio ticker (started from app.main's lifespan) that calls
+run_generation(..., path=EpisodePath.scheduled) once per customer per day,
+at T-60 in their own Profile.delivery_timezone. See that module's docstring
+for what's simplified (closest-minute granularity, no distributed lock) and
+deferred (the PRD's "+30 min hard limit, stated plainly if missed"). This
+confirms the PRD's premise that the two paths "share the pipeline and
+differ only in trigger and latency budget" — no pipeline code below changed
+to add it, only the `path`/`fecha` parameters so a caller can say which
+path/day it's triggering for.
 
 Built: voicing, via app.services.ai_platform.synthesize (ElevenLabs). Each
 block's script is synthesized separately and the resulting mp3s are
 concatenated into one episode file, written to disk under
-settings.MEDIA_DIR and served at /media/{episode_id}.mp3 (see app.main's
+settings.MEDIA_DIR (a Railway persistent volume in production — see
+app/core/config.py) and served at /media/{episode_id}.mp3 (see app.main's
 StaticFiles mount). Requires ELEVENLABS_API_KEY; if unset,
 ai_platform.elevenlabs_configured() is false and the job falls back to the
 pre-TTS behavior below (script-only, status stays "voicing") rather than
 failing. A TTS call that fails after the key is confirmed present is
 likewise non-fatal — the episode still publishes as text-only and a
-`generation_tts_failed` stage note records why.
+`generation_tts_failed` stage note records why. Verified working
+end-to-end against production.
+
+Built: idempotency per (customer, fecha, path) — see run_generation. A
+second call for the same customer/day/path returns the existing job as-is
+(whatever its status, including "empty" or "failed") instead of creating a
+duplicate. Enforced both in-app (a SELECT before the INSERT) and at the DB
+level (a UniqueConstraint on generation_jobs, backfilled onto existing
+tables in app/db/migraciones.py). Two concurrent calls for the same
+(customer, fecha, path) can both pass the SELECT and race on INSERT; the
+loser's IntegrityError is caught and it returns the winner's job instead of
+a 500 — see run_generation's docstring for what this does and doesn't
+guarantee.
 
 Deferred, and why:
 - Real per-block timestamp alignment: ElevenLabs' character-level timing
@@ -26,10 +49,6 @@ Deferred, and why:
   Block start_s/end_s still come from the word-count estimate
   (_seconds_for_script), which is now measuring against real audio it
   didn't generate — expect some drift, tightest on short blocks.
-- MEDIA_DIR is local container disk, not object storage — it does not
-  survive a redeploy or restart. Fine for on-demand testing; replace with
-  real object storage (S3/R2/etc.) before this is relied on for a
-  customer's actual daily episode.
 - Naive mp3 concatenation (raw byte concat, no re-encoding) between
   blocks: works with most players for this MVP but isn't a guaranteed-
   seamless join; revisit with a proper audio mux if gaps/clicks show up.
@@ -39,11 +58,6 @@ Deferred, and why:
   there anything new today" in isolation, not against history. A request
   can currently get an near-identical block two days running if the topic
   hasn't moved — that's the gap the real index closes.
-- Scheduled path (cron at T-60 per customer's timezone): infrastructure
-  work (Railway cron / APScheduler), not pipeline logic. The pipeline
-  itself doesn't care which path triggered it — per the PRD, "They share
-  the pipeline and differ only in trigger and latency budget" — so wiring
-  a scheduler later is additive, not a rewrite.
 - Shared inventory (day-zero/empty-day samples for common interest
   clusters): needs team-curated seed requests per cluster, which don't
   exist. Every job here is per-customer, tagged shared=False.
@@ -57,6 +71,7 @@ import uuid
 from datetime import date, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.requests import active_for_generation
@@ -78,24 +93,72 @@ def _seconds_for_script(script: str) -> float:
     return (word_count / _WORDS_PER_MINUTE) * 60
 
 
-async def run_generation(db: AsyncSession, cliente: Cliente) -> GenerationJob:
+async def run_generation(
+    db: AsyncSession,
+    cliente: Cliente,
+    path: EpisodePath = EpisodePath.on_demand,
+    fecha: date | None = None,
+) -> GenerationJob:
     """
-    Runs the full on-demand pipeline synchronously for one customer and
-    returns the GenerationJob row describing the outcome. Idempotency per
-    (customer, date, path) isn't enforced yet — calling this twice in one
-    day currently produces two episodes; add a uniqueness check before this
-    is wired to a real scheduler.
+    Runs the full pipeline synchronously for one customer and returns the
+    GenerationJob row describing the outcome. `path` and `fecha` let a
+    caller say which PRD path and which calendar day this run is for — the
+    on-demand route (app/api/routes/generation.py) leaves both at their
+    defaults (today, on_demand); app.services.scheduler passes
+    path=EpisodePath.scheduled and the customer's local delivery date, since
+    that can differ from the server's own date near midnight.
+
+    Idempotent per (customer, fecha, path): "never fill" means a second
+    call for the same customer/day/path must not produce a second episode,
+    so this returns the existing job unchanged (whatever its status —
+    ready, empty, failed, etc.) instead of erroring or re-running the
+    pipeline. Enforced here via a SELECT before the INSERT, backed by a
+    DB-level UniqueConstraint (see GenerationJob.__table_args__) as the
+    source of truth.
+
+    Two concurrent calls for the same (customer, fecha, path) can both pass
+    the SELECT before either commits and race to INSERT; rather than let
+    the loser surface the resulting IntegrityError as a 500, the insert
+    below is wrapped to catch exactly that race and return the winner's job
+    instead — still no row lock (e.g. SELECT ... FOR UPDATE), so this is a
+    catch-and-recover rather than a true mutex, but it means a concurrent
+    on-demand call and scheduler tick for the same customer both get a
+    clean job back rather than one of them erroring.
     """
-    today = date.today()
+    today = fecha or date.today()
+
+    async def _find_existing() -> GenerationJob | None:
+        result = await db.execute(
+            select(GenerationJob).where(
+                GenerationJob.customer_id == cliente.id,
+                GenerationJob.fecha == today,
+                GenerationJob.path == path,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    existing_job = await _find_existing()
+    if existing_job is not None:
+        return existing_job
+
     job = GenerationJob(
         customer_id=cliente.id,
         fecha=today,
-        path=EpisodePath.on_demand,
+        path=path,
         status=JobStatus.researching,
         stages=[],
     )
     db.add(job)
-    await db.commit()  # persist the job row on its own before doing any work, so a failure
+    try:
+        await db.commit()  # persist the job row on its own before doing any work, so a failure
+    except IntegrityError:
+        # Lost the race to a concurrent call for the same (customer, fecha, path) —
+        # its insert landed first. Recover by returning that row instead of a 500.
+        await db.rollback()
+        existing_job = await _find_existing()
+        if existing_job is not None:
+            return existing_job
+        raise  # constraint violation for a reason other than the expected race
     await db.refresh(job)  # below can mark *this* row failed instead of losing it to rollback
 
     try:
@@ -162,7 +225,7 @@ async def run_generation(db: AsyncSession, cliente: Cliente) -> GenerationJob:
             customer_id=cliente.id,
             shared=False,
             fecha=today,
-            path=EpisodePath.on_demand,
+            path=path,
             language=language,
             style=style,
             voice_id=voice_id,
