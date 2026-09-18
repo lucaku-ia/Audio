@@ -34,7 +34,6 @@
 		943AA3027AA5426092F88D20 /* LucakuMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBB3515470E346799F409EC5 /* LucakuMotion.swift */; };
 		1D38B86019DB4780AEA91D6F /* SettingsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEFA414400124688BFE64210 /* SettingsModels.swift */; };
 		BDC57A8F26CE4234980D68FD /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5587AB59E9934D6FAD84588C /* SettingsViewModel.swift */; };
-		C4D53E93ADD548569F0462A9 /* MiniPlayerBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68A06D45EA6F4A229E3440D9 /* MiniPlayerBar.swift */; };
 		6F67F47607C1493BA890E339 /* HomeComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329AAA904806435AB1CA87CB /* HomeComponents.swift */; };
 		34D1E89B69574A3F9824466C /* PlayerModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E3748D70D3140759CA6D239 /* PlayerModels.swift */; };
 		4FBA19B65D5B44BB8A4B65E5 /* PlayerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE86656C0A684261BAC4E514 /* PlayerViewModel.swift */; };
@@ -83,7 +82,6 @@
 		FBB3515470E346799F409EC5 /* LucakuMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LucakuMotion.swift; sourceTree = "<group>"; };
 		BEFA414400124688BFE64210 /* SettingsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsModels.swift; sourceTree = "<group>"; };
 		5587AB59E9934D6FAD84588C /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
-		68A06D45EA6F4A229E3440D9 /* MiniPlayerBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniPlayerBar.swift; sourceTree = "<group>"; };
 		329AAA904806435AB1CA87CB /* HomeComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeComponents.swift; sourceTree = "<group>"; };
 		8E3748D70D3140759CA6D239 /* PlayerModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerModels.swift; sourceTree = "<group>"; };
 		EE86656C0A684261BAC4E514 /* PlayerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerViewModel.swift; sourceTree = "<group>"; };
@@ -157,7 +155,6 @@
 			children = (
 				AD33789BA5D0B0F399759EFE /* HomeView.swift */,
 				543E0BDC2332CBE17AFA558E /* HomeViewModel.swift */,
-				68A06D45EA6F4A229E3440D9 /* MiniPlayerBar.swift */,
 				329AAA904806435AB1CA87CB /* HomeComponents.swift */,
 			);
 			path = Home;
@@ -404,7 +401,6 @@
 				943AA3027AA5426092F88D20 /* LucakuMotion.swift in Sources */,
 				1D38B86019DB4780AEA91D6F /* SettingsModels.swift in Sources */,
 				BDC57A8F26CE4234980D68FD /* SettingsViewModel.swift in Sources */,
-				C4D53E93ADD548569F0462A9 /* MiniPlayerBar.swift in Sources */,
 				6F67F47607C1493BA890E339 /* HomeComponents.swift in Sources */,
 				34D1E89B69574A3F9824466C /* PlayerModels.swift in Sources */,
 				4FBA19B65D5B44BB8A4B65E5 /* PlayerViewModel.swift in Sources */,
