@@ -112,3 +112,32 @@ struct SearchOut: Decodable {
         case unmatchedRequests = "unmatched_requests"
     }
 }
+
+// MARK: - "Add as a new interest" (backend/app/api/routes/requests.py)
+//
+// There is no dedicated interests-management endpoint (no POST
+// /interests). What the Search mockup calls "adding a new interest" is,
+// on the real backend, creating a standing Request — the same object
+// Home's own "Your interests" section is ultimately built from
+// (OnboardingState.selected_interests + standing Requests are what the
+// Generator researches on a recurring cadence; see requests.py's
+// CrearRequestBody and RequestKind.standing). `CreatedFrom.search` is a
+// real, already-existing enum value on the backend specifically for this
+// case — nothing here is invented to make the UI look wired up.
+
+/// Matches backend/app/api/routes/requests.py's `CrearRequestBody`.
+struct CreateRequestBody: Encodable {
+    let rawText: String
+    /// "standing" | "one_off" — Search's "Add as a new interest" always
+    /// creates a standing request (tracked going forward), matching the
+    /// mockup's "start tracking it regularly" copy.
+    let kind: String
+    /// "onboarding" | "interests" | "suggestion" | "search" | "home_empty_day"
+    let createdFrom: String
+
+    enum CodingKeys: String, CodingKey {
+        case rawText = "raw_text"
+        case kind
+        case createdFrom = "created_from"
+    }
+}
