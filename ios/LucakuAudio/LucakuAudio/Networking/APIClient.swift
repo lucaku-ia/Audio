@@ -1,0 +1,227 @@
+import Foundation
+
+/// Thin networking layer over `URLSession` + async/await. No completion
+/// handlers, no third-party HTTP library — matches every endpoint this
+/// scaffold needs against the real routes in
+/// backend/app/api/routes/{auth,home,generation,search}.py.
+///
+/// An `actor` because `URLSession` + `JSONDecoder` here are stateless and
+/// safe to share, and callers may reasonably fire requests concurrently
+/// (e.g. Home's banner + recent + shared inventory in one call already, but
+/// a future screen might not be).
+actor APIClient {
+    static let shared = APIClient()
+
+    private let session: URLSession
+    private let decoder: JSONDecoder
+    private let encoder: JSONEncoder
+
+    init(session: URLSession = .shared) {
+        self.session = session
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601WithFractionalSeconds
+        self.decoder = decoder
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        self.encoder = encoder
+    }
+
+    // MARK: - Auth (backend/app/api/routes/auth.py)
+
+    func signup(_ body: SignupRequest) async throws -> TokenResponse {
+        try await send(path: "/auth/signup", method: "POST", jsonBody: body, token: nil)
+    }
+
+    /// POST /api/auth/login is FastAPI's `OAuth2PasswordRequestForm` —
+    /// `application/x-www-form-urlencoded`, not JSON. `form.username` is the
+    /// email (OAuth2PasswordRequestForm's field is literally named
+    /// `username`; the backend reads it as `form.username` and looks it up
+    /// by `Cliente.email`).
+    func login(email: String, password: String) async throws -> TokenResponse {
+        var request = try makeRequest(path: "/auth/login", method: "POST", token: nil)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let formBody = "username=\(formEncoded(email))&password=\(formEncoded(password))"
+        request.httpBody = Data(formBody.utf8)
+        return try await perform(request)
+    }
+
+    func logout(token: String) async throws {
+        _ = try await sendRaw(path: "/auth/logout", method: "POST", token: token)
+    }
+
+    func me(token: String) async throws -> MeResponse {
+        try await send(path: "/auth/me", method: "GET", token: token)
+    }
+
+    // MARK: - Home (backend/app/api/routes/home.py)
+
+    func home(token: String) async throws -> HomeOut {
+        try await send(path: "/home", method: "GET", token: token)
+    }
+
+    func requestToday(rawText: String, token: String) async throws -> RequestOut {
+        try await send(
+            path: "/home/request-today", method: "POST",
+            jsonBody: RequestTodayBody(rawText: rawText), token: token
+        )
+    }
+
+    // MARK: - Episode Generator (backend/app/api/routes/generation.py)
+
+    /// Triggers on-demand generation for the calling customer. Runs the
+    /// pipeline synchronously server-side (the route's own docstring warns
+    /// this can be slow and time out for a customer with many active
+    /// requests) — so this call may legitimately take a while.
+    func runGeneration(token: String) async throws -> JobOut {
+        try await send(path: "/generation/run", method: "POST", token: token)
+    }
+
+    func job(id: String, token: String) async throws -> JobOut {
+        try await send(path: "/generation/jobs/\(id)", method: "GET", token: token)
+    }
+
+    func latestEpisode(token: String) async throws -> EpisodeOut {
+        try await send(path: "/generation/episodes/latest", method: "GET", token: token)
+    }
+
+    // MARK: - Search & AI (backend/app/api/routes/search.py)
+
+    func searchHistory(offset: Int = 0, limit: Int = 20, token: String) async throws -> HistoryOut {
+        try await send(
+            path: "/search/history",
+            method: "GET",
+            query: [URLQueryItem(name: "offset", value: "\(offset)"), URLQueryItem(name: "limit", value: "\(limit)")],
+            token: token
+        )
+    }
+
+    func search(query: String, limit: Int = 20, token: String) async throws -> SearchOut {
+        try await send(
+            path: "/search/query",
+            method: "GET",
+            query: [URLQueryItem(name: "q", value: query), URLQueryItem(name: "limit", value: "\(limit)")],
+            token: token
+        )
+    }
+
+    // MARK: - Request building / sending
+
+    private func makeRequest(
+        path: String,
+        method: String,
+        query: [URLQueryItem] = [],
+        token: String?
+    ) throws -> URLRequest {
+        var components = URLComponents(url: Config.apiBaseURL, resolvingAgainstBaseURL: false)
+        components?.path = Config.apiPrefix + path
+        if !query.isEmpty {
+            components?.queryItems = query
+        }
+        guard let url = components?.url else { throw APIError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        return request
+    }
+
+    private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
+        let data = try await performRaw(request)
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw APIError.decoding(underlying: error)
+        }
+    }
+
+    @discardableResult
+    private func performRaw(_ request: URLRequest) async throws -> Data {
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw APIError.transport(underlying: error)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.transport(underlying: URLError(.badServerResponse))
+        }
+
+        if http.statusCode == 401 {
+            throw APIError.notAuthenticated
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.server(status: http.statusCode, message: extractErrorDetail(from: data))
+        }
+        return data
+    }
+
+    private func send<T: Decodable>(
+        path: String,
+        method: String,
+        query: [URLQueryItem] = [],
+        token: String?
+    ) async throws -> T {
+        let request = try makeRequest(path: path, method: method, query: query, token: token)
+        return try await perform(request)
+    }
+
+    private func send<Body: Encodable, T: Decodable>(
+        path: String,
+        method: String,
+        jsonBody: Body,
+        token: String?
+    ) async throws -> T {
+        var request = try makeRequest(path: path, method: method, token: token)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(jsonBody)
+        return try await perform(request)
+    }
+
+    @discardableResult
+    private func sendRaw(path: String, method: String, token: String?) async throws -> Data {
+        let request = try makeRequest(path: path, method: method, token: token)
+        return try await performRaw(request)
+    }
+
+    private func formEncoded(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "+&=")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+}
+
+extension JSONDecoder.DateDecodingStrategy {
+    /// The backend's `datetime` fields (e.g. `creado_en`, `eta`,
+    /// `published_at`) are Pydantic `datetime` values serialized by FastAPI
+    /// as ISO 8601 with fractional seconds (e.g. "2026-09-18T10:15:30.123456").
+    /// Plain `.iso8601` can't parse the fractional-second component, so this
+    /// tries with fractional seconds first and falls back to without.
+    static var iso8601WithFractionalSeconds: JSONDecoder.DateDecodingStrategy {
+        .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let string = try container.decode(String.self)
+
+            let withFractional = ISO8601DateFormatter()
+            withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = withFractional.date(from: string) {
+                return date
+            }
+
+            let plain = ISO8601DateFormatter()
+            plain.formatOptions = [.withInternetDateTime]
+            if let date = plain.date(from: string) {
+                return date
+            }
+
+            throw DecodingError.dataCorruptedError(
+                in: container, debugDescription: "Expected ISO 8601 date string, got \(string)"
+            )
+        }
+    }
+}
