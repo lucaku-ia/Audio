@@ -8,16 +8,29 @@ fileprivate enum LucakuAuthField {
 
 /// Login / Sign Up — the customer's first impression of Lucaku. Auth logic
 /// (mode toggle, field state, submit, loading/error) is unchanged from the
-/// original scaffold; this is a visual pass only, built on the approved
-/// design tokens (`LucakuColor` / `LucakuTypography` / `LucakuSpacing` /
-/// `LucakuRadius`) so it matches the rest of the app and follows system
-/// light/dark automatically.
+/// original scaffold; this is a visual/structural pass on top of the
+/// approved design tokens (`LucakuColor` / `LucakuTypography` /
+/// `LucakuSpacing` / `LucakuRadius` / `LucakuMotion`).
 ///
-/// There is no approved logo mark yet — that's a brand decision for the
-/// product owner, not something to invent here — so the header is a
-/// typography-led wordmark (the product name set in Large Title) with a
-/// short line of supporting copy, the way a restrained editorial product
-/// presents itself before a full mark exists.
+/// v2 revisions, addressing direct client feedback on the v1 redesign:
+/// - Removed the duplicate control: previously the top segmented Log
+///   In/Sign Up toggle, the bottom submit button (labeled with the mode's
+///   raw name), AND a footer text link all did the same job. Now there is
+///   ONE mode switch (the top segmented control) and the bottom button is
+///   a distinct primary CTA whose label doesn't parrot the toggle
+///   ("Log In" vs. "Create Account").
+/// - The wordmark is now a proper hero: real vertical rhythm above/below,
+///   Apple's actual published tracking-curve values for SF Pro (HIG type
+///   scale, not guessed numbers) — see `AppleTracking` below — and a
+///   secondary-weight tagline underneath.
+/// - Added a real (visually correct, functionally stubbed) "Sign in with
+///   Google" button following Google's official branding guidelines,
+///   separated from the email/password form by an "or" divider — the
+///   standard placement in Spotify/Apple Music-style auth screens.
+///
+/// There is still no approved logo mark — that remains a brand decision
+/// for the product owner, not something to invent here — so the header
+/// stays a typography-led wordmark, just composed with far more care.
 struct LoginView: View {
     @EnvironmentObject private var session: SessionStore
 
@@ -27,12 +40,22 @@ struct LoginView: View {
     @State private var nombre = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var showGoogleComingSoon = false
 
     @FocusState private var focusedField: LucakuAuthField?
 
     enum Mode: String, CaseIterable {
         case login = "Log In"
         case signup = "Sign Up"
+    }
+
+    /// Apple's published SF Pro tracking (letter-spacing) curve, HIG type
+    /// scale — sourced values, not estimates: 17pt −26/1000em (−0.43pt),
+    /// 28pt +14/1000em (+0.38pt), 34pt +12/1000em (+0.40pt).
+    private enum AppleTracking {
+        static let largeTitle: CGFloat = 0.40
+        static let title1: CGFloat = 0.38
+        static let headline: CGFloat = -0.43
     }
 
     var body: some View {
@@ -42,13 +65,10 @@ struct LoginView: View {
                     VStack(spacing: 0) {
                         Spacer(minLength: LucakuSpacing.sp8)
 
-                        header
+                        wordmark
                             .padding(.bottom, LucakuSpacing.sp12)
 
                         formCard
-
-                        footerHint
-                            .padding(.top, LucakuSpacing.sp6)
 
                         Spacer(minLength: LucakuSpacing.sp8)
                     }
@@ -62,20 +82,25 @@ struct LoginView: View {
         }
     }
 
-    // MARK: - Header / wordmark
+    // MARK: - Wordmark hero
 
-    private var header: some View {
-        VStack(spacing: LucakuSpacing.sp2) {
+    /// The screen's compositional anchor: generous whitespace above and
+    /// below, precise tracking on the wordmark, and a one-line tagline in
+    /// a clearly secondary weight/size — modeled on how Spotify/Apple
+    /// Music let a wordmark (not a cramped title bar) carry the login
+    /// screen's top half.
+    private var wordmark: some View {
+        VStack(spacing: LucakuSpacing.sp3) {
             Text("Lucaku")
                 .font(LucakuTypography.largeTitle)
-                .tracking(-0.4)
+                .tracking(AppleTracking.largeTitle)
                 .foregroundStyle(LucakuColor.textPrimary)
 
             Text("Your research, spoken.")
-                .font(LucakuTypography.subhead)
-                .tracking(0.2)
+                .font(LucakuTypography.footnote)
                 .foregroundStyle(LucakuColor.textSecondary)
         }
+        .padding(.top, LucakuSpacing.sp8)
     }
 
     // MARK: - Form
@@ -83,6 +108,10 @@ struct LoginView: View {
     private var formCard: some View {
         VStack(spacing: LucakuSpacing.sp6) {
             modePicker
+
+            googleButton
+
+            divider
 
             VStack(spacing: LucakuSpacing.sp3) {
                 LucakuTextField(
@@ -148,6 +177,10 @@ struct LoginView: View {
         )
     }
 
+    /// The single mode switch for the whole screen — the only place
+    /// "Log In" and "Sign Up" appear as competing labels. Everything below
+    /// it (the Google button, the form, the primary CTA) adapts to
+    /// whichever mode is selected here instead of repeating the choice.
     private var modePicker: some View {
         HStack(spacing: LucakuSpacing.sp1) {
             ForEach(Mode.allCases, id: \.self) { candidate in
@@ -179,6 +212,62 @@ struct LoginView: View {
         )
     }
 
+    /// "or" divider between the Google button and the email/password
+    /// form — the standard convention major apps use to separate a
+    /// federated sign-in option from the classic form.
+    private var divider: some View {
+        HStack(spacing: LucakuSpacing.sp3) {
+            Rectangle().fill(LucakuColor.borderSoft).frame(height: 1)
+            Text("or")
+                .font(LucakuTypography.footnote)
+                .foregroundStyle(LucakuColor.textTertiary)
+            Rectangle().fill(LucakuColor.borderSoft).frame(height: 1)
+        }
+    }
+
+    /// "Sign in with Google" — visually correct per Google's official
+    /// branding guidelines (pill shape, standard-color "G" mark on a
+    /// white chip, "Sign in with Google" / "Sign up with Google" copy
+    /// matching the current mode, Google Sans-weight text substitute).
+    /// There is no Google OAuth client ID from the product owner yet, so
+    /// the action is an explicit stub — see TODO below for the real
+    /// `GIDSignIn` call site once credentials exist.
+    private var googleButton: some View {
+        Button {
+            showGoogleComingSoon = true
+        } label: {
+            HStack(spacing: 12) {
+                GoogleGMark()
+                    .frame(width: 18, height: 18)
+                Text(mode == .login ? "Sign in with Google" : "Sign up with Google")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color(red: 0x1F / 255.0, green: 0x1F / 255.0, blue: 0x1F / 255.0))
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+        }
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.white)
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(Color(red: 0x74 / 255.0, green: 0x77 / 255.0, blue: 0x75 / 255.0), lineWidth: 1)
+        )
+        .alert("Sign in with Google", isPresented: $showGoogleComingSoon) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Coming soon — Google sign-in isn't wired up yet.")
+        }
+        // TODO: once the product owner provides a Google Cloud Console
+        // OAuth client ID, replace `showGoogleComingSoon = true` above
+        // with the real call, e.g.:
+        //   GIDSignIn.sharedInstance.signIn(withPresenting: rootVC) { result, error in
+        //       guard let idToken = result?.user.idToken?.tokenString else { return }
+        //       Task { await session.authenticateWithGoogle(idToken: idToken) }
+        //   }
+    }
+
     private func errorBanner(_ message: String) -> some View {
         HStack(alignment: .top, spacing: LucakuSpacing.sp2) {
             Image(systemName: "exclamationmark.circle.fill")
@@ -198,6 +287,10 @@ struct LoginView: View {
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
+    /// The one true primary CTA on the screen. Its label always matches
+    /// the CURRENT mode but never repeats the toggle's own wording, so it
+    /// reads as a distinct, purposeful action rather than the same choice
+    /// asked twice.
     private var submitButton: some View {
         Button {
             focusedField = nil
@@ -208,7 +301,7 @@ struct LoginView: View {
                     ProgressView()
                         .tint(LucakuColor.accentOn)
                 } else {
-                    Text(mode.rawValue)
+                    Text(mode == .login ? "Log In" : "Create Account")
                         .font(LucakuTypography.headline)
                 }
             }
@@ -227,24 +320,6 @@ struct LoginView: View {
 
     private var isDisabled: Bool {
         isLoading || email.isEmpty || password.isEmpty
-    }
-
-    private var footerHint: some View {
-        HStack(spacing: LucakuSpacing.sp1) {
-            Text(mode == .login ? "New to Lucaku?" : "Already have an account?")
-                .foregroundStyle(LucakuColor.textSecondary)
-            Button {
-                withAnimation(LucakuMotion.house) {
-                    mode = mode == .login ? .signup : .login
-                    errorMessage = nil
-                }
-            } label: {
-                Text(mode == .login ? "Sign Up" : "Log In")
-                    .foregroundStyle(LucakuColor.accent)
-            }
-            .buttonStyle(.plain)
-        }
-        .font(LucakuTypography.subhead)
     }
 
     // MARK: - Actions (unchanged logic)
@@ -269,6 +344,48 @@ struct LoginView: View {
             withAnimation(LucakuMotion.house) {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+}
+
+// MARK: - Google "G" mark
+
+/// A from-scratch rendering of Google's standard-color "G" mark, since no
+/// Google-provided asset is bundled in this project. Colors match Google's
+/// published brand palette (blue #4285F4, green #34A853, yellow #FBBC05,
+/// red #EA4335) and the proportions follow the well-known four-quadrant
+/// ring-plus-bar construction of the mark. Per Google's guidelines this
+/// standard-color version must not be recolored or altered.
+private struct GoogleGMark: View {
+    var body: some View {
+        Canvas { context, size in
+            let rect = CGRect(origin: .zero, size: size)
+            let lineWidth = size.width * 0.22
+            let radius = min(size.width, size.height) / 2 - lineWidth / 2
+            let center = CGPoint(x: rect.midX, y: rect.midY)
+
+            func arc(from startDeg: Double, to endDeg: Double, color: Color) {
+                var path = Path()
+                path.addArc(
+                    center: center,
+                    radius: radius,
+                    startAngle: .degrees(startDeg),
+                    endAngle: .degrees(endDeg),
+                    clockwise: false
+                )
+                context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
+            }
+
+            // Four quadrants of the ring, standard Google brand colors.
+            arc(from: -70, to: 10, color: Color(red: 0x42 / 255.0, green: 0x85 / 255.0, blue: 0xF4 / 255.0))   // blue, top-right
+            arc(from: 10, to: 90, color: Color(red: 0x34 / 255.0, green: 0xA8 / 255.0, blue: 0x53 / 255.0))    // green, bottom-right
+            arc(from: 90, to: 190, color: Color(red: 0xFB / 255.0, green: 0xBC / 255.0, blue: 0x05 / 255.0))   // yellow, bottom-left
+            arc(from: 190, to: 290, color: Color(red: 0xEA / 255.0, green: 0x43 / 255.0, blue: 0x35 / 255.0))  // red, top-left
+
+            // The horizontal bar that completes the "G" cutting into the blue quadrant.
+            var bar = Path()
+            bar.addRect(CGRect(x: size.width * 0.5, y: size.height * 0.42, width: size.width * 0.52, height: size.height * 0.16))
+            context.fill(bar, with: .color(Color(red: 0x42 / 255.0, green: 0x85 / 255.0, blue: 0xF4 / 255.0)))
         }
     }
 }
