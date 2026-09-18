@@ -226,18 +226,23 @@ struct LoginView: View {
     }
 
     /// "Sign in with Google" — visually correct per Google's official
-    /// branding guidelines (pill shape, standard-color "G" mark on a
-    /// white chip, "Sign in with Google" / "Sign up with Google" copy
-    /// matching the current mode, Google Sans-weight text substitute).
-    /// There is no Google OAuth client ID from the product owner yet, so
-    /// the action is an explicit stub — see TODO below for the real
-    /// `GIDSignIn` call site once credentials exist.
+    /// branding guidelines (pill shape, official four-color "G" mark
+    /// rendered from a vector asset in `Assets.xcassets/GoogleGLogo`
+    /// rather than hand-approximated with shapes, on a white chip,
+    /// "Sign in with Google" / "Sign up with Google" copy matching the
+    /// current mode, Google Sans-weight text substitute). There is no
+    /// Google OAuth client ID from the product owner yet, so the action
+    /// is an explicit stub — see TODO below for the real `GIDSignIn`
+    /// call site once credentials exist.
     private var googleButton: some View {
         Button {
             showGoogleComingSoon = true
         } label: {
             HStack(spacing: 12) {
-                GoogleGMark()
+                Image("GoogleGLogo")
+                    .resizable()
+                    .renderingMode(.original)
+                    .aspectRatio(contentMode: .fit)
                     .frame(width: 18, height: 18)
                 Text(mode == .login ? "Sign in with Google" : "Sign up with Google")
                     .font(.system(size: 14, weight: .medium))
@@ -344,48 +349,6 @@ struct LoginView: View {
             withAnimation(LucakuMotion.house) {
                 errorMessage = error.localizedDescription
             }
-        }
-    }
-}
-
-// MARK: - Google "G" mark
-
-/// A from-scratch rendering of Google's standard-color "G" mark, since no
-/// Google-provided asset is bundled in this project. Colors match Google's
-/// published brand palette (blue #4285F4, green #34A853, yellow #FBBC05,
-/// red #EA4335) and the proportions follow the well-known four-quadrant
-/// ring-plus-bar construction of the mark. Per Google's guidelines this
-/// standard-color version must not be recolored or altered.
-private struct GoogleGMark: View {
-    var body: some View {
-        Canvas { context, size in
-            let rect = CGRect(origin: .zero, size: size)
-            let lineWidth = size.width * 0.22
-            let radius = min(size.width, size.height) / 2 - lineWidth / 2
-            let center = CGPoint(x: rect.midX, y: rect.midY)
-
-            func arc(from startDeg: Double, to endDeg: Double, color: Color) {
-                var path = Path()
-                path.addArc(
-                    center: center,
-                    radius: radius,
-                    startAngle: .degrees(startDeg),
-                    endAngle: .degrees(endDeg),
-                    clockwise: false
-                )
-                context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
-            }
-
-            // Four quadrants of the ring, standard Google brand colors.
-            arc(from: -70, to: 10, color: Color(red: 0x42 / 255.0, green: 0x85 / 255.0, blue: 0xF4 / 255.0))   // blue, top-right
-            arc(from: 10, to: 90, color: Color(red: 0x34 / 255.0, green: 0xA8 / 255.0, blue: 0x53 / 255.0))    // green, bottom-right
-            arc(from: 90, to: 190, color: Color(red: 0xFB / 255.0, green: 0xBC / 255.0, blue: 0x05 / 255.0))   // yellow, bottom-left
-            arc(from: 190, to: 290, color: Color(red: 0xEA / 255.0, green: 0x43 / 255.0, blue: 0x35 / 255.0))  // red, top-left
-
-            // The horizontal bar that completes the "G" cutting into the blue quadrant.
-            var bar = Path()
-            bar.addRect(CGRect(x: size.width * 0.5, y: size.height * 0.42, width: size.width * 0.52, height: size.height * 0.16))
-            context.fill(bar, with: .color(Color(red: 0x42 / 255.0, green: 0x85 / 255.0, blue: 0xF4 / 255.0)))
         }
     }
 }
