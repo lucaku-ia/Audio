@@ -281,6 +281,20 @@ async def check_late_jobs(db: AsyncSession) -> list[GenerationJob]:
     so Home's "late (with new ETA)" banner state has real data to show — the
     underlying run keeps executing to whatever conclusion it reaches and
     will overwrite status/eta again itself once it finishes (ready/empty/failed).
+
+    A review of this design found a real gap the paragraph above glossed
+    over: run_generation's own INTERMEDIATE status writes (researching ->
+    writing -> voicing) are plain unconditional UPDATEs from a long-lived
+    in-memory job object on a different session — without a guard, one of
+    those writes landing after this function marks a job late would
+    silently revert it to writing/voicing, putting it back in this
+    function's non-terminal scan and risking a repeated late relabel (and
+    duplicate job_late events) once its fresh eta also lapses. Fixed via
+    run_generation's _advance_status_unless_late helper, which every
+    intermediate transition now goes through — only the terminal
+    transitions (ready/empty/failed) still win unconditionally, which is
+    correct: a run that finishes should always report its real outcome
+    regardless of how late it finished.
     """
     now = datetime.utcnow()
     result = await db.execute(
@@ -308,6 +322,29 @@ async def check_late_jobs(db: AsyncSession) -> list[GenerationJob]:
     if newly_late:
         await db.commit()
     return newly_late
+
+
+async def _advance_status_unless_late(db: AsyncSession, job: GenerationJob, new_status: JobStatus) -> None:
+    """
+    Sets job.status to new_status UNLESS check_late_jobs has already relabelled this
+    row `late` on another session concurrently with this run — otherwise this
+    in-memory `job` object's next commit blindly overwrites `late` back to
+    `writing`/`voicing` (a plain UPDATE has no idea another process touched the row
+    since it was loaded), which put the job back in check_late_jobs' non-terminal
+    scan and let it get marked late again once its fresh eta also expired. Use this
+    ONLY for intermediate, non-terminal transitions (writing, voicing) — the final
+    terminal ones (ready/empty/failed) must still win unconditionally regardless of
+    a `late` label, since those represent the run actually finishing.
+
+    One extra fresh-status query per transition (two per run) is a deliberate,
+    cheap trade against re-querying job.stages/eta too, which aren't at risk here —
+    only .status is written elsewhere.
+    """
+    current_status = (
+        await db.execute(select(GenerationJob.status).where(GenerationJob.id == job.id))
+    ).scalar_one()
+    if current_status != JobStatus.late:
+        job.status = new_status
 
 
 async def _promote_pending_version(db: AsyncSession, req: Request) -> None:
@@ -480,7 +517,7 @@ async def run_generation(
         await emitir(db, "stage_completed", customer_id=cliente.id, source="episode_generator",
                      job_id=str(job.id), stage="research", latency_ms=research_latency_ms, cost=research_cost)
 
-        job.status = JobStatus.writing
+        await _advance_status_unless_late(db, job, JobStatus.writing)
         answerable = [b for b in blocks if not b["result"].no_news]
 
         if not answerable:
@@ -589,7 +626,9 @@ async def run_generation(
         await emitir(db, "stage_started", customer_id=cliente.id, source="episode_generator",
                      job_id=str(job.id), stage="voicing")
 
-        job.status = JobStatus.voicing  # text/sources done; audio pending unless synthesis below succeeds
+        # text/sources done; audio pending unless synthesis below succeeds — unless the
+        # watchdog already relabelled this job `late` concurrently, see the helper's docstring
+        await _advance_status_unless_late(db, job, JobStatus.voicing)
         voicing_skipped = not ai_platform.elevenlabs_configured()
         voicing_cost = 0.0
         if not voicing_skipped:
