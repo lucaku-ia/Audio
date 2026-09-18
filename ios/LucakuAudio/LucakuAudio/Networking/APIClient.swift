@@ -131,6 +131,30 @@ actor APIClient {
         )
     }
 
+    // MARK: - Request Management (backend/app/api/routes/requests.py)
+
+    /// GET /requests?status=... — used by Search to check which topics
+    /// already have an active standing request, so "Add as a new interest"
+    /// doesn't offer to create a duplicate for something already tracked.
+    func listRequests(status: String? = nil, token: String) async throws -> [RequestOut] {
+        var query: [URLQueryItem] = []
+        if let status {
+            query.append(URLQueryItem(name: "status", value: status))
+        }
+        return try await send(path: "/requests", method: "GET", query: query, token: token)
+    }
+
+    /// POST /requests — used by Search's "Add as a new interest" action (see
+    /// `CreateRequestBody`'s doc comment for why this, and not a dedicated
+    /// interests endpoint, is the real backend operation behind that UI).
+    func createRequest(rawText: String, kind: String = "standing", createdFrom: String, token: String) async throws -> RequestOut {
+        try await send(
+            path: "/requests", method: "POST",
+            jsonBody: CreateRequestBody(rawText: rawText, kind: kind, createdFrom: createdFrom),
+            token: token
+        )
+    }
+
     // MARK: - Request building / sending
 
     private func makeRequest(
