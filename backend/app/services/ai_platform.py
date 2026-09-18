@@ -75,7 +75,17 @@ def _cost(usage) -> float:
 
 
 async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, version: str, purpose: str,
-                     usage, latency_ms: int, context: dict, rejected_reason: str | None = None) -> None:
+                     usage, latency_ms: int, context: dict, rejected_reason: str | None = None) -> float:
+    """
+    Logs the AICall row and returns its `cost` so direct callers (currently
+    research_and_write_block and synthesize) can thread per-call cost up to
+    the Generator's stage-cost accounting without either function's public
+    signature growing new business-logic parameters — see the "Cost per
+    stage" scope note on research_and_write_block/synthesize below and in
+    app/services/episode_generator.py's run_generation for why this (not a
+    time-window AICall query) was chosen.
+    """
+    cost = _cost(usage)
     db.add(AICall(
         call_id=uuid.uuid4(),
         prompt=prompt,
@@ -85,7 +95,7 @@ async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, ve
         provider=PROVIDER,
         tokens_in=usage.input_tokens,
         tokens_out=usage.output_tokens,
-        cost=_cost(usage),
+        cost=cost,
         latency_ms=latency_ms,
         context=context,
         rejected_reason=rejected_reason,
@@ -102,6 +112,7 @@ async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, ve
     await emitir(db, "ai_call", customer_id=customer_id, source="ai_platform", purpose=purpose)
     if rejected_reason:
         await emitir(db, "ai_rejected", customer_id=customer_id, source="ai_platform", purpose=purpose)
+    return cost
 
 
 class StructuredRequest(BaseModel):
@@ -178,6 +189,12 @@ class BlockResult(BaseModel):
     script: str
     sources: list[dict]
     no_news: bool
+    # Not part of the model's own JSON output (_parse_block_result never sees
+    # it) — set by research_and_write_block after _log_call returns, so the
+    # Generator's research stage can accumulate real per-call cost across the
+    # per-active-request loop without querying AICall back out of the DB.
+    # See episode_generator.run_generation's "Cost per stage" note.
+    cost: float = 0.0
 
 
 RESEARCH_AND_WRITE_BLOCK_VERSION = "v1"
@@ -255,14 +272,16 @@ async def research_and_write_block(
     )
     latency_ms = int((time.monotonic() - start) * 1000)
 
-    await _log_call(
+    cost = await _log_call(
         db, customer_id=customer_id, prompt="research_and_write_block", version=version,
         purpose="research_and_write_block", usage=response.usage, latency_ms=latency_ms,
         context={"customer_id": str(customer_id), "request_id": str(request_id)},
     )
 
     text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
-    return _parse_block_result(text)
+    result = _parse_block_result(text)
+    result.cost = cost
+    return result
 
 
 def _parse_block_result(text: str) -> BlockResult:
@@ -407,12 +426,15 @@ async def synthesize(
     customer_id: uuid.UUID,
     request_id: uuid.UUID | None = None,
     episode_id: uuid.UUID | None = None,
-) -> bytes:
+) -> tuple[bytes, float]:
     """
     Text-to-speech for one script (a block, or the whole assembled episode).
-    Returns raw audio bytes (mp3). Logs one AICall with `characters` set
-    (PRD: AICall.characters is "for TTS calls") and cost from the pilot's
-    per-1000-character rate.
+    Returns (raw audio bytes (mp3), cost) — the cost is the same value
+    logged on the AICall row below, returned directly rather than making
+    the Generator query AICall back out to attribute it to the voicing
+    stage. See episode_generator.run_generation's "Cost per stage" note.
+    Logs one AICall with `characters` set (PRD: AICall.characters is "for
+    TTS calls") and cost from the pilot's per-1000-character rate.
 
     Raises on any failure (missing key, non-2xx from ElevenLabs) — callers
     must check elevenlabs_configured() first if a missing key should
@@ -455,14 +477,15 @@ async def synthesize(
                      purpose="synthesize", failed=True, status_code=response.status_code)
         raise RuntimeError(f"ElevenLabs synthesize failed: {reason}")
 
+    cost = (len(text) / 1000) * _ELEVENLABS_PRICE_PER_1K_CHARS
     db.add(AICall(
         call_id=uuid.uuid4(), prompt="synthesize", version="v1", purpose="synthesize",
         model=_ELEVENLABS_MODEL, provider="elevenlabs", characters=len(text),
-        cost=(len(text) / 1000) * _ELEVENLABS_PRICE_PER_1K_CHARS,
+        cost=cost,
         latency_ms=latency_ms,
         context={"customer_id": str(customer_id), "request_id": str(request_id) if request_id else None,
                  "episode_id": str(episode_id) if episode_id else None},
         creado_en=datetime.utcnow(),
     ))
     await emitir(db, "ai_call", customer_id=customer_id, source="ai_platform", purpose="synthesize", failed=False)
-    return response.content
+    return response.content, cost

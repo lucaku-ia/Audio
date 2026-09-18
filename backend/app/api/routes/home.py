@@ -21,21 +21,30 @@ Deferred, and why (per the PRD's own engineering notes and open questions):
   research_and_write_block so far). Returns an empty list; no placeholder
   ranking logic was written.
 - Shared inventory for empty days (PRD §4, "up to three shared-inventory
-  episodes matched to interests"): needs team-curated seed requests per
-  interest cluster, which don't exist — see episode_generator.py's own
-  scope note ("Shared inventory... needs team-curated seed requests per
-  cluster, which don't exist"). Returns an empty list.
+  episodes matched to interests"): now built. `shared_inventory`
+  returns up to 3 Episodes tagged shared=True whose InventoryItem.tags
+  overlap the customer's OnboardingState.selected_interests, most recent
+  per matching tag first, each with a `reason` field ("Because you follow
+  {tag}") per the PRD's "if we cannot say why, we do not show it" tenet —
+  see _derive_shared_inventory below and app/services/episode_generator.py's
+  "Built: shared inventory" section for how those Episodes get produced.
+  A customer with no selected interests, or none matching any tag a shared
+  episode currently exists for, correctly gets an empty list rather than a
+  guessed match. Onboarding's own day-zero sample (PRD, separate from Home)
+  is a smaller follow-up not wired up yet — see onboarding.py's scope note;
+  the query below is exactly what that follow-up would reuse.
 - Playback position / "left at m:ss" (PRD §4, Recent): there is no Player
   epic and no playback-position field anywhere in this codebase. Recent's
   `state` therefore only distinguishes a completed episode from a
   synthesized "no news that day" entry — it never claims "listened" or
   "left at m:ss", since there is no data source for either. Revisit once
   the Player PRD lands.
-- job.eta (PRD's "Ready at HH:MM" countdown): GenerationJob.eta exists as a
-  column but episode_generator.py never sets it anywhere in the pipeline —
-  so it is always null today. That's an existing gap in the Generator, not
-  something patched here; `banner.eta` simply passes through whatever is
-  in the column (currently always None).
+- job.eta (PRD's "Ready at HH:MM" countdown): now set for real by
+  episode_generator.run_generation (see that module's _compute_eta) and
+  kept current by its check_late_jobs watchdog when a job runs long enough
+  to be relabelled `late` — `banner.eta` still just passes through
+  whatever is in the column, unchanged here, but that column is no longer
+  always null.
 - Subscribing to job-status updates (PRD §5: "subscribe, not poll, for the
   countdown"): out of scope for a synchronous HTTP endpoint; a client
   polls GET /api/home or GET /generation/jobs/{id} for now. A push channel
@@ -64,7 +73,8 @@ from app.api.routes.requests import CrearRequestBody, RequestOut, crear_request
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.episode import Block, Episode
-from app.models.generation_job import GenerationJob, JobStatus
+from app.models.generation_job import GenerationJob, InventoryItem, JobStatus
+from app.models.onboarding import OnboardingState
 from app.models.request import CreatedFrom, Request, RequestKind, RequestStatus
 
 router = APIRouter(prefix="/home", tags=["Home"])
@@ -78,7 +88,7 @@ class BannerOut(BaseModel):
     requests_count: int | None = None  # ready: number of answered requests (blocks); making/late: requests in progress
     duration_s: int | None = None
     style: str | None = None
-    eta: datetime | None = None  # making/late only; see module scope note — always null until the Generator sets it
+    eta: datetime | None = None  # making/late only; see module scope note for how the Generator sets/refreshes it
 
 
 class RecentEpisodeOut(BaseModel):
@@ -89,11 +99,19 @@ class RecentEpisodeOut(BaseModel):
     state: str  # completed | no_news — see module scope note on playback position
 
 
+class SharedInventoryOut(BaseModel):
+    episode_id: str
+    headline: str | None
+    duration_s: int | None
+    style: str | None
+    reason: str  # e.g. "Because you follow technology" — see module scope note
+
+
 class HomeOut(BaseModel):
     banner: BannerOut
     recent: list[RecentEpisodeOut]
     suggestions: list = Field(default_factory=list)  # deferred — see module scope note
-    shared_inventory: list = Field(default_factory=list)  # deferred — see module scope note
+    shared_inventory: list[SharedInventoryOut] = Field(default_factory=list)
 
 
 class RequestTodayBody(BaseModel):
@@ -204,6 +222,58 @@ async def _derive_recent(db: AsyncSession, cliente: Cliente) -> list[RecentEpiso
     return entries[:3]
 
 
+# ── Shared inventory derivation ──────────────────────────────────────────────
+
+async def _derive_shared_inventory(db: AsyncSession, cliente: Cliente) -> list[SharedInventoryOut]:
+    """
+    Matches the customer's OnboardingState.selected_interests against tags on
+    shared Episodes — see app/services/episode_generator.py's "Built: shared
+    inventory" section for how those Episodes/InventoryItem rows are produced
+    (app.api.routes.internal.generate_shared_inventory). No selected
+    interests, or no shared episode currently tagged with any of them, both
+    correctly return an empty list rather than a guessed match — this is the
+    same "if we cannot say why, we do not show it" rule Home's suggestions
+    already follow.
+
+    Filters InventoryItem.tags in Python rather than a JSON-containment SQL
+    filter: the shared-inventory table is small (one row per interest tag,
+    refreshed at most once a day), so a plain fetch-and-filter is simpler and
+    keeps this portable across whatever JSON column type the DB backend uses.
+    """
+    state = await db.get(OnboardingState, cliente.id)
+    interests = state.selected_interests if state else []
+    if not interests:
+        return []
+
+    rows_result = await db.execute(
+        select(Episode, InventoryItem)
+        .join(InventoryItem, InventoryItem.episode_id == Episode.id)
+        .where(Episode.shared.is_(True))
+        .order_by(Episode.fecha.desc(), Episode.published_at.desc())
+    )
+    rows = rows_result.all()
+
+    latest_by_tag: dict[str, tuple[Episode, InventoryItem]] = {}
+    for episode, item in rows:
+        for tag in item.tags:
+            latest_by_tag.setdefault(tag, (episode, item))  # rows are already newest-first
+
+    matched: list[SharedInventoryOut] = []
+    for tag in interests:
+        hit = latest_by_tag.get(tag)
+        if not hit:
+            continue
+        episode, item = hit
+        reason = (item.reason_template or "Because you follow {tag}").format(tag=tag)
+        matched.append(SharedInventoryOut(
+            episode_id=str(episode.id), headline=episode.headline,
+            duration_s=episode.duration_s, style=episode.style, reason=reason,
+        ))
+        if len(matched) >= 3:
+            break
+    return matched
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=HomeOut)
@@ -213,7 +283,8 @@ async def home(
 ):
     banner = await _derive_banner(db, cliente)
     recent = await _derive_recent(db, cliente)
-    return HomeOut(banner=banner, recent=recent, suggestions=[], shared_inventory=[])
+    shared_inventory = await _derive_shared_inventory(db, cliente)
+    return HomeOut(banner=banner, recent=recent, suggestions=[], shared_inventory=shared_inventory)
 
 
 @router.post("/request-today", response_model=RequestOut, status_code=201)

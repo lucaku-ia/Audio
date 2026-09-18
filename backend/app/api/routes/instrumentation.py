@@ -26,6 +26,14 @@ What's built vs. deferred, against the PRD's dashboard requirements:
   `AICall` already logs `purpose`, `cost`, and `context` (which carries
   `customer_id`) for every real model call (Anthropic + ElevenLabs), per
   app/models/instrumentation.py and app/services/ai_platform.py.
+  `by_customer` excludes the synthetic system Clientes that
+  app.services.episode_generator.generate_shared_episode creates one of
+  per interest tag (see that module's "Built: shared inventory" section)
+  — those rows are real AICall spend, correctly counted in `total_cost`,
+  but are not an "active customer" per the PRD's own framing, so listing
+  them in `by_customer` would misrepresent per-customer cost. Identified
+  by SHARED_INVENTORY_EMAIL_DOMAIN, the same email pattern that keeps
+  them out of every customer-facing list.
 - Completeness ("event catalog received") -> `/event-counts`. Simplified
   per the PRD's own escape hatch ("simplify to just reporting counts per
   event name/day ... if a strict expected-vs-received check is
@@ -42,6 +50,16 @@ What's built vs. deferred, against the PRD's dashboard requirements:
   creation-time range per status only. Do not fabricate a completion
   timestamp to fake a latency number; add the column (and a
   COLUMNAS_ESPERADAS entry) when the Generator actually needs one.
+- Cost per stage (research / assemble / voicing) -> also in
+  `/generation-funnel`, as `cost_by_stage`. Previously deliberately not
+  wired: attributing cost to a stage would have meant either changing
+  `research_and_write_block`'s/`synthesize`'s public signatures (judged out
+  of scope) or a lossy time-window query over AICall. Closed by having
+  `ai_platform._log_call` return the cost it just logged so its two direct
+  callers (research_and_write_block, synthesize) can carry it upward
+  without a new business-logic parameter — see episode_generator.py's
+  run_generation for where that cost is accumulated per stage into
+  `GenerationJob.stages` and the `stage_completed` Event payload.
 - Onboarding funnel (steps entered vs completed) -> `/onboarding-funnel`.
   Buildable from `OnboardingState.step` and `.completed_at`
   (app/models/onboarding.py) — one row per customer, so this is a
@@ -84,9 +102,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_internal_dashboard_key
 from app.db.session import get_db
+from app.models.cliente import Cliente
 from app.models.generation_job import GenerationJob, JobStatus
 from app.models.instrumentation import AICall, Event
 from app.models.onboarding import OnboardingState, OnboardingStep
+from app.services.episode_generator import SHARED_INVENTORY_EMAIL_DOMAIN
 
 router = APIRouter(
     prefix="/internal/instrumentation",
@@ -158,16 +178,29 @@ async def cost_summary(
         )
     ).all()
 
+    system_customer_ids = {
+        str(row[0])
+        for row in (
+            await db.execute(
+                select(Cliente.id).where(Cliente.email.like(f"shared-inventory+%@{SHARED_INVENTORY_EMAIL_DOMAIN}"))
+            )
+        ).all()
+    }
+
     customer_id_expr = AICall.context["customer_id"].as_string()
-    by_customer_rows = (
+    by_customer_rows_raw = (
         await db.execute(
             select(customer_id_expr, func.count(AICall.call_id), func.coalesce(func.sum(AICall.cost), 0))
             .where(AICall.creado_en >= since_dt)
             .group_by(customer_id_expr)
             .order_by(func.sum(AICall.cost).desc())
-            .limit(top_customers)
+            .limit(top_customers + len(system_customer_ids))  # headroom so excluding system rows doesn't undercut top N
         )
     ).all()
+    # See module docstring's cost-summary note: shared-inventory synthetic
+    # customers are real spend (counted in total_cost above) but not an
+    # "active customer" for this per-customer breakdown.
+    by_customer_rows = [row for row in by_customer_rows_raw if row[0] not in system_customer_ids][:top_customers]
 
     day_expr = func.date(AICall.creado_en)
     by_day_rows = (
@@ -253,10 +286,18 @@ class GenerationStatusCount(BaseModel):
     latest_creado_en: datetime | None
 
 
+class CostByStageType(BaseModel):
+    stage: str
+    stage_count: int
+    total_cost: float
+    avg_cost: float
+
+
 class GenerationFunnelOut(BaseModel):
     since: date
     total_jobs: int
     by_status: list[GenerationStatusCount]
+    cost_by_stage: list[CostByStageType]
     latency_note: str
 
 
@@ -273,6 +314,22 @@ async def generation_funnel(
     range per status instead of a fabricated latency figure — add a real
     completion timestamp (and a COLUMNAS_ESPERADAS migration entry) before
     this metric can be built.
+
+    cost_by_stage is the dashboard-facing payoff of wiring real cost onto
+    each GenerationJob.stages entry (see episode_generator.run_generation's
+    "Cost per stage" note) — total/average AICall cost incurred per stage
+    type (research/assemble/voicing), across every job in the window.
+    `stages` is a JSON list, not a relational table, so this aggregates in
+    Python over each job's `stages` rather than a SQL GROUP BY — acceptable
+    at this pilot's job volume; revisit (e.g. a Postgres JSON path query, or
+    a proper stage_costs table) if generation-funnel's query time becomes a
+    problem. Only entries carrying both `cost` and `latency_ms` are counted:
+    that's the one canonical "stage completed" entry per stage per job — it
+    excludes the transient {"stage": "voicing", "error": ..., "cost": ...}
+    entry a mid-loop TTS failure appends before the stage's own final
+    summary (counting it too would double the voicing cost for that job),
+    and excludes the whole-job {"error": ...} sentinel a failed run replaces
+    `stages` with (no `stage` key at all).
     """
     since_dt = datetime.utcnow() - timedelta(days=days)
 
@@ -296,6 +353,28 @@ async def generation_funnel(
         )
     ).all()
 
+    stages_rows = (
+        await db.execute(
+            select(GenerationJob.stages).where(GenerationJob.creado_en >= since_dt)
+        )
+    ).scalars().all()
+
+    stage_costs: dict[str, list[float]] = {}
+    for stages in stages_rows:
+        for entry in stages or []:
+            stage = entry.get("stage")
+            if not stage or "cost" not in entry or "latency_ms" not in entry:
+                continue
+            stage_costs.setdefault(stage, []).append(float(entry["cost"]))
+
+    cost_by_stage = [
+        CostByStageType(
+            stage=stage, stage_count=len(costs), total_cost=sum(costs),
+            avg_cost=(sum(costs) / len(costs)) if costs else 0.0,
+        )
+        for stage, costs in sorted(stage_costs.items(), key=lambda kv: sum(kv[1]), reverse=True)
+    ]
+
     return GenerationFunnelOut(
         since=since_dt.date(),
         total_jobs=total,
@@ -306,6 +385,7 @@ async def generation_funnel(
             )
             for status, count, earliest, latest in rows
         ],
+        cost_by_stage=cost_by_stage,
         latency_note=(
             "GenerationJob has no completed_at/finished_at column, so "
             "creation-to-ready latency cannot be computed — only status "
