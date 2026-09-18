@@ -99,6 +99,25 @@ actor APIClient {
         try await send(path: "/profile", method: "PATCH", jsonBody: body, token: token)
     }
 
+    // MARK: - Onboarding / Interests (backend/app/api/routes/onboarding.py)
+
+    /// The curated interest catalogue, localized server-side. Used by the
+    /// Interests screen both to label a customer's `selected_interests` ids
+    /// and to populate "Explore more" (every option not already selected).
+    func interestOptions(token: String) async throws -> [InterestOption] {
+        try await send(path: "/onboarding/interest_options", method: "GET", token: token)
+    }
+
+    func onboardingState(token: String) async throws -> OnboardingStateOut {
+        try await send(path: "/onboarding/state", method: "GET", token: token)
+    }
+
+    /// Replaces the customer's ENTIRE standing-interests list — there is no
+    /// per-interest add/remove endpoint server-side (see OnboardingModels.swift).
+    func setInterests(_ interests: [String], token: String) async throws -> OnboardingStateOut {
+        try await send(path: "/onboarding/interests", method: "PATCH", jsonBody: InterestsBody(interests: interests), token: token)
+    }
+
     // MARK: - Account & data (backend/app/api/routes/account.py)
 
     /// Returns the raw JSON body of the customer's full data export — see
