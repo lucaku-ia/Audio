@@ -25,6 +25,13 @@
 		B7B9F2984EA2BFBC0ED93994 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE0828A73612D8093A11CDFB /* SettingsView.swift */; };
 		F538702789B39516E2650E67 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 560ACC0AFC14B01D723AAD2E /* Assets.xcassets */; };
 		2E50EF46C1A3C5D03A23FAAE /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F67D742DE0A8670B599C0577 /* Preview Assets.xcassets */; };
+		06822CE885F14A8A96FFFDD3 /* LucakuColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69288E30F4EB472DA85EC5C3 /* LucakuColor.swift */; };
+		664AA7F7810C49B383DD1A42 /* LucakuTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C3E4D5839734BB792C450B1 /* LucakuTypography.swift */; };
+		8ACEBCB60F3E408DA1315E2D /* LucakuSpacing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BE9E131A7C5404697A8AF15 /* LucakuSpacing.swift */; };
+		F14D1BBCA30D4B7BA491898D /* LucakuRadius.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D80DD700C864880AEB0361E /* LucakuRadius.swift */; };
+		943AA3027AA5426092F88D20 /* LucakuMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBB3515470E346799F409EC5 /* LucakuMotion.swift */; };
+		1D38B86019DB4780AEA91D6F /* SettingsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEFA414400124688BFE64210 /* SettingsModels.swift */; };
+		BDC57A8F26CE4234980D68FD /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5587AB59E9934D6FAD84588C /* SettingsViewModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,6 +55,13 @@
 		F67D742DE0A8670B599C0577 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		F84A9469A955E4C09A07189F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A87FA0F994F5F875611545BE /* LucakuAudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LucakuAudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		69288E30F4EB472DA85EC5C3 /* LucakuColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LucakuColor.swift; sourceTree = "<group>"; };
+		2C3E4D5839734BB792C450B1 /* LucakuTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LucakuTypography.swift; sourceTree = "<group>"; };
+		5BE9E131A7C5404697A8AF15 /* LucakuSpacing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LucakuSpacing.swift; sourceTree = "<group>"; };
+		4D80DD700C864880AEB0361E /* LucakuRadius.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LucakuRadius.swift; sourceTree = "<group>"; };
+		FBB3515470E346799F409EC5 /* LucakuMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LucakuMotion.swift; sourceTree = "<group>"; };
+		BEFA414400124688BFE64210 /* SettingsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsModels.swift; sourceTree = "<group>"; };
+		5587AB59E9934D6FAD84588C /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -68,6 +82,7 @@
 				C55D9DDC93F7C7C0106D2125 /* HomeModels.swift */,
 				EAF2D676CD38B88B29066CB0 /* GenerationModels.swift */,
 				94717B46BDEA36DA86C60907 /* SearchModels.swift */,
+				BEFA414400124688BFE64210 /* SettingsModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -120,6 +135,7 @@
 			isa = PBXGroup;
 			children = (
 				BE0828A73612D8093A11CDFB /* SettingsView.swift */,
+				5587AB59E9934D6FAD84588C /* SettingsViewModel.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -149,6 +165,7 @@
 				E92FF33BA9B576CF88DC6CBF /* LucakuAudioApp.swift */,
 				89E49ECCD298F60E4291CD77 /* ContentView.swift */,
 				6A9F0C82BB0FD22B2FA91ED6 /* Config.swift */,
+				F08D1E8166E54A3FADC8B4FC /* DesignSystem */,
 				8BA8EB0A399E6FB620C904B4 /* Networking */,
 				8FEFEEC964363CF7DAE4CF3B /* Session */,
 				3DEE482E18429A2ED0F9619E /* Features */,
@@ -173,6 +190,18 @@
 				739AEA46AE8FD7993364EF0E /* LucakuAudio */,
 				6EE73C3C6D13015E82B00D9F /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		F08D1E8166E54A3FADC8B4FC = {
+			isa = PBXGroup;
+			children = (
+				69288E30F4EB472DA85EC5C3 /* LucakuColor.swift */,
+				2C3E4D5839734BB792C450B1 /* LucakuTypography.swift */,
+				5BE9E131A7C5404697A8AF15 /* LucakuSpacing.swift */,
+				4D80DD700C864880AEB0361E /* LucakuRadius.swift */,
+				FBB3515470E346799F409EC5 /* LucakuMotion.swift */,
+			);
+			path = DesignSystem;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -261,6 +290,13 @@
 				74082829A40040CE9A2049FB /* LibraryView.swift in Sources */,
 				597FE6F1116A37B5D0B3D6F2 /* LibraryViewModel.swift in Sources */,
 				B7B9F2984EA2BFBC0ED93994 /* SettingsView.swift in Sources */,
+				06822CE885F14A8A96FFFDD3 /* LucakuColor.swift in Sources */,
+				664AA7F7810C49B383DD1A42 /* LucakuTypography.swift in Sources */,
+				8ACEBCB60F3E408DA1315E2D /* LucakuSpacing.swift in Sources */,
+				F14D1BBCA30D4B7BA491898D /* LucakuRadius.swift in Sources */,
+				943AA3027AA5426092F88D20 /* LucakuMotion.swift in Sources */,
+				1D38B86019DB4780AEA91D6F /* SettingsModels.swift in Sources */,
+				BDC57A8F26CE4234980D68FD /* SettingsViewModel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
