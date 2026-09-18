@@ -13,12 +13,61 @@ struct BannerOut: Decodable {
     let style: String?
     /// making/late only.
     let eta: Date?
+    /// ready only — per-block breakdown of today's episode, in playback
+    /// order. Empty (default) for every other banner state. See
+    /// BlockSummaryOut's docstring.
+    let blocks: [BlockSummaryOut]
 
     enum CodingKeys: String, CodingKey {
         case state, headline
         case requestsCount = "requests_count"
         case durationS = "duration_s"
-        case style, eta
+        case style, eta, blocks
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = try container.decode(String.self, forKey: .state)
+        headline = try container.decodeIfPresent(String.self, forKey: .headline)
+        requestsCount = try container.decodeIfPresent(Int.self, forKey: .requestsCount)
+        durationS = try container.decodeIfPresent(Int.self, forKey: .durationS)
+        style = try container.decodeIfPresent(String.self, forKey: .style)
+        eta = try container.decodeIfPresent(Date.self, forKey: .eta)
+        // Older/other banner states omit `blocks` entirely rather than send
+        // `[]` — decode defensively so those states don't fail the whole
+        // Home load.
+        blocks = try container.decodeIfPresent([BlockSummaryOut].self, forKey: .blocks) ?? []
+    }
+}
+
+/// Per-block breakdown for the ready episode's banner — matches backend/app/
+/// api/routes/home.py's `BlockSummaryOut` exactly (added alongside the
+/// existing aggregate headline/duration_s/requests_count fields). This is
+/// what lets Home render one real row per topic instead of a single
+/// synthesized "whole episode" row (see HomeView.swift).
+struct BlockSummaryOut: Decodable, Identifiable {
+    let id: String
+    /// nil = intro/outro block (not tied to a customer request).
+    let requestId: String?
+    /// 0-based position in playback order (== this array's own order).
+    let sequence: Int
+    let startS: Int
+    let endS: Int
+    let durationS: Int
+    /// The one-line topic/question text for this block (backend field name
+    /// is `summary`, not `topic`).
+    let summary: String
+    let hadMore: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case requestId = "request_id"
+        case sequence
+        case startS = "start_s"
+        case endS = "end_s"
+        case durationS = "duration_s"
+        case summary
+        case hadMore = "had_more"
     }
 }
 

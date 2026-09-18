@@ -33,8 +33,8 @@ struct ContentView: View {
 /// (`MiniPlayerBar`, now deleted) backed by local/hardcoded state — the two
 /// disagreed about what was actually playing (Home said "Playing", the real
 /// Player tab correctly said "Paused"). There is now exactly one source of
-/// truth for playback state, and every screen (including Home's block-list
-/// "currently playing" highlight) reads from it.
+/// truth for playback state, and every screen (including Home's real
+/// per-block list and its "currently playing" highlight) reads from it.
 struct MainTabView: View {
     private enum Tab: Hashable {
         case home, search, interests, settings
@@ -47,25 +47,27 @@ struct MainTabView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             TabView(selection: $selection) {
-                HomeView()
+                // Home reads the shared `playerViewModel` via
+                // `@EnvironmentObject` (inherited automatically from this
+                // view's own environment — no explicit `.environmentObject()`
+                // needed here) for its per-block "currently playing"
+                // highlight, and hands tapped blocks back up to
+                // `openInPlayer` below so tapping a row opens that exact
+                // block in the shared player, mirroring the mini player's
+                // own tap-to-open behavior. There's no Player tab to switch
+                // to any more (see the type doc above), so this expands the
+                // Now Playing overlay instead.
+                HomeView(onOpenBlock: { block in openInPlayer(block) })
                     .tabItem { Label("Home", systemImage: selection == .home ? "house.fill" : "house") }
                     .tag(Tab.home)
 
-                // TODO: replace with real Search screen (see PR from concurrent work).
-                // search_interests_v3.html's Search tab (recent searches, suggested
-                // topics, episode-history search, "add as new interest") has no real
-                // SwiftUI implementation yet anywhere in this codebase — that is
-                // separate, concurrent work. This placeholder exists only so the tab
-                // bar structure matches the approved design and the app doesn't crash.
-                SearchPlaceholderView()
+                SearchView()
                     .tabItem {
                         Label("Search", systemImage: selection == .search ? "magnifyingglass.circle.fill" : "magnifyingglass")
                     }
                     .tag(Tab.search)
 
-                // TODO: replace with real Interests screen (see PR from concurrent work).
-                // Same situation as Search above — no real SwiftUI implementation yet.
-                InterestsPlaceholderView()
+                InterestsView()
                     .tabItem {
                         Label("Interests", systemImage: selection == .interests ? "star.fill" : "star")
                     }
@@ -105,28 +107,28 @@ struct MainTabView: View {
             await playerViewModel.load(token: token)
         }
     }
-}
 
-/// Minimal stand-in for the Search tab. search_interests_v3.html has no real
-/// SwiftUI implementation yet — that's separate, concurrent work — so this
-/// exists purely to keep the tab bar structure correct.
-private struct SearchPlaceholderView: View {
-    var body: some View {
-        NavigationStack {
-            Text("Search")
-                .foregroundStyle(LucakuColor.textSecondary)
-                .navigationTitle("Search")
-        }
-    }
-}
-
-/// Minimal stand-in for the Interests tab. Same situation as Search above.
-private struct InterestsPlaceholderView: View {
-    var body: some View {
-        NavigationStack {
-            Text("Interests")
-                .foregroundStyle(LucakuColor.textSecondary)
-                .navigationTitle("Interests")
+    /// Home tapped a real block row — load the shared `PlayerViewModel`'s
+    /// episode if it isn't already, select the matching block (matched by
+    /// start/end offset; see HomeView.swift's doc on why not `id`), and
+    /// expand the Now Playing overlay so the tap actually lands on that
+    /// block. There's no separate Player tab any more (see this type's file
+    /// doc) — the mini player / Now Playing overlay mounted here is the one
+    /// place playback is ever shown, so "open Player at this block" means
+    /// "expand the overlay", not "switch tabs".
+    private func openInPlayer(_ block: BlockSummaryOut) {
+        Task {
+            if !playerViewModel.hasEpisode, let token = session.accessToken {
+                await playerViewModel.load(token: token)
+            }
+            if let index = playerViewModel.blocks.firstIndex(where: {
+                $0.startS == block.startS && $0.endS == block.endS
+            }) {
+                playerViewModel.selectBlock(index)
+            }
+            withAnimation(LucakuMotion.house) {
+                playerViewModel.isNowPlayingExpanded = true
+            }
         }
     }
 }
