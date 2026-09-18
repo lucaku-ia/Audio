@@ -86,6 +86,31 @@ actor APIClient {
         try await send(path: "/generation/episodes/latest", method: "GET", token: token)
     }
 
+    // MARK: - Profile / Settings (backend/app/api/routes/profile.py)
+
+    func getProfile(token: String) async throws -> ProfileOut {
+        try await send(path: "/profile", method: "GET", token: token)
+    }
+
+    /// Partial update — only the fields set on `body` are sent (see
+    /// `SettingsBody`'s doc comment), matching the backend's
+    /// `model_fields_set` partial-update semantics.
+    func updateSettings(_ body: SettingsBody, token: String) async throws -> SettingsOut {
+        try await send(path: "/profile", method: "PATCH", jsonBody: body, token: token)
+    }
+
+    // MARK: - Account & data (backend/app/api/routes/account.py)
+
+    /// Returns the raw JSON body of the customer's full data export — see
+    /// `SettingsModels.swift`'s note on why this isn't decoded into structs.
+    func exportAccountData(token: String) async throws -> Data {
+        try await sendRaw(path: "/account/export", method: "GET", token: token)
+    }
+
+    func deleteAccount(token: String) async throws -> DeleteAccountResponse {
+        try await send(path: "/account", method: "DELETE", token: token)
+    }
+
     // MARK: - Search & AI (backend/app/api/routes/search.py)
 
     func searchHistory(offset: Int = 0, limit: Int = 20, token: String) async throws -> HistoryOut {
