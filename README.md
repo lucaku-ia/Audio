@@ -21,14 +21,17 @@ Backend only, no UI yet. Live in production on Railway:
 | Request Management (CRUD + versioning) | ✅ Built & deployed | `app/api/routes/requests.py`, `app/models/request.py` | Request Management PRD (Andrés, Draft v1) |
 | Profile (voice, narration style, delivery time, length) | ✅ Built & deployed | `app/api/routes/profile.py`, `app/models/profile.py` | Request Management / Onboarding |
 | Onboarding (resumable state, interests, seed-list suggestions, T-60 confirmation) | ✅ Built & deployed | `app/api/routes/onboarding.py`, `app/models/onboarding.py`, `app/data/onboarding_seeds.json` | Onboarding PRD (Andrés, Draft v4) |
-| AI Platform — `structure_request` only (structuring + safety screen) | ✅ Built & deployed | `app/services/ai_platform.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
-| Episode, Block | Data model only | `app/models/episode.py` | Episode Generator |
-| GenerationJob, InventoryItem | Data model only | `app/models/generation_job.py` | Episode Generator |
-| Event, AICall | Data model, `AICall` actively written by the AI Platform | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
-| Episode Generator, Home, Player, Search & AI, Notifications+Settings, Instrumentation dashboard | Not started | — | — |
+| AI Platform — `structure_request` + `research_and_write_block` (structuring, safety screen, research+writing) | ✅ Built & deployed | `app/services/ai_platform.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
+| Episode Generator — on-demand path only: load → research+write → assemble → trim → headline → publish | ✅ Built & deployed, text-only (no TTS) | `app/services/episode_generator.py`, `app/api/routes/generation.py` | Episode Generator PRD (Juan, Draft v1) |
+| Event, AICall | Data model, actively written by the AI Platform and Generator | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
+| Home, Player, Search & AI, Notifications+Settings, Instrumentation dashboard | Not started | — | — |
 
 Everything above has been **tested end-to-end against the live production deployment**,
-not just locally — see "Verifying a change" below for how to do the same.
+not just locally — see "Verifying a change" below for how to do the same. Most recently:
+signup → create request → `POST /generation/run` against production on 2026-09-18,
+confirming a real episode gets researched (live web search), written, trimmed and
+published with cited sources — see "Episode Generator scope" below for exactly what
+that covers and what it doesn't yet.
 
 ## Read this before touching anything
 
@@ -94,6 +97,42 @@ when picked back up.
 locally) or every `POST`/`PATCH /requests` call will fail with a 500
 (`anthropic.AuthenticationError`) — this bit us once already, see git history.
 
+### Episode Generator scope
+
+Built: the **on-demand path only** — `POST /api/generation/run` runs
+load → research+write (per active request, via `ai_platform.research_and_write_block`,
+which uses Claude's server-side `web_search` tool) → assemble → trim to the
+customer's `max_length_minutes` ceiling → headline → voice → publish, synchronously,
+in one request. Verified against production: an empty-news topic correctly returns
+`status: "empty"` with no episode (the PRD's "never fill" tenet); a genuinely current
+topic produces a real Episode with sourced, cited blocks.
+
+Voicing (TTS) is wired via ElevenLabs (`ai_platform.synthesize`) — **requires
+`ELEVENLABS_API_KEY`** (Railway Variables / `.env`, see `.env.example`). Without it,
+`ai_platform.elevenlabs_configured()` is false and the job degrades gracefully: the
+episode still publishes with its full script, `audio_url` stays null, and the job
+parks at `status: "voicing"` instead of `"ready"`. A TTS call that fails once the key
+*is* set is also non-fatal — the text episode still publishes; check
+`job.stages` for a `{"stage": "voicing", "error": ...}` entry. Audio is written to
+`settings.MEDIA_DIR` (local container disk — **not** durable storage, doesn't survive
+a redeploy; see the config's own note) and served at `/media/{episode_id}.mp3`.
+
+Deferred, and why (see the module's own docstring for detail):
+- **Real per-block timestamp alignment** — ElevenLabs' character-level timing needs a
+  separate `/with-timestamps` endpoint, not used here; block offsets still come from
+  the word-count estimate, so expect some drift against the real audio.
+- **Durable audio storage** — needs real object storage (S3/R2/etc.) before this can
+  be relied on beyond manual testing.
+- **Real novelty judgment** ("new since we last told this customer") — needs the AI
+  Platform's shared semantic index, which doesn't exist; today it only judges "new
+  today" in isolation, so a slow-moving topic can repeat itself day to day.
+- **Scheduled path** (T−60 cron per customer timezone) — infrastructure only, the
+  pipeline itself is trigger-agnostic per the PRD.
+- **Shared inventory** (day-zero/empty-day samples) — needs curated seed requests per
+  interest cluster, none exist yet.
+- **Idempotency** — calling `/generation/run` twice for the same customer/day currently
+  produces two episodes; add a uniqueness check before wiring a real scheduler.
+
 ### The recurring migration gotcha
 
 SQLAlchemy's `create_all()` (run on every startup, see `app/main.py` lifespan) only
@@ -137,7 +176,9 @@ Railway (backend service + a Postgres service), auto-deploys on push to `main`.
   installed, and startup crashes with `ModuleNotFoundError`.
 - Railway service Variables needed in production: `DATABASE_URL` (usually
   `${{Postgres.DATABASE_URL}}`), `SECRET_KEY` (long random string — never reuse the
-  placeholder in `.env.example`), `ANTHROPIC_API_KEY`.
+  placeholder in `.env.example`), `ANTHROPIC_API_KEY`. `ELEVENLABS_API_KEY` is optional
+  — without it the Generator still runs, just without audio (see "Episode Generator
+  scope" above).
 
 ### Verifying a change
 
@@ -171,23 +212,28 @@ full so far:
   suggestions, empty-day state, re-entry. Not started.
 - **Player PRD** (Juan, Draft v1) — persistent bar + full player, block/request
   navigation, refinement, offline mode, OS media session. Not started.
+- **Episode Generator PRD** (Juan, Draft v1) — two paths sharing one pipeline, T−60
+  freshness, never-fill, trim-to-ceiling, shared inventory, cost per stage. On-demand
+  path built; see "Episode Generator scope" above for exactly what's deferred.
 
-Not yet read in this pass: Episode Generator, Search & AI, Notifications+Settings,
-Instrumentation dashboard PRDs — find and read them before starting that module.
+Not yet read in this pass: Search & AI, Notifications+Settings, Instrumentation
+dashboard PRDs — find and read them before starting that module.
 
 ## Suggested next steps
 
-1. **Episode Generator** — the biggest remaining gap. Nothing produces an actual
-   episode yet, so Onboarding's T-60 confirmation message is currently just a promise
-   with no job behind it. Needs its own PRD read in full; will likely need the AI
-   Platform's `synthesize()` (TTS) and a `research`/`write` prompt in the registry.
+1. **Set `ELEVENLABS_API_KEY` in Railway** — voicing is wired (`ai_platform.synthesize`)
+   but needs the key to actually run; until then episodes stay text-only. Once set,
+   also move audio off local container disk onto real object storage (S3/R2/etc.) —
+   see "Episode Generator scope" above.
 2. **AI Platform, next delivery-order item** — the prompt registry (per the PRD's own
-   §9 delivery order, this comes right after the call wrapper that's already built), to
-   unblock the Generator's research/writing prompts.
+   §9 delivery order) and the shared semantic index, to unblock real novelty judgment
+   and Search & AI.
 3. **Home** and **Player** — both read already; Player is a hard dependency of Request
    Management's `refine()`, which is still unbuilt.
-4. **Google/Apple OAuth** for Login — needs the user to create OAuth credentials in
+4. **Scheduled path + idempotency** for the Generator — cron at T−60 per customer
+   timezone, plus a uniqueness check per (customer, date, path).
+5. **Google/Apple OAuth** for Login — needs the user to create OAuth credentials in
    Google Cloud Console and the Apple Developer portal first.
-5. **Mobile client platform decision** — still open, and several PRDs assume it's
+6. **Mobile client platform decision** — still open, and several PRDs assume it's
    settled (push notifications, deep links, biometrics). Worth resolving before Home/
    Player go too far, since it affects their contracts.
