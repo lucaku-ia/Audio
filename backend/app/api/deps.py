@@ -14,6 +14,25 @@ from app.models.cliente import Cliente
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
+async def require_internal_dashboard_key(x_internal_key: str | None = Header(default=None)) -> None:
+    """
+    Minimal gate for internal-only endpoints (no real admin auth exists
+    yet). Fails CLOSED: if INTERNAL_DASHBOARD_KEY isn't set in the
+    environment, every request 404s rather than the endpoint being open
+    by accident. Uses a 404 (not 401/403) so an internal route's mere
+    existence isn't revealed to an unauthenticated prober.
+
+    Named/shaped to match the equivalent gate the (separate, not yet
+    merged) Instrumentation dashboard PR introduces, so the two are
+    compatible once both land on the same branch.
+    """
+    not_found = HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not settings.INTERNAL_DASHBOARD_KEY:
+        raise not_found
+    if x_internal_key != settings.INTERNAL_DASHBOARD_KEY:
+        raise not_found
+
+
 async def get_current_cliente(
     token: str = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),

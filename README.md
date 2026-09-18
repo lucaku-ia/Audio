@@ -22,6 +22,7 @@ Backend only, no UI yet. Live in production on Railway:
 | Profile (voice, narration style, delivery time, length) | ✅ Built & deployed | `app/api/routes/profile.py`, `app/models/profile.py` | Request Management / Onboarding |
 | Onboarding (resumable state, interests, seed-list suggestions, T-60 confirmation) | ✅ Built & deployed | `app/api/routes/onboarding.py`, `app/models/onboarding.py`, `app/data/onboarding_seeds.json` | Onboarding PRD (Andrés, Draft v4) |
 | AI Platform — `structure_request` + `research_and_write_block` (structuring, safety screen, research+writing) | ✅ Built & deployed | `app/services/ai_platform.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
+| AI Platform — prompt registry (DB-backed prompt versioning, fail-safe fallback, `GET /api/internal/prompts`) | ✅ Built & deployed | `app/models/prompt_registry.py`, `app/services/prompt_registry.py`, `app/api/routes/internal.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
 | Episode Generator — shared pipeline (load → research+write → assemble → trim → headline → voice → publish), on-demand and scheduled paths, idempotent per (customer, date, path) | ✅ Built & deployed, **with working TTS** | `app/services/episode_generator.py`, `app/api/routes/generation.py`, `app/services/scheduler.py` | Episode Generator PRD (Juan, Draft v1) |
 | Event, AICall | Data model, actively written by the AI Platform and Generator | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
 | Request refine() + Player rating | ✅ Built & deployed | `app/api/routes/requests.py` (`/refine`, `episodes_router`) | Request Management / Player PRD |
@@ -56,10 +57,6 @@ PR #3) are both reflected directly in the status table above.
 
 ### Remaining open PRs — built, tested, not yet merged
 
-- **[PR #4](../../pull/4) — AI Platform prompt registry.** Moves hardcoded prompt
-  strings into a DB-backed, versioned registry with a fail-safe fallback to the
-  original constants. Builder-tested against real Postgres, not yet independently
-  reviewed.
 - **[PR #5](../../pull/5) — Instrumentation event catalogue completeness.** Audits
   every epic's event emissions against the Instrumentation PRD's own catalogue,
   fixing naming gaps. Builder-tested against real Postgres, not yet independently
@@ -68,21 +65,21 @@ PR #3) are both reflected directly in the status table above.
 PRs #1, #2 and #3 (now merged) were reviewed by a separate adversarial pass focused
 on security and cross-customer data isolation before merging — findings from those
 reviews were fixed in the branches themselves, not left as follow-up items, except
-where explicitly noted as a documented, lower-priority gap. #4 and #5 have not had
-that extra pass yet (session time constraints) — worth one before merging.
+where explicitly noted as a documented, lower-priority gap. #5 (and this branch, the
+AI Platform prompt registry) have not had that extra pass yet (session time
+constraints) — worth one before merging.
 
-**Note for whoever merges #4 or #5 next**: this README's own history shows each PR
-merge can reintroduce a conflict here and in `app/main.py` (router registration) or
-`app/db/migraciones.py` (if two branches both add index entries) — re-sync each
-remaining branch against `main` right before merging it, don't assume the
-mergeable-status check from an hour ago still holds.
+**Note for whoever merges #5 next**: this README's own history shows each PR merge
+can reintroduce a conflict here and in `app/main.py` (router registration) or
+`app/db/migraciones.py` (if two branches both add index entries) — re-sync the
+branch against `main` right before merging it, don't assume the mergeable-status
+check from an hour ago still holds.
 
 **Still genuinely not started, PRD-read but no code**: the AI Platform's shared
 semantic index (a design decision, not a quick patch — needs an embeddings-provider
 choice), the actual mobile client, Google/Apple OAuth for Login, push notification
 delivery (needs an APNs/FCM credential), and the mobile-platform decision itself
 (§12 of the Umbrella PRD, still open).
-
 ## Read this before touching anything
 
 1. **Find and read the PRD first.** Every module here was built from a PRD doc in the
@@ -142,6 +139,26 @@ Pydantic output schema) to both structure a raw request into
 including rejected ones — as an `AICall` row. Building the next PRD-priority item
 (the prompt registry, to unblock the Generator) is the natural next AI Platform step
 when picked back up.
+
+**Update:** the prompt registry is now built too — `app/models/prompt_registry.py`
+(the `PromptVersion` table) and `app/services/prompt_registry.py`
+(`get_active_prompt` / `seed_prompt_registry`). `structure_request` and
+`research_and_write_block` now fetch their system prompt text and version from the
+DB (the active `PromptVersion` row for their name) instead of the hardcoded
+`*_SYSTEM`/`*_VERSION` module constants directly — those constants still exist and
+are now the seed data (loaded into the table on first boot, in `app/main.py`'s
+lifespan) and the safety fallback if a lookup ever comes up empty (missing/deactivated
+row), which logs a warning and returns the hardcoded prompt rather than raising and
+breaking request creation. `GET /api/internal/prompts` lists every prompt's active
+version and full text, gated by `require_internal_dashboard_key`
+(`app/api/deps.py`) — a shared-secret header pattern, fail-closed if
+`INTERNAL_DASHBOARD_KEY` is unset, named to match the equivalent gate the
+(separate, not yet merged) Instrumentation dashboard PR introduces. Still explicitly
+NOT built: the shared semantic index (needs an embeddings provider decision — a new
+external API credential or a local model — not made here) and evals (running a
+prompt candidate against history before activating it); the registry's shape is
+meant to make evals buildable later without a data-model change, but no eval-running
+logic exists yet.
 
 **Requires `ANTHROPIC_API_KEY`** to be set (Railway Variables in production, `.env`
 locally) or every `POST`/`PATCH /requests` call will fail with a 500
@@ -362,19 +379,21 @@ and read them before starting that module.
 
 ## Suggested next steps
 
-1. **AI Platform, next delivery-order item** — the prompt registry (per the PRD's own
-   §9 delivery order) and the shared semantic index, to unblock real novelty judgment
-   and Search & AI.
-2. **Home** and **Player** — both read already; Player is a hard dependency of Request
-   Management's `refine()`, which is still unbuilt. Player is also where the Generator's
-   "+30 min hard limit, stated plainly if missed" would actually surface to a customer.
-3. **Shared inventory** — curated seed requests per interest cluster, to fill Onboarding's
-   day-zero sample and Home's empty-day state once Home exists.
+1. **The AI Platform's shared semantic index** — the prompt registry is now built (see
+   "AI Platform scope" above); the semantic index is the one remaining AI Platform
+   piece, and it's the real blocker for novelty judgment, Search & AI's Q&A, and
+   Home's suggestions. Needs an embeddings-provider decision (a new external API
+   credential — e.g. Voyage AI or OpenAI embeddings — or a local model) first.
+2. **The actual Player** — the backend (refine/rating) is built; there's no playback
+   UI or client anywhere. Player is also where the Generator's "+30 min hard limit,
+   stated plainly if missed" would actually surface to a customer.
+3. **Shared inventory** — curated seed requests per interest cluster, to fill
+   Onboarding's day-zero sample and Home's empty-day state.
 4. **Google/Apple OAuth** for Login — needs the user to create OAuth credentials in
    Google Cloud Console and the Apple Developer portal first.
 5. **Mobile client platform decision** — still open, and several PRDs assume it's
-   settled (push notifications, deep links, biometrics). Worth resolving before Home/
-   Player go too far, since it affects their contracts.
+   settled (push notifications, deep links, biometrics). Worth resolving before the
+   Player goes too far, since it affects the contract.
 
 Done as of 2026-09-18: ElevenLabs TTS verified working end-to-end in production; audio
 storage moved to a durable Railway volume; Episode Generator scheduled path and
