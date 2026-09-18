@@ -52,6 +52,28 @@ Deferred, and why:
   Claude's server-side web_search tool for this MVP, which is API-based
   and not scraping, but isn't the curated/licensed catalogue the PRD
   describes. Revisit when the AI Platform builds real source management.
+
+Built: pending -> current version promotion. A request can carry a
+pending_version_id (set by refine(), landing separately) whose RequestVersion
+is meant to take effect "from the next generation," not immediately. This
+run is that next generation, so before the research loop reads req.structured
+we promote any pending version still in VersionStatus.pending: the current
+version is marked superseded, the pending one is marked applied (with
+aplicado_en stamped), request.current_version_id/structured move to it, and
+pending_version_id is cleared. This runs inside the same try block as the
+rest of the job, so a later failure rolls the promotion back with everything
+else — a version should only look "applied" if the episode it was applied
+for actually got produced. request.raw_text is deliberately left alone by
+this promotion — it's sacred; only structured, current_version_id and
+pending_version_id are updated here.
+
+Decision (System Contracts gap, not yet resolved elsewhere): editar_request
+(PATCH /requests/{id}) does not touch pending_version_id today. If a
+customer edits their request while a refine is still pending, the pending
+version was structured against raw_text that no longer exists — promoting
+it later would silently overwrite the fresh edit with stale content. Fixed
+at the source in app/api/routes/requests.py: editar_request now supersedes
+any pending version instead of leaving it to be wrongly promoted here.
 """
 import uuid
 from datetime import date, datetime
@@ -65,7 +87,7 @@ from app.models.cliente import Cliente
 from app.models.episode import Block, Episode, EpisodePath
 from app.models.generation_job import GenerationJob, JobStatus
 from app.models.profile import Profile
-from app.models.request import Request, RequestStatus
+from app.models.request import Request, RequestStatus, RequestVersion, VersionStatus
 from app.services import ai_platform
 from app.services.events import emitir
 
@@ -76,6 +98,32 @@ _INTRO_OUTRO_SECONDS = 15
 def _seconds_for_script(script: str) -> float:
     word_count = len(script.split())
     return (word_count / _WORDS_PER_MINUTE) * 60
+
+
+async def _promote_pending_version(db: AsyncSession, req: Request) -> None:
+    """Applies req.pending_version_id, if any, so this generation run researches
+    against it rather than against stale current data. See module docstring."""
+    if not req.pending_version_id:
+        return
+
+    pendiente = await db.get(RequestVersion, req.pending_version_id)
+    if not pendiente or pendiente.status != VersionStatus.pending:
+        # Already applied/superseded by something else (e.g. an intervening edit) —
+        # nothing to promote, just drop the stale pointer.
+        req.pending_version_id = None
+        return
+
+    if req.current_version_id:
+        actual = await db.get(RequestVersion, req.current_version_id)
+        if actual:
+            actual.status = VersionStatus.superseded
+
+    pendiente.status = VersionStatus.applied
+    pendiente.aplicado_en = datetime.utcnow()
+
+    req.current_version_id = pendiente.id
+    req.structured = pendiente.structured
+    req.pending_version_id = None
 
 
 async def run_generation(db: AsyncSession, cliente: Cliente) -> GenerationJob:
@@ -126,6 +174,7 @@ async def run_generation(db: AsyncSession, cliente: Cliente) -> GenerationJob:
             req = req_by_id.get(req_out.id)
             if not req:
                 continue
+            await _promote_pending_version(db, req)  # "applies from next generation" — this run is that next one
             structured = req.structured or {}
             block_result = await ai_platform.research_and_write_block(
                 db,

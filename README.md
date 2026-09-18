@@ -24,7 +24,8 @@ Backend only, no UI yet. Live in production on Railway:
 | AI Platform — `structure_request` + `research_and_write_block` (structuring, safety screen, research+writing) | ✅ Built & deployed | `app/services/ai_platform.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
 | Episode Generator — on-demand path only: load → research+write → assemble → trim → headline → publish | ✅ Built & deployed, text-only (no TTS) | `app/services/episode_generator.py`, `app/api/routes/generation.py` | Episode Generator PRD (Juan, Draft v1) |
 | Event, AICall | Data model, actively written by the AI Platform and Generator | `app/models/instrumentation.py` | Instrumentation & Cost / AI Platform |
-| Home, Player, Search & AI, Notifications+Settings, Instrumentation dashboard | Not started | — | — |
+| Notifications & Settings — Settings CRUD (voice/style/language/delivery time/max length, each with a "when it applies" message) + Account & data (export, cascading delete) | ✅ Built & deployed, push delivery and membership/biometrics deferred (see scope note) | `app/api/routes/profile.py` (PATCH), `app/api/routes/account.py` | Notifications & Settings PRD (Andrés, Draft v1) |
+| Home, Player, Search & AI, Instrumentation dashboard | Not started | — | — |
 
 Everything above has been **tested end-to-end against the live production deployment**,
 not just locally — see "Verifying a change" below for how to do the same. Most recently:
@@ -133,6 +134,50 @@ Deferred, and why (see the module's own docstring for detail):
 - **Idempotency** — calling `/generation/run` twice for the same customer/day currently
   produces two episodes; add a uniqueness check before wiring a real scheduler.
 
+### Notifications & Settings scope
+
+Built: `PATCH /api/profile` (Settings CRUD — partial updates to voice_id,
+narration_style, language, delivery_time/delivery_timezone,
+max_length_minutes, each returning a message stating when the change
+applies, per the PRD tenet "every change says when it applies... never
+silence"); `GET /api/account/export` (JSON of the customer's Requests with
+version history and Episodes with Blocks); `DELETE /api/account`
+(cascading deletion across Profile/OnboardingState/Request/RequestVersion/
+Episode/Block/GenerationJob, with Events anonymized rather than deleted).
+See the module docstrings in `app/api/routes/profile.py` and
+`app/api/routes/account.py` for the exact deletion order and reasoning.
+
+Deferred, and why:
+- **Push notification delivery** (APNs/FCM) — needs an Apple/Google push
+  provider credential that doesn't exist in this repo and isn't something
+  that can be set up without those consoles, same pattern as Google/Apple
+  OAuth below. The PRD's notification-permission-state flag is also
+  deliberately NOT persisted server-side — the PRD itself says permission
+  state should be read from the OS on open and never cached as truth.
+- **Biometric toggle** — per-device Face ID/fingerprint state; this is a
+  client/OS keychain concern, not a server-side preference. Nothing to
+  build on the backend.
+- **Membership row** — PRD says "visible, disabled, labelled Coming soon,"
+  a pure client-side stub with no pricing/CTA. Nothing to build.
+- **Confirmation email** on account deletion — needs an email-sending
+  provider/credential that isn't configured (no SMTP/SES/Postmark
+  settings exist anywhere in this repo). The deletion and cascade
+  themselves are fully built; only the email notice is deferred.
+- **Scheduler integration for delivery-time changes** — the PRD calls for
+  "reschedules generation to T-60," but there's no scheduler in this repo
+  yet (`app/services/scheduler.py` doesn't exist here; it's being built in
+  a separate, not-yet-merged branch). That other design reads
+  `Profile.delivery_time` fresh every tick rather than holding a schedule
+  to invalidate, so writing the new time to the DB (already done) is the
+  entire integration — there's nothing else to build against
+  infrastructure this branch can't see.
+- Verified locally against a real Postgres instance: seeded a full
+  customer (Cliente, Profile, OnboardingState, Request, RequestVersion,
+  Episode, Block, GenerationJob, Event) and ran the deletion logic for
+  real — every table was cleaned up in the right order with no foreign-key
+  violation, and the Event row ended up anonymized (`customer_id = NULL`)
+  rather than removed.
+
 ### The recurring migration gotcha
 
 SQLAlchemy's `create_all()` (run on every startup, see `app/main.py` lifespan) only
@@ -216,8 +261,14 @@ full so far:
   freshness, never-fill, trim-to-ceiling, shared inventory, cost per stage. On-demand
   path built; see "Episode Generator scope" above for exactly what's deferred.
 
-Not yet read in this pass: Search & AI, Notifications+Settings, Instrumentation
-dashboard PRDs — find and read them before starting that module.
+- **Notifications & Settings PRD** (Andrés, Draft v1) — one push a day tied to
+  the episode, and a single settings screen for every "changeable later"
+  decision from other PRDs, plus account export/delete. Settings CRUD and
+  Account & data are built; push delivery, biometrics, and the membership
+  stub are deferred — see "Notifications & Settings scope" above.
+
+Not yet read in this pass: Search & AI, Instrumentation dashboard PRDs — find
+and read them before starting that module.
 
 ## Suggested next steps
 

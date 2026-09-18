@@ -242,6 +242,14 @@ async def editar_request(
         if anterior:
             anterior.status = VersionStatus.superseded
 
+    if req.pending_version_id:
+        # A pending refine was structured against the raw_text this edit just replaced —
+        # promoting it later would silently undo the customer's fresh edit.
+        pendiente = await db.get(RequestVersion, req.pending_version_id)
+        if pendiente and pendiente.status == VersionStatus.pending:
+            pendiente.status = VersionStatus.superseded
+        req.pending_version_id = None
+
     nueva_version = RequestVersion(
         request_id=req.id,
         raw_text=body.raw_text,
