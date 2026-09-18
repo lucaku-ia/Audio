@@ -10,9 +10,17 @@ product built from scratch.
 
 This README is written as a handoff — read it top to bottom before making changes.
 
+## TL;DR for anyone new to this repo
+
+- **Backend**: fully built for every feature that doesn't need a new external credential. Live in production on Railway, real ElevenLabs TTS, real web-grounded research (Claude's `web_search` tool). See the status table below.
+- **Mobile**: a real native iOS app (SwiftUI, not a wrapper) now exists — Login, Home, Player, Settings screens, all hitting the live backend. See "Mobile app (iOS)" below for exactly what's real vs. still mocked. The biggest real gap: audio doesn't play yet (a real AVFoundation engine is in progress, not merged as of this writing).
+- **Design**: three screens (Home, Player, Search/Interests) are designed, approved, and share one consistent token system grounded in real Apple HIG/Spotify/Audible research rather than guesswork. Login just went through a second redesign pass after direct founder feedback. Look-and-feel links are in "Design system" below.
+- **What's blocking further progress that only the founder can unblock**: Google Cloud Console (OAuth client ID for Google Sign-In) and Apple Developer Program enrollment ($99/yr — needed for push notifications, real-device testing, and eventually App Store submission). Also still undecided: embeddings provider (Voyage AI vs. OpenAI) for the AI Platform's semantic index.
+
 ## Current status (as of 2026-09-18)
 
-Backend only, no UI yet. Live in production on Railway:
+Backend fully built (see table below); a real native iOS client now exists too — see
+"Mobile app (iOS)" further down. Backend live in production on Railway:
 `https://audio-production-2a77.up.railway.app` (`/health`, `/docs` for interactive API docs).
 
 | Module | Status | Files | Source PRD |
@@ -396,23 +404,123 @@ full so far:
 Not yet read in this pass: Search & AI, Instrumentation dashboard PRDs — find
 and read them before starting that module.
 
+## Mobile app (iOS)
+
+**Platform decision made**: native iOS first (SwiftUI, not a hybrid/wrapper —
+Android is planned later, not started). Lives at `ios/LucakuAudio/` in this repo, a
+real Xcode project (not a stub) that builds clean (`xcodebuild ... build` →
+`BUILD SUCCEEDED`) and has been run live in the iOS Simulator against the real
+production backend (real signup, real login, Home rendering real API data).
+
+**Screens built and merged to `main`** (PR #13, consolidating what were separately
+PR #9/#10/#11): Home, Player, Settings. **Screens built, PR open, not yet merged**:
+Login/Sign Up (PR #12, currently on its second design pass after direct founder
+feedback on the first — see "Design system" below).
+
+**What's real vs. still mocked in the mobile app — read this before assuming
+something works:**
+- Real: signup/login/logout against the live backend; Home fetching and rendering
+  real episode data; Settings reading/writing real profile fields (delivery time,
+  timezone, narration style, voice, language) plus real account export/delete.
+- **Not real yet — the biggest gap**: audio does not actually play. The Player
+  screen's transport (play/pause/skip) is UI-state-only, advanced by a local timer.
+  A real AVFoundation playback engine (streaming, background audio, lock-screen
+  controls) has been built in isolation and is awaiting integration — see open PRs
+  below.
+- Transcript word-highlighting in the Player is a mocked proportional approximation,
+  not real word-level sync — real ElevenLabs word timestamps now exist server-side
+  (see below) but aren't wired into the client yet.
+- Refine/follow-up/rate-this-answer buttons in the Player are inert UI — the
+  backend endpoints exist (`/refine`, rating), the mobile screens don't call them
+  yet.
+- Home's block list currently renders one aggregate "whole episode" row because
+  `GET /api/home` didn't expose per-block detail — a backend PR fixing this is open
+  (see below) but not yet wired into the client.
+
+**Open PRs, in build order** (none merged yet as of this writing — read each PR's
+own description for exact scope/verification before merging):
+- **#12** — Login/Sign Up screen, v2 (real wordmark treatment, Google Sign-In
+  button per Google's own branding guidelines — action is a stub, no real OAuth
+  wired yet, see blockers below).
+- **#14** — `GET /api/home` now returns a real per-block breakdown (additive,
+  backward-compatible), verified against real Postgres. Needed before the mobile
+  Home screen can show real topic rows instead of one aggregate row.
+- **#15** — Real word-level transcript timestamps via ElevenLabs' `with-timestamps`
+  endpoint, stored on `Block.word_timestamps`. Flagged by its own author as not yet
+  verified against a live ElevenLabs call (deliberately avoided scanning for the
+  API key) — verify this before merging.
+- An AVFoundation-based real audio playback engine, built standalone so it can be
+  wired into the Player screen — check `gh pr list` for its current PR number, as
+  it may not be open yet as of this writing.
+
+**Verification method used so far**: real `xcodebuild` builds (this machine has
+Xcode with an accepted license and an installed iOS 27 Simulator runtime), real
+installs/launches in the Simulator, and at least one real signup/login/Home-fetch
+round-trip against the live production API — not just "it compiles." Do the same
+for new mobile work rather than trusting a compile check alone.
+
+## Design system
+
+Three screens are designed and mutually consistent (same color/type/spacing/radius
+tokens, reconciled after an initial mismatch was caught): Home, Player, and
+Search/Interests. All three are grounded in real, cited research (not guessed
+numbers) — see `RESEARCH_APPLE_MUSIC.md`, `RESEARCH_SPOTIFY.md`, and
+`RESEARCH_AUDIBLE_PODCASTS.md` for the sourced findings (exact Apple HIG type
+scale, the Apple Podcasts chapter-list pattern used as the model for Lucaku's
+"list of answers, not a timeline" block navigation, etc.) and `DESIGN_SPEC_V3.md`
+for the synthesized spec these screens were built from. These files aren't
+committed to this repo (they were produced as local design artifacts this
+session) — ask if you need them moved in.
+
+**player_v3.html's `:root` token block is the canonical source of truth** for
+every color and radius value used anywhere in the app — the Swift translation
+(`ios/LucakuAudio/LucakuAudio/DesignSystem/`) was derived directly from it.
+Do not introduce a new accent color or background value without updating that
+file first.
+
+Look and feel, live (click through, toggle light/dark and content states in the
+top-right control on each):
+- Home: https://claude.ai/artifact/X6Hp5ns1kpVpi3ktj81zoZ
+- Player: https://claude.ai/artifact/JvLPUDmZNZ6kZdh3zbbecn
+- Search & Interests: https://claude.ai/artifact/RtEp2cpi65gtpurbXDKLi4
+
+**Login/Sign Up went through two rounds of direct, sharp founder feedback**: round
+one criticized the bare, unstyled scaffold entirely (no logo, no hierarchy);
+round two criticized the first redesign specifically for a duplicate mode-switch
+control (a segmented toggle at top AND a same-labeled button at bottom) and the
+lack of a real Google Sign-In option. PR #12's second pass addresses both. There
+is **no real Lucaku logo/brand mark yet** — the login screen uses a typography-led
+wordmark treatment deliberately, since an earlier low-fidelity brand system found
+in a sibling repo was explicitly rejected as not-good-enough to reuse. If a real
+logo file exists or gets made, it should replace the wordmark.
+
 ## Suggested next steps
 
-1. **The AI Platform's shared semantic index** — the prompt registry is now built (see
+1. **Wire the real audio engine into the Player screen** — this is the single
+   biggest gap between "compiles and looks right" and "is actually a podcast app."
+   See "Mobile app (iOS)" above.
+2. **Merge the open mobile + backend PRs in dependency order** (#14 and #15 before
+   any client work that consumes them; verify #15 against a real ElevenLabs call
+   first) and wire the client to consume the new Home block-breakdown and
+   transcript-timestamp data once merged.
+3. **The AI Platform's shared semantic index** — the prompt registry is now built (see
    "AI Platform scope" above); the semantic index is the one remaining AI Platform
    piece, and it's the real blocker for novelty judgment, Search & AI's Q&A, and
    Home's suggestions. Needs an embeddings-provider decision (a new external API
    credential — e.g. Voyage AI or OpenAI embeddings — or a local model) first.
-2. **The actual Player** — the backend (refine/rating) is built; there's no playback
-   UI or client anywhere. Player is also where the Generator's "+30 min hard limit,
-   stated plainly if missed" would actually surface to a customer.
-3. **Shared inventory** — curated seed requests per interest cluster, to fill
+   **Still not decided as of this writing.**
+4. **Shared inventory** — curated seed requests per interest cluster, to fill
    Onboarding's day-zero sample and Home's empty-day state.
-4. **Google/Apple OAuth** for Login — needs the user to create OAuth credentials in
-   Google Cloud Console and the Apple Developer portal first.
-5. **Mobile client platform decision** — still open, and several PRDs assume it's
-   settled (push notifications, deep links, biometrics). Worth resolving before the
-   Player goes too far, since it affects the contract.
+5. **Google/Apple OAuth for real** — the login screen's Google Sign-In button is
+   currently a visual stub. Needs the founder to create an OAuth client ID in
+   Google Cloud Console, and separately enroll in the Apple Developer Program
+   ($99/yr — also required for push notifications and real-device testing, not
+   just Sign in with Apple). Neither can be done by an agent; both need the
+   founder's own accounts.
+6. **Push notifications** — blocked on the Apple Developer Program enrollment above
+   (APNs) plus, for Android later, Firebase Cloud Messaging.
+7. **Wire refine/follow-up/rating actions** in the Player screen to the backend
+   endpoints that already exist.
 
 Done as of 2026-09-18: ElevenLabs TTS verified working end-to-end in production; audio
 storage moved to a durable Railway volume; Episode Generator scheduled path and
