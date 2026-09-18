@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
+from app.core.config import settings
 from app.db.session import engine, Base
 from app.db.migraciones import ejecutar_migraciones
 # Import every model so create_all() sees them
@@ -40,6 +42,9 @@ app.include_router(requests_routes.router, prefix="/api")
 app.include_router(profile_routes.router, prefix="/api")
 app.include_router(onboarding_routes.router, prefix="/api")
 app.include_router(generation_routes.router, prefix="/api")
+
+settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)  # StaticFiles needs the dir to exist at mount time
+app.mount("/media", StaticFiles(directory=settings.MEDIA_DIR), name="media")
 
 
 @app.get("/health")

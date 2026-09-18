@@ -6,13 +6,14 @@ Scope note: this implements step 1 of the PRD's own delivery order (§9):
 "Call wrapper with cost telemetry — unblocks Onboarding and Request
 Management." Everything else in the PRD (a full prompt registry, the
 shared semantic index for Home/Search, evals, multi-provider fallback,
-budgets/rate limits, TTS synthesize()) is deliberately deferred — each
-needs the epic that consumes it (Generator, Home, Search) to exist first.
+budgets/rate limits) is deliberately deferred — each needs the epic that
+consumes it (Home, Search) to exist first.
 
 Also now backs the Episode Generator's research+writing stage
-(research_and_write_block) — see app/services/episode_generator.py for the
-scope note on what's built there. The Generator PRD's own tenet applies
-here too: this function decides *how* to research (a bounded web search
+(research_and_write_block) and voicing stage (synthesize) — see
+app/services/episode_generator.py for the scope note on what's built
+there. The Generator PRD's own tenet applies here too: this function
+decides *how* to research or voice (a bounded web search call; a TTS
 call) and log it; episode_generator.py decides *what* to do with the
 result (assemble, trim, publish).
 
@@ -28,12 +29,14 @@ Tenets followed here:
   whenever its matching *_SYSTEM prompt changes.
 """
 import json
+import os
 import re
 import time
 import uuid
 from datetime import datetime
 
 import anthropic
+import httpx
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -242,3 +245,84 @@ def _parse_block_result(text: str) -> BlockResult:
     # Model didn't return parseable JSON — treat as no_news rather than
     # publishing garbage (Generator tenet: "no source, no block").
     return BlockResult(summary="", script="", sources=[], no_news=True)
+
+
+# ── synthesize() — TTS via ElevenLabs ────────────────────────────────────────
+#
+# The AI Platform PRD names ElevenLabs as the pilot's TTS provider (§9, and
+# the pilot budget in the Umbrella PRD §9 is costed off ElevenLabs Scale-tier
+# rates). Deliberately minimal: one REST call per script, no voice cloning,
+# no timestamp alignment (ElevenLabs' character-level alignment lives behind
+# a separate `/with-timestamps` endpoint — the Generator falls back to the
+# word-count estimate for block offsets either way, per its own PRD §5).
+
+ELEVENLABS_VOICE_ID_DEFAULT = "21m00Tcm4TlvDq8ikWAM"  # ElevenLabs' public "Rachel" voice — used when the customer's profile has no voice_id yet
+_ELEVENLABS_MODEL = "eleven_multilingual_v2"
+_ELEVENLABS_PRICE_PER_1K_CHARS = 0.18  # USD — matches the Umbrella PRD §9 pilot-budget assumption; update if ElevenLabs pricing changes
+
+
+def elevenlabs_configured() -> bool:
+    """Whether an ElevenLabs key is set. The Generator checks this before
+    attempting synthesize() so a missing key degrades to the pre-TTS
+    behavior (script-only episode, status stays "voicing") instead of
+    failing the whole job."""
+    return bool(os.getenv("ELEVENLABS_API_KEY"))
+
+
+async def synthesize(
+    db: AsyncSession,
+    text: str,
+    voice_id: str | None,
+    customer_id: uuid.UUID,
+    request_id: uuid.UUID | None = None,
+    episode_id: uuid.UUID | None = None,
+) -> bytes:
+    """
+    Text-to-speech for one script (a block, or the whole assembled episode).
+    Returns raw audio bytes (mp3). Logs one AICall with `characters` set
+    (PRD: AICall.characters is "for TTS calls") and cost from the pilot's
+    per-1000-character rate.
+
+    Raises on any failure (missing key, non-2xx from ElevenLabs) — callers
+    must check elevenlabs_configured() first if a missing key should
+    degrade gracefully rather than fail the job.
+    """
+    api_key = os.getenv("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise RuntimeError("ELEVENLABS_API_KEY is not set")
+
+    voice_id = voice_id or ELEVENLABS_VOICE_ID_DEFAULT
+
+    start = time.monotonic()
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+            headers={"xi-api-key": api_key, "Accept": "audio/mpeg", "Content-Type": "application/json"},
+            json={"text": text, "model_id": _ELEVENLABS_MODEL},
+        )
+    latency_ms = int((time.monotonic() - start) * 1000)
+
+    if response.status_code >= 400:
+        # Log the failed call too (PRD: "every call is logged, including rejected ones")
+        # before raising, so the cost/failure is still visible in Instrumentation.
+        db.add(AICall(
+            call_id=uuid.uuid4(), prompt="synthesize", version="v1", purpose="synthesize",
+            model=_ELEVENLABS_MODEL, provider="elevenlabs", characters=len(text), cost=0,
+            latency_ms=latency_ms,
+            context={"customer_id": str(customer_id), "request_id": str(request_id) if request_id else None,
+                     "episode_id": str(episode_id) if episode_id else None},
+            rejected_reason=f"HTTP {response.status_code}: {response.text[:200]}",
+            creado_en=datetime.utcnow(),
+        ))
+        raise RuntimeError(f"ElevenLabs synthesize failed: HTTP {response.status_code}: {response.text[:200]}")
+
+    db.add(AICall(
+        call_id=uuid.uuid4(), prompt="synthesize", version="v1", purpose="synthesize",
+        model=_ELEVENLABS_MODEL, provider="elevenlabs", characters=len(text),
+        cost=(len(text) / 1000) * _ELEVENLABS_PRICE_PER_1K_CHARS,
+        latency_ms=latency_ms,
+        context={"customer_id": str(customer_id), "request_id": str(request_id) if request_id else None,
+                 "episode_id": str(episode_id) if episode_id else None},
+        creado_en=datetime.utcnow(),
+    ))
+    return response.content

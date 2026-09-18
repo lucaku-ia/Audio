@@ -9,12 +9,30 @@ request, via app.services.ai_platform.research_and_write_block) -> assemble
 POST /api/generation/run (app/api/routes/generation.py) rather than a real
 scheduler.
 
+Built: voicing, via app.services.ai_platform.synthesize (ElevenLabs). Each
+block's script is synthesized separately and the resulting mp3s are
+concatenated into one episode file, written to disk under
+settings.MEDIA_DIR and served at /media/{episode_id}.mp3 (see app.main's
+StaticFiles mount). Requires ELEVENLABS_API_KEY; if unset,
+ai_platform.elevenlabs_configured() is false and the job falls back to the
+pre-TTS behavior below (script-only, status stays "voicing") rather than
+failing. A TTS call that fails after the key is confirmed present is
+likewise non-fatal — the episode still publishes as text-only and a
+`generation_tts_failed` stage note records why.
+
 Deferred, and why:
-- TTS / voicing: needs a TTS provider (the AI Platform PRD names
-  ElevenLabs) and its own API credential, which isn't configured. Episodes
-  publish with a written script per block but audio_url stays null and the
-  GenerationJob stops at status="voicing" rather than "ready" — that
-  status honestly means "text is done, audio is pending," not a bug.
+- Real per-block timestamp alignment: ElevenLabs' character-level timing
+  lives behind a separate `/with-timestamps` endpoint, not used here.
+  Block start_s/end_s still come from the word-count estimate
+  (_seconds_for_script), which is now measuring against real audio it
+  didn't generate — expect some drift, tightest on short blocks.
+- MEDIA_DIR is local container disk, not object storage — it does not
+  survive a redeploy or restart. Fine for on-demand testing; replace with
+  real object storage (S3/R2/etc.) before this is relied on for a
+  customer's actual daily episode.
+- Naive mp3 concatenation (raw byte concat, no re-encoding) between
+  blocks: works with most players for this MVP but isn't a guaranteed-
+  seamless join; revisit with a proper audio mux if gaps/clicks show up.
 - Real novelty judgment ("new since we last told this customer," using the
   last 14 days of blocks via the AI Platform's shared semantic index):
   the index doesn't exist yet. research_and_write_block only judges "is
@@ -42,6 +60,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.requests import active_for_generation
+from app.core.config import settings
 from app.models.cliente import Cliente
 from app.models.episode import Block, Episode, EpisodePath
 from app.models.generation_job import GenerationJob, JobStatus
@@ -157,6 +176,7 @@ async def run_generation(db: AsyncSession, cliente: Cliente) -> GenerationJob:
 
         cursor_s = _INTRO_OUTRO_SECONDS // 2
         topics = []
+        block_rows: list[Block] = []
         for b in answerable:
             req, result = b["request"], b["result"]
             script = result.script
@@ -166,7 +186,7 @@ async def run_generation(db: AsyncSession, cliente: Cliente) -> GenerationJob:
                 script = " ".join(words[: max(5, int(len(words) * trim_factor))])
 
             duration = _seconds_for_script(script)
-            db.add(Block(
+            block = Block(
                 id=uuid.uuid4(),
                 episode_id=episode.id,
                 request_id=req.id,
@@ -178,7 +198,9 @@ async def run_generation(db: AsyncSession, cliente: Cliente) -> GenerationJob:
                 sources=result.sources,
                 had_more=had_more,
                 no_news=False,
-            ))
+            )
+            db.add(block)
+            block_rows.append(block)
             cursor_s += duration
             topics.append((req.structured or {}).get("topic") or req.raw_text[:30])
 
@@ -191,7 +213,25 @@ async def run_generation(db: AsyncSession, cliente: Cliente) -> GenerationJob:
                 req.status = RequestStatus.fulfilled
                 req.fulfilled_episode_id = episode.id
 
-        job.status = JobStatus.voicing  # text/sources done; audio pending — see module docstring
+        job.status = JobStatus.voicing  # text/sources done; audio pending unless synthesis below succeeds
+        if ai_platform.elevenlabs_configured():
+            try:
+                audio_bytes = b"".join([
+                    await ai_platform.synthesize(
+                        db, block.script, voice_id, customer_id=cliente.id,
+                        request_id=block.request_id, episode_id=episode.id,
+                    )
+                    for block in block_rows
+                ])
+                settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+                (settings.MEDIA_DIR / f"{episode.id}.mp3").write_bytes(audio_bytes)
+                episode.audio_url = f"{settings.PUBLIC_BASE_URL}/media/{episode.id}.mp3"
+                job.status = JobStatus.ready
+            except Exception as exc:
+                # Don't fail the whole job over a TTS problem — the text episode is
+                # still good and published; audio_url just stays null this time.
+                job.stages = [{"stage": "voicing", "error": str(exc)}]
+
         await emitir(db, "episode_published", customer_id=cliente.id, source="episode_generator",
                      episode_id=str(episode.id), had_more_any=episode.had_more_any)
         await db.commit()
