@@ -31,6 +31,43 @@ fileprivate enum LucakuAuthField {
 /// There is still no approved logo mark — that remains a brand decision
 /// for the product owner, not something to invent here — so the header
 /// stays a typography-led wordmark, just composed with far more care.
+///
+/// v3 revision — composition/hierarchy pass, addressing "still dont like
+/// the log in and feel is weird organize... look at best in class."
+/// No tokens, colors, the wordmark, or the Google button changed; only
+/// how the same pieces are arranged on the screen. Grounded in a real
+/// teardown pass (not guessed) of Spotify's, Apple's, Notion's, and
+/// Duolingo's auth/sign-in flows, plus write-ups on what makes generated
+/// UI read as generic:
+/// - v2 wrapped the whole form in a white "surface" card floating with
+///   equal margins on a gray page, then vertically centered that card
+///   with two equal `Spacer`s so the wordmark+card block sat dead-center
+///   with matching empty space above and below. Symmetric centering with
+///   nothing else driving the composition is exactly the "AI slop" tell
+///   design teardowns call out — "everything centered ... is what you
+///   get when nobody made a decision" — and a white rounded rectangle
+///   floating on a tinted background reads as a stock "card-in-card"
+///   modal rather than a screen someone actually composed (see
+///   superdesign.dev/blog/why-ai-design-looks-generic and
+///   dev.to/quintetkit/why-ai-generated-screens-look-ai-like-isnt-a-taste-issue).
+/// - Real full-screen native auth (Apple's own ID sign-in sheet, Notion
+///   and Spotify's mobile login) doesn't nest a second surface inside
+///   the page background — the page IS the surface. So v3 drops the
+///   floating card and lets the wordmark, mode switch, Google button,
+///   and form sit directly on `LucakuColor.bg`, grouped by spacing and
+///   the "or" divider instead of a box.
+/// - v3 also top-anchors the layout instead of vertically centering it.
+///   Login UX guidance (Descope's login-UI writeup; LogRocket's Spotify
+///   teardown) and Apple HIG's "avoid making people scroll to see the
+///   [sign-in] button" both point the same way: weight content toward
+///   the upper-middle so it's already positioned correctly once the
+///   keyboard appears, rather than parking it in a spot that only looks
+///   right with the keyboard down.
+/// - The Google button keeps the exact same height (52pt) as the primary
+///   submit button — per Apple HIG's Sign in with Apple guidance, a
+///   federated sign-in control should be "no smaller than other sign-in
+///   buttons" it sits next to, so it reads as an equally valid path in,
+///   not a subordinate option.
 struct LoginView: View {
     @EnvironmentObject private var session: SessionStore
 
@@ -58,25 +95,38 @@ struct LoginView: View {
         static let headline: CGFloat = -0.43
     }
 
+    /// v3: top-anchored, single-plane composition. No more equal-Spacer
+    /// vertical centering and no more nesting the whole form in a second
+    /// "surface" card floating on the page background — see the header
+    /// note above for why (real full-screen native auth doesn't nest a
+    /// card inside the page; the page is the surface). Everything now
+    /// sits directly on `LucakuColor.bg`, grouped by spacing and the
+    /// existing "or" divider instead of a box.
     var body: some View {
         NavigationStack {
-            GeometryReader { geometry in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        Spacer(minLength: LucakuSpacing.sp8)
+            ScrollView {
+                VStack(spacing: LucakuSpacing.sp8) {
+                    wordmark
 
-                        wordmark
-                            .padding(.bottom, LucakuSpacing.sp12)
+                    VStack(spacing: LucakuSpacing.sp6) {
+                        modePicker
+                        googleButton
+                        divider
+                        formFields
 
-                        formCard
+                        if let errorMessage {
+                            errorBanner(errorMessage)
+                        }
 
-                        Spacer(minLength: LucakuSpacing.sp8)
+                        submitButton
                     }
-                    .padding(.horizontal, LucakuSpacing.sp6)
-                    .frame(minHeight: geometry.size.height)
                 }
-                .scrollDismissesKeyboard(.interactively)
+                .padding(.horizontal, LucakuSpacing.sp6)
+                .padding(.top, LucakuSpacing.sp8)
+                .padding(.bottom, LucakuSpacing.sp12)
+                .frame(maxWidth: .infinity)
             }
+            .scrollDismissesKeyboard(.interactively)
             .background(LucakuColor.bg.ignoresSafeArea())
             .navigationBarHidden(true)
         }
@@ -84,11 +134,13 @@ struct LoginView: View {
 
     // MARK: - Wordmark hero
 
-    /// The screen's compositional anchor: generous whitespace above and
-    /// below, precise tracking on the wordmark, and a one-line tagline in
-    /// a clearly secondary weight/size — modeled on how Spotify/Apple
-    /// Music let a wordmark (not a cramped title bar) carry the login
-    /// screen's top half.
+    /// The screen's compositional anchor. v2 centered the wordmark+form
+    /// block dead in the middle of the screen with equal empty space
+    /// above and below; v3 instead weights it toward the upper-middle —
+    /// a fixed top inset (not a stretchy `Spacer`) — so the composition
+    /// reads as deliberately placed rather than mathematically balanced,
+    /// and so it's already sitting where it needs to be once the
+    /// keyboard comes up for email/password entry.
     private var wordmark: some View {
         VStack(spacing: LucakuSpacing.sp3) {
             Text("Lucaku")
@@ -100,87 +152,75 @@ struct LoginView: View {
                 .font(LucakuTypography.footnote)
                 .foregroundStyle(LucakuColor.textSecondary)
         }
-        .padding(.top, LucakuSpacing.sp8)
     }
 
     // MARK: - Form
 
-    private var formCard: some View {
-        VStack(spacing: LucakuSpacing.sp6) {
-            modePicker
+    /// The email/password fields, unchanged in behavior from v2 — pulled
+    /// into their own subview only so `body` reads as one flat, legible
+    /// stack instead of a deeply nested card.
+    private var formFields: some View {
+        VStack(spacing: LucakuSpacing.sp3) {
+            LucakuTextField(
+                placeholder: "Email",
+                text: $email,
+                keyboardType: .emailAddress,
+                textContentType: .emailAddress,
+                isSecure: false,
+                focusedField: $focusedField,
+                field: .email
+            )
+            .submitLabel(.next)
+            .onSubmit { focusedField = mode == .signup ? .name : .password }
 
-            googleButton
+            LucakuTextField(
+                placeholder: "Password",
+                text: $password,
+                keyboardType: .default,
+                textContentType: mode == .login ? .password : .newPassword,
+                isSecure: true,
+                focusedField: $focusedField,
+                field: .password
+            )
+            .submitLabel(mode == .signup ? .next : .go)
+            .onSubmit {
+                if mode == .signup {
+                    focusedField = .name
+                } else {
+                    focusedField = nil
+                    Task { await submit() }
+                }
+            }
 
-            divider
-
-            VStack(spacing: LucakuSpacing.sp3) {
+            if mode == .signup {
                 LucakuTextField(
-                    placeholder: "Email",
-                    text: $email,
-                    keyboardType: .emailAddress,
-                    textContentType: .emailAddress,
+                    placeholder: "Name",
+                    text: $nombre,
+                    keyboardType: .default,
+                    textContentType: .name,
                     isSecure: false,
                     focusedField: $focusedField,
-                    field: .email
+                    field: .name
                 )
-                .submitLabel(.next)
-                .onSubmit { focusedField = mode == .signup ? .name : .password }
-
-                LucakuTextField(
-                    placeholder: "Password",
-                    text: $password,
-                    keyboardType: .default,
-                    textContentType: mode == .login ? .password : .newPassword,
-                    isSecure: true,
-                    focusedField: $focusedField,
-                    field: .password
-                )
-                .submitLabel(mode == .signup ? .next : .go)
+                .submitLabel(.go)
                 .onSubmit {
-                    if mode == .signup {
-                        focusedField = .name
-                    } else {
-                        focusedField = nil
-                        Task { await submit() }
-                    }
-                }
-
-                if mode == .signup {
-                    LucakuTextField(
-                        placeholder: "Name",
-                        text: $nombre,
-                        keyboardType: .default,
-                        textContentType: .name,
-                        isSecure: false,
-                        focusedField: $focusedField,
-                        field: .name
-                    )
-                    .submitLabel(.go)
-                    .onSubmit {
-                        focusedField = nil
-                        Task { await submit() }
-                    }
+                    focusedField = nil
+                    Task { await submit() }
                 }
             }
-            .animation(LucakuMotion.house, value: mode)
-
-            if let errorMessage {
-                errorBanner(errorMessage)
-            }
-
-            submitButton
         }
-        .padding(LucakuSpacing.sp6)
-        .background(
-            RoundedRectangle(cornerRadius: LucakuRadius.sheet, style: .continuous)
-                .fill(LucakuColor.surface)
-        )
+        .animation(LucakuMotion.house, value: mode)
     }
 
     /// The single mode switch for the whole screen — the only place
     /// "Log In" and "Sign Up" appear as competing labels. Everything below
     /// it (the Google button, the form, the primary CTA) adapts to
     /// whichever mode is selected here instead of repeating the choice.
+    ///
+    /// v3: now that this sits directly on `LucakuColor.bg` (no white card
+    /// behind it any more), the track uses `LucakuColor.surface` instead
+    /// of `.bg` so it still reads as a distinct control rather than
+    /// disappearing into the page.
     private var modePicker: some View {
         HStack(spacing: LucakuSpacing.sp1) {
             ForEach(Mode.allCases, id: \.self) { candidate in
@@ -208,7 +248,11 @@ struct LoginView: View {
         .padding(LucakuSpacing.sp1)
         .background(
             Capsule(style: .continuous)
-                .fill(LucakuColor.bg)
+                .fill(LucakuColor.surface)
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(LucakuColor.borderSoft, lineWidth: 1)
         )
     }
 
