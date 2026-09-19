@@ -44,16 +44,16 @@ struct SettingsView: View {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .noProfile:
-                    ContentUnavailableView(
-                        "Finish setup to see Settings",
+                    unavailableWithSignOut(
+                        title: "Finish setup to see Settings",
                         systemImage: "gearshape",
-                        description: Text("Your profile hasn't been created yet — complete onboarding first.")
+                        description: "Your profile hasn't been created yet — complete onboarding first."
                     )
                 case .failed(let message):
-                    ContentUnavailableView(
-                        "Couldn't load Settings",
+                    unavailableWithSignOut(
+                        title: "Couldn't load Settings",
                         systemImage: "exclamationmark.triangle",
-                        description: Text(message)
+                        description: message
                     )
                 case .loaded:
                     settingsList
@@ -255,6 +255,32 @@ struct SettingsView: View {
                 Task { await signOut() }
             }
         }
+    }
+
+    /// Settings' non-loaded states still have to offer Sign Out. Without it, an
+    /// account with no Profile (today: anyone who hasn't completed onboarding)
+    /// has no way out of the app at all — no settings, no account switch, and
+    /// not even a reinstall escape, since the session survives app deletion via
+    /// the Keychain. Sign Out is the one control that must never be gated behind
+    /// the very thing the customer is stuck on.
+    private func unavailableWithSignOut(
+        title: String,
+        systemImage: String,
+        description: String
+    ) -> some View {
+        VStack(spacing: LucakuSpacing.sp6) {
+            ContentUnavailableView(
+                title,
+                systemImage: systemImage,
+                description: Text(description)
+            )
+            Button("Sign Out", role: .destructive) {
+                Task { await signOut() }
+            }
+            .font(LucakuTypography.body)
+            .frame(minHeight: 44)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Save bar
