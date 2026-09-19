@@ -705,8 +705,32 @@ further polish here without checking first.
    be built; founder said tomorrow. Once that key exists, this becomes buildable:
    wire it into the AI Platform, build the embedding/indexing step for
    episodes+blocks, and the shared semantic index itself.
-7. **Shared inventory** — curated seed requests per interest cluster, to fill
-   Onboarding's day-zero sample and Home's empty-day state.
+7. **Populate the shared inventory in production — currently EMPTY, so Home's
+   "For you" and "Explore" shelves render nothing.** The pipeline, the seed list
+   and Home's shelves are all built; production simply has zero shared episodes,
+   and `INTERNAL_DASHBOARD_KEY` is unset on Railway (the route answers 503, and
+   the gate fails closed by design). To fill it: set `INTERNAL_DASHBOARD_KEY` to
+   a long random value in Railway Variables, then per tag (each is ~1 min and
+   ~$0.5 of Claude + ElevenLabs; running all tags in one call can outlive an
+   HTTP timeout, hence the `tag` param):
+   `curl -X POST "$BASE/api/internal/generate-shared-inventory?tag=technology"
+   -H "X-Internal-Dashboard-Key: <the key>"`. Tags are the `tag` values in
+   `app/data/shared_inventory_seeds.json`. Note `app/api/deps.py` defines
+   `require_internal_dashboard_key` twice (two merged branches); the second
+   definition shadows the first, so the header is `X-Internal-Dashboard-Key` —
+   worth deleting the dead first copy. The seed content itself is still a
+   placeholder, not team-curated (see "Shared inventory" above).
+7b. **Guided, voice-led onboarding in the iOS app — not built.** The backend
+   onboarding (interest chips, curated suggestions per interest via
+   `GET /onboarding/suggestions`, delivery time, voice/style, confirm) is complete,
+   but the app has no onboarding flow at all: signup drops straight into the tab
+   bar, which is why it reads as "just text". Founder wants: spoken prompts
+   (ElevenLabs TTS already exists) and spoken answers (iOS `Speech` framework,
+   on-device; needs mic + speech-recognition usage strings in Info.plist), and
+   suggestions for someone who doesn't know what to ask.
+7c. **UI localization.** Every string in the iOS app is hardcoded English while
+   the founder and customers are Spanish-speaking (`Cliente.idioma` defaults to
+   `es`); the backend already localizes catalogue labels and suggestions.
 8. **Google/Apple OAuth for real** — the login screen's Google Sign-In button is
    currently a visual stub. Needs the founder to create an OAuth client ID in
    Google Cloud Console, and separately enroll in the Apple Developer Program
@@ -721,6 +745,23 @@ further polish here without checking first.
     highlight disappears when playback is paused mid-block (cosmetic only), and
     `Features/Home/PlayerListView.swift` is now dead code since the Player tab no
     longer exists (safe to delete).
+
+Done as of 2026-09-19 (evening, after the first real-device build): Home redesigned
+(dark-first, generated cover art, topic grid, hero card, shelves, tinted floating mini
+player). The founder's two complaints had real causes beyond styling: (1) the floating
+player only rendered once TODAY's episode existed, and a fresh account never got one —
+the backend maps "no job yet today" to banner `making` with no ETA, so Home said
+"being put together" while nothing was, and the only "Generate now" button lived in
+another banner state; Home now offers it whenever `making` has no ETA, polls while a job
+runs, and loads today's (else the latest past) episode into the shared player, paused,
+so the mini player is present from the first moment there's anything to play.
+(2) `URLSession`'s 60s default timeout made "generate now" report failure while the
+server was fine — `runGeneration` now uses 300s. Backend: `GET
+/generation/episodes/{id}` (own or shared episodes, else 404 — verified a second
+customer gets 404 for someone else's episode), `HomeOut.explore`, `episode_id` on the
+banner and Recent, `tag` on shared items, optional `tag` param on
+`/internal/generate-shared-inventory`. Compile-verified by the GitHub Actions sideload
+build (green); NOT yet seen on a device. See items 7/7b/7c above for what remains.
 
 Done as of 2026-09-19: PR #27 merge + #23-26 cleanup confirmed complete; free-text
 AI-categorized interests rebuilt against `main` and verified live (both founder test
