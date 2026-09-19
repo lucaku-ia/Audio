@@ -1,0 +1,63 @@
+name: iOS sideload build (unsigned .ipa)
+
+# Manual-only (no Apple Developer account needed): builds an UNSIGNED .ipa
+# on a GitHub-hosted macOS runner, so it can be sideloaded onto a personal
+# iPhone from Windows using a tool like Sideloadly (which re-signs it with
+# your own free Apple ID at install time). See the root README's "Viewing
+# the app on your iPhone without a Mac" section for the full walkthrough.
+#
+# Deliberately workflow_dispatch-only, not on every push — macOS runner
+# minutes are billed at 10x normal GitHub Actions minutes, even on the free
+# tier's included minutes, so this only runs when someone actually wants a
+# fresh build to sideload.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # Uses whatever Xcode macos-14 runners default to (currently Xcode 15.x,
+      # iOS 17 SDK) rather than pinning a specific version here — GitHub
+      # periodically changes which exact sub-versions are preinstalled, and a
+      # hardcoded path (e.g. /Applications/Xcode_15.4.app) silently breaks the
+      # moment that changes. If a pinned version is ever needed, use
+      # maxim-lobanov/setup-xcode@v1 with `xcode-version` instead of `xcode-select`.
+      - name: Show selected Xcode version
+        run: xcodebuild -version
+
+      - name: Build (unsigned, for a real device)
+        working-directory: ios/LucakuAudio
+        run: |
+          xcodebuild \
+            -project LucakuAudio.xcodeproj \
+            -scheme LucakuAudio \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package as .ipa (Payload/LucakuAudio.app)
+        working-directory: ios/LucakuAudio
+        run: |
+          set -e
+          APP_PATH="build/Build/Products/Release-iphoneos/LucakuAudio.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Build output not found at $APP_PATH — build likely failed above." >&2
+            exit 1
+          fi
+          mkdir -p ipa/Payload
+          cp -r "$APP_PATH" ipa/Payload/
+          cd ipa
+          zip -r ../LucakuAudio-unsigned.ipa Payload
+
+      - name: Upload .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LucakuAudio-unsigned-ipa
+          path: ios/LucakuAudio/LucakuAudio-unsigned.ipa
+          retention-days: 14

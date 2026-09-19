@@ -10,6 +10,40 @@ product built from scratch.
 
 This README is written as a handoff — read it top to bottom before making changes.
 
+## Viewing the app on your iPhone without a Mac
+
+No Mac and no Apple Developer Program membership needed. GitHub Actions builds an
+unsigned `.ipa` on a free macOS runner; a free Windows tool called
+[Sideloadly](https://sideloadly.io/) installs it on your iPhone via USB, signing it
+with your own free Apple ID in the process.
+
+1. Go to this repo on GitHub → **Actions** tab → **iOS sideload build (unsigned
+   .ipa)** in the left sidebar → **Run workflow** (top right) → **Run workflow**
+   again to confirm. It builds on a macOS runner — takes a few minutes.
+   (`.github/workflows/ios-sideload-build.yml`, manual-only by design — macOS
+   runner minutes are billed at 10x normal GitHub Actions minutes even on the
+   free tier, so this doesn't run on every push.)
+2. Once it finishes (green check), click into that run → under **Artifacts** at
+   the bottom, download **LucakuAudio-unsigned-ipa** (a zip containing the
+   `.ipa`).
+3. Install [Sideloadly](https://sideloadly.io/) on Windows (also installs Apple's
+   USB drivers if you don't already have iTunes/Apple Mobile Device Support).
+4. Plug your iPhone into your PC via USB (trust the computer if prompted on the
+   phone), open Sideloadly, drag the `.ipa` into it, enter your Apple ID (a free
+   one is fine — Sideloadly doesn't need a paid Developer account) in the Apple
+   ID field, and click **Start**.
+5. On the iPhone: **Settings → General → VPN & Device Management** → tap your
+   Apple ID under "Developer App" → **Trust**. Then open the Lucaku Audio app —
+   it talks to the real production backend, so **Sign Up** creates a real
+   account.
+
+**Known limitation of the free-Apple-ID path**: apps installed this way expire
+after **7 days** and need re-sideloading (re-run Sideloadly with the same `.ipa` —
+no need to rebuild unless the code changed). This is an Apple platform limit, not
+something fixable in this repo; it goes away once the founder enrolls in the paid
+Apple Developer Program ($99/yr) and the app can be distributed via TestFlight
+instead.
+
 ## TL;DR for anyone new to this repo
 
 - **Backend**: fully built for every feature that doesn't need a new external credential. Live in production on Railway, real ElevenLabs TTS (word-level timestamps verified against a real live call, see "Episode Generator scope"), real web-grounded research (Claude's `web_search` tool). See the status table below.
