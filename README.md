@@ -747,6 +747,19 @@ show or play. That is itself a serious problem, and it has two compounding cause
    happen: *"The first session has to end with audio playing, even if that audio is
    not yet fully theirs."*
 
+### Confirmed bug found while investigating: a customer without a profile is trapped
+
+`SettingsView.swift` renders `signOutSection` only inside `settingsList`, which only
+renders in the `.loaded` case. An account in the `.noProfile` state (i.e. anyone who
+signed up but hasn't completed onboarding — which today is *everyone*, since there is
+no onboarding UI) sees the "Finish setup to see Settings" placeholder and **has no
+sign-out button anywhere in the app**. They cannot sign out, cannot switch accounts,
+and cannot reach any setting. The only escape is deleting and reinstalling the app.
+
+Fix regardless of the onboarding work: sign-out must be reachable from every Settings
+state, not just `.loaded`. It is the one control that must never be gated behind the
+thing the customer is stuck on.
+
 ### 7. Settings — deliberately not being worked on
 *"no settings, need to discuss this."* He wants to discuss the Settings surface
 before anyone builds against it. Onboarding work will unblock the existing Settings
