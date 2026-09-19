@@ -221,13 +221,20 @@ final class AudioPlayerService: NSObject, ObservableObject {
     }
 
     private func observe(playerItem: AVPlayerItem) {
+        // `[weak self]` is captured again on each inner `Task`, not just the
+        // outer KVO closure: the outer closure isn't MainActor-isolated (KVO
+        // fires on an arbitrary queue), so a `self` weakified only in that
+        // outer scope is a non-Sendable capture across the `Task`'s
+        // concurrency boundary — Swift 6 strict concurrency rejects that as
+        // "reference to captured var 'self' in concurrently-executing code".
+        // Re-capturing `[weak self]` directly on the `Task` avoids it.
         itemStatusObservation = playerItem.observe(\.status, options: [.new]) { [weak self] item, _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.handleStatusChange(item: item)
             }
         }
         bufferEmptyObservation = playerItem.observe(\.isPlaybackBufferEmpty, options: [.new]) { [weak self] item, _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self, case .playing = self.state else { return }
                 if item.isPlaybackBufferEmpty {
                     self.state = .buffering
@@ -328,7 +335,7 @@ final class AudioPlayerService: NSObject, ObservableObject {
 
     private func observePlayerTimeControlStatus() {
         timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 switch player.timeControlStatus {
                 case .paused:
