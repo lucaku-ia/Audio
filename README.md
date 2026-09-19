@@ -674,6 +674,104 @@ to reuse. If a real logo file exists or gets made, it should replace the wordmar
 The founder has said this screen is not the current top priority — don't over-invest
 further polish here without checking first.
 
+## Founder feedback from the first real-device install (2026-09-18)
+
+The app was installed on a real iPhone for the first time (free/personal-team
+signing via Xcode — expires after 7 days, needs the "Trust developer" step in
+Settings → General → VPN & Device Management after each reinstall). This is the
+founder's own feedback after using it, reproduced close to verbatim, plus what
+investigation found for each point. **Read this before picking up work** — several
+items that read like bugs turned out to be one shared root cause, and one item that
+read like polish is actually the most important thing in the list.
+
+### What he liked
+- The colours, and the motion/transitions between screens ("the interaction in the
+  screens or moving to another screen is so smooth"). **Do not change the palette**
+  — `#1E647E` / `#74B9D1` accent and the existing surfaces are approved and liked.
+
+### 1. "Login is terrible. we need a logo, and basically a brand style"
+There is no logo, no brand mark, and **no app icon** (the app ships with the blank
+default icon, which is a large part of why it reads as unfinished on a real home
+screen). He wants a real brand identity built — logo, icon, style — while keeping
+the current colours. Related: *"still feel a bit of [lacking] 'live' in the app...
+maybe with the branding style you can do this."*
+
+### 2. Onboarding / interest selection — "this window is critical, and needs a lot of work"
+**This is the biggest gap in the product right now: there is no onboarding UI at
+all.** A customer who signs up lands on an empty Home with no guidance, and the
+Settings tab is hard-blocked ("Finish setup to see Settings — Your profile hasn't
+been created yet — complete onboarding first") with no way to actually complete
+that setup. The backend for onboarding is fully built and unused by any client.
+
+His specific requirements:
+- **Autocomplete**: *"when looking for Arsenal I should be able to see the arsenal
+  team and select it. then it will appear as an 'active' interest in the screen."*
+- **A running, visible list**: *"I can search for another thing but still can see the
+  arsenal."* He hit a real bug where adding one interest made it disappear from view.
+- **Per-item categorisation**: *"every single time I add another item, the system
+  recognize the category (like sports, or political news or whatever)."*
+- **Voice input** — he called this *"insane critical"*: *"what if a person truly dont
+  want to type everything? just listening to the person interest should be good to
+  capture their ideas."* The reasoning is the product's whole premise: *"the goal of
+  this app is to make as personalize as possible, almost that no podcast will be the
+  same."* Needs `SFSpeechRecognizer` + mic/speech Info.plist permissions.
+- **Delivery setup is missing from the flow**: *"no section for voice selection,
+  timing, speed, nothing."*
+
+Note the Onboarding PRD's own constraint when designing autocomplete: *"The
+customer's words become the request. We structure what they said; we do not replace
+it with a category"* — it explicitly criticises category-list pickers as *"exactly
+the shallow personalization every news app already offers."* There is no entity
+database of football clubs etc., and building one would contradict that tenet.
+
+### 3–6. "no player bar", "home is not giving me anything", "no audio at all, critical as hell"
+**These three are not bugs.** Investigated live: the persistent mini-player, Home's
+real per-block content, and real audio playback all work correctly. Verified on
+2026-09-18 with a real account that had real content — audio played and advanced
+(0:01 → 0:19 of 0:52), the mini-player bar appeared above the tab bar on every
+screen, and Home rendered the real episode with its topic breakdown.
+
+The actual cause was that **his account had zero content**, so there was nothing to
+show or play. That is itself a serious problem, and it has two compounding causes:
+
+1. **The "no news" dead end.** His standing request ("Premier League title race")
+   honestly returned `no_news` — correct "never fill" behaviour. But the on-demand
+   path is idempotent per `(customer, fecha, path)`, so every later attempt that day
+   returns that same empty job **even after the customer adds a different standing
+   request** (verified: a re-run after adding a new request returned the original
+   job with a 16ms research stage — it never re-researched). The customer is stuck
+   with an empty app until the next day, with no explanation and no recourse.
+2. **No day-zero fallback content.** `shared_inventory` returns `[]`. The mechanism
+   exists but matches on `OnboardingState.selected_interests`, so a customer who
+   hasn't onboarded gets nothing. The Onboarding PRD is explicit that this must not
+   happen: *"The first session has to end with audio playing, even if that audio is
+   not yet fully theirs."*
+
+### Confirmed bug found while investigating: a customer without a profile is trapped
+
+`SettingsView.swift` renders `signOutSection` only inside `settingsList`, which only
+renders in the `.loaded` case. An account in the `.noProfile` state (i.e. anyone who
+signed up but hasn't completed onboarding — which today is *everyone*, since there is
+no onboarding UI) sees the "Finish setup to see Settings" placeholder and **has no
+sign-out button anywhere in the app**. They cannot sign out, cannot switch accounts,
+and cannot reach any setting. The only escape is deleting and reinstalling the app.
+
+Fix regardless of the onboarding work: sign-out must be reachable from every Settings
+state, not just `.loaded`. It is the one control that must never be gated behind the
+thing the customer is stuck on.
+
+### 7. Settings — deliberately not being worked on
+*"no settings, need to discuss this."* He wants to discuss the Settings surface
+before anyone builds against it. Onboarding work will unblock the existing Settings
+screen as a side effect (it's gated on Profile existing), but **don't redesign
+Settings itself without talking to him first.**
+
+### Also worth a product decision: content language
+Generated content came back in **Spanish** (`"Hoy: Artificial intelligence industry
+news"`, `"Resumen diario de IA..."`). That follows the backend's default language
+setting and is not a bug, but nobody has explicitly decided whether Spanish-by-default
+is the intended behaviour for all customers.
+
 ## Suggested next steps
 
 1. ~~Finish the free-text-interests worktree~~ — **done**, rebuilt directly against
