@@ -12,13 +12,14 @@ This README is written as a handoff — read it top to bottom before making chan
 
 ## TL;DR for anyone new to this repo
 
-- **Backend**: fully built for every feature that doesn't need a new external credential. Live in production on Railway, real ElevenLabs TTS, real web-grounded research (Claude's `web_search` tool). See the status table below.
-- **Mobile**: a real native iOS app (SwiftUI, not a wrapper) now exists, and overnight the app's actual navigation architecture got fixed for real — the tab bar had drifted from the approved Home/Search/Interests/Settings design into leftover scaffold (Home/Library/Player/Settings), which was a real, user-visible bug (Home's mini-player and the separate Player tab disagreed about play/pause state because they read from two disconnected sources). That's fixed, live-verified in the Simulator (real per-block Home data, real Search, real Interests, "generate episode now" preserved), and one re-entrancy bug the fix's own adversarial review caught (double-tap on "generate now" could fire two concurrent generation calls) is also fixed. Full detail, and the one real known-gap this surfaced (expired login tokens don't route back to the Login screen), in "Mobile app (iOS)" below.
-- **In flight, not yet pushed**: a free-text "type anything into Interests and have it AI-categorized" feature — the plumbing is built on both backend and iOS and looked correct in a live Simulator test, but the actual AI categorization output was never seen because of a bad API key in an isolated worktree. This is the single most actionable unfinished thing — see "Free-text AI-categorized interests" below.
+- **Backend**: fully built for every feature that doesn't need a new external credential. Live in production on Railway, real ElevenLabs TTS (word-level timestamps verified against a real live call, see "Episode Generator scope"), real web-grounded research (Claude's `web_search` tool). See the status table below.
+- **Mobile**: a real native iOS app (SwiftUI, not a wrapper) exists. PR #27 (tab architecture fix + real Home/Search/Interests) is **merged** — #23–#26 are correctly closed without merging, superseded by it. Full detail in "Mobile app (iOS)" below.
+- **Free-text AI-categorized interests: done, verified against production.** The previous session's isolated worktree (bad `ANTHROPIC_API_KEY`, never actually saw a categorization result) was abandoned rather than fixed — this was rebuilt directly against this repo's own working deployment instead, where the key already works. Backend: `RequestOut.structured` exposed, `GET /requests?kind=` filter added. iOS: a "Search for anything" field in Interests wired to `POST /requests`. Verified live: typing "Arsenal FC" categorizes to `{topic: "Arsenal FC", geography: null}`; "La Liga" to `{topic: "La Liga football", geography: "Spain"}` — exactly the two test cases the founder wanted to see. iOS changes are unverified by an actual Xcode build (no macOS access this session) — build-check before trusting in production.
+- **Session-expiry gap: fixed.** An expired/invalid token used to leave every screen showing a silent "not signed in" error forever (`SessionStore.clear()` was only wired to the manual Log-out button). `APIClient` now posts a notification on any 401; `SessionStore` observes it and clears itself, so the app's existing auth-routing sends the customer back to Login automatically. Same Xcode-build caveat as above.
 - **Design**: three screens (Home, Player, Search/Interests) are designed, approved, and share one consistent token system grounded in real Apple HIG/Spotify/Audible research rather than guesswork. Login has been through three rounds of direct founder feedback and the founder has said it's not the current priority — don't invest further there without checking first. Look-and-feel links are in "Design system" below.
-- **What's blocking further progress that only the founder can unblock**: a working `ANTHROPIC_API_KEY` for the free-text-interests worktree (see below — this is the fastest unblock available), Google Cloud Console (OAuth client ID for Google Sign-In), and Apple Developer Program enrollment ($99/yr — needed for push notifications, real-device testing, and eventually App Store submission). Voyage AI is now the decided embeddings provider (see "Suggested next steps") but the account/key still needs to be created — founder said tomorrow.
+- **What's blocking further progress that only the founder can unblock**: Google Cloud Console (OAuth client ID for Google Sign-In), and Apple Developer Program enrollment ($99/yr — needed for push notifications, real-device testing, and eventually App Store submission). Voyage AI is the decided embeddings provider (see "Suggested next steps") but the account/key still needs to be created.
 
-## Current status (as of 2026-09-18)
+## Current status (as of 2026-09-19)
 
 Backend fully built (see table below); a real native iOS client now exists too — see
 "Mobile app (iOS)" further down. Backend live in production on Railway:
@@ -250,9 +251,12 @@ construction. Onboarding's own day-zero sample wiring is a smaller follow-up, no
 done in this pass — the same query Home uses is ready to be reused there.
 
 Deferred, and why (see the relevant module's own docstring for detail):
-- **Real per-block timestamp alignment** — ElevenLabs' character-level timing needs a
-  separate `/with-timestamps` endpoint, not used here; block offsets still come from
-  the word-count estimate, so expect some drift against the real audio.
+- ~~Real per-block timestamp alignment~~ — **done, verified 2026-09-19.** The
+  `/with-timestamps` endpoint variant is wired (`ai_platform.synthesize`,
+  `with_timestamps=True` by default) and a real production run returned real
+  word-level spans (`{"word": "El", "start_s": 0.0, "end_s": 0.151}`, ...) on
+  `GET /generation/episodes/latest`'s `blocks[].word_timestamps` — not just
+  code that looked right, an actual ElevenLabs response round-tripped correctly.
 - **Real novelty judgment** ("new since we last told this customer") — needs the AI
   Platform's shared semantic index, which doesn't exist; today it only judges "new
   today" in isolation, so a slow-moving topic can repeat itself day to day.
@@ -484,14 +488,12 @@ data bug); and `Features/Home/PlayerListView.swift` (the old Player-tab-specific
 screen) is now dead code since the Player tab no longer exists — safe to delete
 later.
 
-**Where this actually stands right now**: as of this writing, **PR #27 is open, not
-yet merged** — `gh pr list` is the source of truth, don't assume it landed just
-because this README describes it in the past tense above. Its own PR description
-still lists "log in with a real account and confirm..." as an unchecked test-plan
-item, alongside the live verification recorded above. **#23, #24, #25, and #26 are
-also all still open** — #27's own description says to close them without merging
-once #27 lands, but that hasn't happened yet either. Next session: merge #27, then
-close #23–#26 without merging them.
+**Where this actually stands right now**: verified via the GitHub API directly
+(`gh` isn't installed on this machine — used `Invoke-RestMethod` against
+`api.github.com/repos/lucaku-ia/Audio/pulls` instead): **PR #27 is MERGED**
+(2026-09-18T14:58:47Z), and **#23, #24, #25, and #26 are all correctly CLOSED
+without merging**, superseded by it as intended. The "next session" action item
+that used to be here is done — nothing left to merge/close from that batch.
 
 ### PR #15's real fate
 
@@ -526,13 +528,13 @@ something works:**
   early priority); pausing mid-block drops Home's highlight (cosmetic); dead
   `PlayerListView.swift` (safe to delete, not urgent).
 
-**PR list, current reality** (verified against `gh pr list --repo lucaku-ia/Audio
---state all` — re-check it yourself before relying on this, PR state moves fast):
-- **#27** — OPEN. The real, consolidated architecture fix described above. Ready to
-  merge pending a final "log in with a real account" pass per its own checklist.
-- **#23, #24, #25, #26** — OPEN, each superseded by #27's consolidation. Close all
-  four without merging once #27 lands (do not merge them individually — they'd
-  reintroduce the file conflicts #27 already resolved by hand).
+**PR list, current reality** (verified via `api.github.com/repos/lucaku-ia/Audio/pulls`
+on 2026-09-19 — `gh` isn't installed on this machine; re-check before relying on
+this, PR state moves fast):
+- **#27** — MERGED. The real, consolidated architecture fix described above.
+- **#23, #24, #25, #26** — CLOSED without merging, each correctly superseded by
+  #27's consolidation (not individually merged, which would have reintroduced the
+  file conflicts #27 already resolved by hand).
 - **#22** — MERGED. Real audio engine + real transcript timestamps wired into the
   actual Player screen (consolidates #20 and #21).
 - **#21, #20** — CLOSED, superseded by #22.
@@ -557,40 +559,43 @@ folder groups) produced a genuine merge conflict days apart; don't assume a clea
 individual PR merges cleanly against a moving `main` without checking. #27's own
 four-way consolidation is the same lesson at a larger scale.
 
-## Free-text AI-categorized interests (in progress, not yet pushed)
+## Free-text AI-categorized interests (done, verified against production)
 
-The founder wants customers to be able to type free text into Interests (e.g.
-"Arsenal FC") and have it auto-categorized (e.g. "Sports") instead of only picking
-from the fixed 8-category onboarding catalogue. Before writing code, this was
-checked against the actual `Lucaku_Onboarding_PRD.docx`, and the architecture is
-confirmed correct: standing `Request`s (already built, already carrying a
-`structured` JSON column populated by `ai_platform.structure_request`) already ARE
-the real interest model — **no new "Interest" table was created.** That matters:
-this session already hit one duplicate-source-of-truth bug tonight (the tab-bar/
-player-state issue above), and building a second, parallel interest model would have
-been the same bug class again.
+The founder wanted customers to be able to type free text into Interests (e.g.
+"Arsenal FC") and have it auto-categorized instead of only picking from the fixed
+8-category onboarding catalogue. The architecture question was settled in an
+earlier session, against the actual `Lucaku_Onboarding_PRD.docx`: standing
+`Request`s (already built, already carrying a `structured` JSON column populated
+by `ai_platform.structure_request`) already ARE the real interest model — **no new
+"Interest" table exists.** That matters: this repo already hit one
+duplicate-source-of-truth bug once (the tab-bar/player-state issue, see "Mobile app
+(iOS)"), and a second, parallel interest model would have been the same bug class
+again.
 
-**Built tonight**: backend — exposing `RequestOut.structured` and a
-`GET /requests?kind=standing` filter; iOS — a "Search for anything" section in
-Interests, wired to `POST /requests`. Both looked functionally correct in a live
-Simulator test (the UI correctly showed an error rather than crashing), **but the
-actual AI categorization was never actually observed** — the isolated worktree used
-for this work has an empty/invalid `ANTHROPIC_API_KEY` in its `.env`, so every real
-classification call 500'd. The plumbing is proven; whether the model actually
-returns something sane for "Arsenal FC" vs. "La Liga" has not been seen.
+An earlier session built this in an isolated local worktree
+(`/private/tmp/audio_work_free_text_interests`, on someone else's Mac) but never
+actually saw it work end to end — that worktree's `ANTHROPIC_API_KEY` was
+empty/invalid, so every real classification call 500'd. Rather than chase a key
+into a worktree this session has no access to, it was **rebuilt directly against
+this repo's own `main`**, against this repo's own working deployment (where the
+key already works):
 
-**This work is sitting, uncommitted and unpushed**, in a local worktree at
-`/private/tmp/audio_work_free_text_interests`, on a branch called
-`feature/free-text-interests`, with modified-but-uncommitted changes to
-`backend/app/api/routes/requests.py`, `ios/LucakuAudio/LucakuAudio/Config.swift`,
-`Features/Interests/InterestsView.swift`, `Features/Interests/InterestsViewModel.swift`,
-`LucakuAudioApp.swift`, `Networking/APIClient.swift`, and
-`Networking/Models/HomeModels.swift`.
+- Backend: `RequestOut.structured` exposed (`app/api/routes/requests.py`), plus a
+  `GET /requests?kind=` filter so a client can list only standing requests.
+- iOS: a "Search for anything" field in `InterestsView`/`InterestsViewModel`,
+  wired to the already-existing `APIClient.createRequest`. Kept deliberately
+  separate from the catalogue-based "Standing interests" list above it — they're
+  two different sources (`OnboardingState.selected_interests` vs. a `Request`
+  row) for the same underlying concept, and merging them risked reintroducing the
+  exact bug class above.
 
-**This is the single most actionable unfinished thing for tomorrow**: drop a working
-`ANTHROPIC_API_KEY` into that worktree's `backend/.env`, re-run the two test searches
-("Arsenal FC", "La Liga") and actually read the categorization output this time, then
-commit and push the branch and open a PR.
+**Verified live against production**, the founder's own two test cases:
+`"Arsenal FC"` → `{topic: "Arsenal FC", scope: "daily club news...", geography:
+null}`; `"La Liga"` → `{topic: "La Liga football", geography: "Spain"}`. Both
+correctly categorized, no 500s.
+
+**Not verified**: an actual Xcode build of the iOS changes (no macOS/Xcode access
+this session) — build-check on a Mac before shipping.
 
 ## Design system
 
@@ -637,29 +642,23 @@ further polish here without checking first.
 
 ## Suggested next steps
 
-1. **Finish the free-text-interests worktree** — this is the fastest unblock
-   available. Drop a working `ANTHROPIC_API_KEY` into
-   `/private/tmp/audio_work_free_text_interests/backend/.env`, re-run the two test
-   searches ("Arsenal FC", "La Liga") and actually look at what comes back this
-   time, then commit/push `feature/free-text-interests` and open a PR. See
-   "Free-text AI-categorized interests" above for full context — the plumbing is
-   already built and looked correct, only the actual AI output was never seen.
-2. **Verify the ElevenLabs `with-timestamps` integration against a real live call**
-   before trusting it in production. This is still outstanding — it did NOT get
-   resolved by #15 being closed; #15's backend changes merged via #22, but nobody
-   has yet confirmed the actual timestamped API response round-trips correctly
-   end to end. See "PR #15's real fate" above.
-3. **Fix the session-expiry gap**: a stale/expired auth token doesn't route the user
-   back to Login — every screen just shows a generic "not signed in" error forever,
-   because `SessionStore.clear()` is only wired to the manual "Log out" button, never
-   to an actual 401 response. Found and correctly scoped out of #27 tonight as its
-   own ticket; a real customer will eventually hit this. See "The overnight
-   architecture fix" above.
-4. **Merge PR #27**, then close #23, #24, #25, and #26 without merging them (they're
-   all superseded by #27's consolidation — merging them individually would
-   reintroduce conflicts #27 already resolved by hand). Re-run #27's own "log in
-   with a real account" checklist item before merging. See "Mobile app (iOS)" above.
-5. **The AI Platform's shared semantic index** — the prompt registry is now built (see
+1. ~~Finish the free-text-interests worktree~~ — **done**, rebuilt directly against
+   `main` and verified against production. See "Free-text AI-categorized interests"
+   above.
+2. ~~Verify the ElevenLabs `with-timestamps` integration against a real live call~~ —
+   **done**. See "Episode Generator scope" above.
+3. ~~Fix the session-expiry gap~~ — **done**. `APIClient` posts `.sessionExpired` on
+   any 401; `SessionStore` observes it and clears itself. Unverified by an actual
+   Xcode build (no macOS access this session) — build-check before shipping.
+4. ~~Merge PR #27, close #23–#26~~ — **already done** (verified via the GitHub API,
+   see "Mobile app (iOS)" above) — nothing left to do here.
+5. **Build-verify this session's iOS changes on a real Mac** — the free-text-interests
+   UI and the session-expiry fix were both written without Xcode access; a clean
+   `xcodebuild ... build` plus a Simulator smoke test (type "Arsenal FC" into
+   Interests, confirm the real category comes back; force a 401 — e.g. log out
+   server-side via another client — and confirm the app routes to Login) hasn't
+   happened yet.
+6. **The AI Platform's shared semantic index** — the prompt registry is now built (see
    "AI Platform scope" above); the semantic index is the one remaining AI Platform
    piece, and it's the real blocker for novelty judgment, Search & AI's Q&A, and
    Home's suggestions.
@@ -672,26 +671,32 @@ further polish here without checking first.
    be built; founder said tomorrow. Once that key exists, this becomes buildable:
    wire it into the AI Platform, build the embedding/indexing step for
    episodes+blocks, and the shared semantic index itself.
-6. **Shared inventory** — curated seed requests per interest cluster, to fill
+7. **Shared inventory** — curated seed requests per interest cluster, to fill
    Onboarding's day-zero sample and Home's empty-day state.
-7. **Google/Apple OAuth for real** — the login screen's Google Sign-In button is
+8. **Google/Apple OAuth for real** — the login screen's Google Sign-In button is
    currently a visual stub. Needs the founder to create an OAuth client ID in
    Google Cloud Console, and separately enroll in the Apple Developer Program
    ($99/yr — also required for push notifications and real-device testing, not
    just Sign in with Apple). Neither can be done by an agent; both need the
    founder's own accounts.
-8. **Push notifications** — blocked on the Apple Developer Program enrollment above
+9. **Push notifications** — blocked on the Apple Developer Program enrollment above
    (APNs) plus, for Android later, Firebase Cloud Messaging.
-9. **Wire refine/follow-up/rating actions** in the Player screen to the backend
-   endpoints that already exist.
-10. **Two low-urgency cleanups from tonight's review**: Home's "currently playing"
+10. **Wire refine/follow-up/rating actions** in the Player screen to the backend
+    endpoints that already exist.
+11. **Two low-urgency cleanups from an earlier review**: Home's "currently playing"
     highlight disappears when playback is paused mid-block (cosmetic only), and
     `Features/Home/PlayerListView.swift` is now dead code since the Player tab no
     longer exists (safe to delete).
+
+Done as of 2026-09-19: PR #27 merge + #23-26 cleanup confirmed complete; free-text
+AI-categorized interests rebuilt against `main` and verified live (both founder test
+cases); ElevenLabs word-level timestamps verified against a real live call; the
+session-expiry-doesn't-route-to-Login gap fixed. All four unverified by an actual
+Xcode build — see item 5 above.
 
 Done as of 2026-09-18: ElevenLabs TTS verified working end-to-end in production; audio
 storage moved to a durable Railway volume; Episode Generator scheduled path and
 idempotency built (see "Episode Generator scope" above); real audio engine + real
 transcript timestamps wired into the Player screen (#22); tab-bar architecture fixed
 and real Home/Search/Interests wired end-to-end, live-verified, with a re-entrancy
-bug caught and fixed (#27, pending merge).
+bug caught and fixed (#27).
