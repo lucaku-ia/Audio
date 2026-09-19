@@ -44,16 +44,16 @@ struct SettingsView: View {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .noProfile:
-                    ContentUnavailableView(
-                        "Finish setup to see Settings",
+                    unavailableWithSignOut(
+                        title: "Finish setup to see Settings",
                         systemImage: "gearshape",
-                        description: Text("Your profile hasn't been created yet — complete onboarding first.")
+                        description: "Your profile hasn't been created yet — complete onboarding first."
                     )
                 case .failed(let message):
-                    ContentUnavailableView(
-                        "Couldn't load Settings",
+                    unavailableWithSignOut(
+                        title: "Couldn't load Settings",
                         systemImage: "exclamationmark.triangle",
-                        description: Text(message)
+                        description: message
                     )
                 case .loaded:
                     settingsList
@@ -255,6 +255,49 @@ struct SettingsView: View {
                 Task { await signOut() }
             }
         }
+    }
+
+    /// Settings' non-loaded states still have to offer Sign Out. Without it, an
+    /// account with no Profile (today: anyone who hasn't completed onboarding)
+    /// has no way out of the app at all — no settings, no account switch, and
+    /// not even a reinstall escape, since the session survives app deletion via
+    /// the Keychain. Sign Out is the one control that must never be gated behind
+    /// the very thing the customer is stuck on.
+    private func unavailableWithSignOut(
+        title: String,
+        systemImage: String,
+        description: String
+    ) -> some View {
+        // Laid out by hand rather than wrapping ContentUnavailableView in a
+        // VStack: that view expands to fill all available height, which pushes
+        // anything below it to the very bottom of the screen — where the
+        // floating mini player covers it. The Sign Out button has to stay
+        // visibly attached to the message it belongs to.
+        VStack(spacing: LucakuSpacing.sp4) {
+            Spacer()
+            Image(systemName: systemImage)
+                .font(.system(size: 52, weight: .regular))
+                .foregroundStyle(LucakuColor.textTertiary)
+            VStack(spacing: LucakuSpacing.sp2) {
+                Text(title)
+                    .font(LucakuTypography.title3)
+                    .foregroundStyle(LucakuColor.textPrimary)
+                Text(description)
+                    .font(LucakuTypography.subhead)
+                    .foregroundStyle(LucakuColor.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            Button("Sign Out", role: .destructive) {
+                Task { await signOut() }
+            }
+            .font(LucakuTypography.body)
+            .frame(minHeight: 44)
+            .padding(.top, LucakuSpacing.sp2)
+            Spacer()
+            Spacer()
+        }
+        .padding(.horizontal, LucakuSpacing.sp6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Save bar
