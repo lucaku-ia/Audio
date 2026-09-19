@@ -221,6 +221,10 @@ actor APIClient {
         }
 
         if http.statusCode == 401 {
+            // Tells SessionStore to clear itself so ContentView routes back
+            // to Login instead of every screen just failing silently — see
+            // Notification.Name.sessionExpired's doc in SessionStore.swift.
+            NotificationCenter.default.post(name: .sessionExpired, object: nil)
             throw APIError.notAuthenticated
         }
         guard (200..<300).contains(http.statusCode) else {

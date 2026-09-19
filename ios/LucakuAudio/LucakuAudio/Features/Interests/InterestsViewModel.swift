@@ -46,6 +46,19 @@ final class InterestsViewModel: ObservableObject {
 
     @Published var errorMessage: String?
 
+    /// Free-text "type anything" field — creates a real standing `Request`
+    /// via `POST /requests` rather than picking from the fixed catalogue.
+    /// This is deliberately a separate action from add/remove above: a
+    /// free-text request is categorized by the AI Platform's
+    /// `structure_request` (topic/scope/geography/depth), not matched to a
+    /// catalogue id, so it doesn't join `standingInterests` — see this
+    /// file's own note on why no new "Interest" table exists: standing
+    /// `Request`s already ARE the real interest model, the catalogue is
+    /// only ever a curated subset of them.
+    @Published var freeTextQuery: String = ""
+    @Published private(set) var isSubmittingFreeText = false
+    @Published private(set) var freeTextConfirmation: String?
+
     private var allOptions: [InterestOption] = []
     private var selectedIds: [String] = []
 
@@ -114,5 +127,37 @@ final class InterestsViewModel: ObservableObject {
 
     func toggleExpanded(_ id: String) {
         expandedInterestId = expandedInterestId == id ? nil : id
+    }
+
+    /// Submits `freeTextQuery` as a new standing `Request`. On success, shows
+    /// the AI-derived topic as confirmation (proving the categorization
+    /// actually happened, e.g. typing "Arsenal FC" and seeing "Added: Arsenal
+    /// FC" back) and clears the field. A request the AI Platform rejects
+    /// (unresearchable, malicious, private-individual — see
+    /// `ai_platform.STRUCTURE_REQUEST_SYSTEM`) surfaces its own
+    /// `rejected_reason` via the normal `APIError.server` message, not a
+    /// generic failure.
+    func submitFreeText(token: String) async {
+        let text = freeTextQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isSubmittingFreeText else { return }
+
+        isSubmittingFreeText = true
+        freeTextConfirmation = nil
+        errorMessage = nil
+        defer { isSubmittingFreeText = false }
+
+        do {
+            let request = try await APIClient.shared.createRequest(
+                rawText: text, kind: "standing", createdFrom: "interests", token: token
+            )
+            freeTextConfirmation = "Added: \(request.structured.topic)"
+            freeTextQuery = ""
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func dismissFreeTextConfirmation() {
+        freeTextConfirmation = nil
     }
 }

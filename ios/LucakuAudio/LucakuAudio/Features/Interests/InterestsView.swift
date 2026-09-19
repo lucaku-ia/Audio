@@ -64,6 +64,11 @@ struct InterestsView: View {
                     .fill(LucakuColor.borderSoft)
                     .frame(height: 1)
                     .padding(.vertical, LucakuSpacing.sp6)
+                freeTextSection
+                Rectangle()
+                    .fill(LucakuColor.borderSoft)
+                    .frame(height: 1)
+                    .padding(.vertical, LucakuSpacing.sp6)
                 exploreSection
             }
             .padding(.horizontal, LucakuSpacing.sp4)
@@ -71,6 +76,75 @@ struct InterestsView: View {
             .padding(.bottom, LucakuSpacing.sp8)
         }
         .background(LucakuColor.bg)
+    }
+
+    // MARK: - Search for anything (free-text)
+
+    /// Lets a customer type anything — not limited to the fixed onboarding
+    /// catalogue chips above/below — and have it AI-categorized into a real
+    /// standing `Request` (see InterestsViewModel.submitFreeText). Doesn't
+    /// join `standingSection`'s list: that list is sourced from
+    /// `OnboardingState.selected_interests` (catalogue ids), while a
+    /// free-text request is a `Request` row with its own AI-derived topic —
+    /// two different sources for the same underlying concept (a customer's
+    /// standing interest), which is why this shows its own confirmation
+    /// rather than silently appearing above.
+    private var freeTextSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HomeSectionHeader(title: "Search for anything")
+            Text("Type any topic, team, or question — Lucaku will categorize it and start tracking it daily")
+                .font(LucakuTypography.footnote)
+                .foregroundStyle(LucakuColor.textSecondary)
+                .padding(.bottom, LucakuSpacing.sp3)
+                .padding(.top, -LucakuSpacing.sp2)
+
+            HStack(spacing: LucakuSpacing.sp2) {
+                TextField("e.g. Arsenal FC", text: $viewModel.freeTextQuery)
+                    .font(LucakuTypography.body)
+                    .padding(.horizontal, LucakuSpacing.sp3)
+                    .frame(minHeight: 44)
+                    .background(LucakuColor.surface2, in: Capsule())
+                    .submitLabel(.done)
+                    .onSubmit { Task { await submitFreeText() } }
+                    .disabled(viewModel.isSubmittingFreeText)
+
+                Button {
+                    Task { await submitFreeText() }
+                } label: {
+                    if viewModel.isSubmittingFreeText {
+                        ProgressView().controlSize(.mini)
+                            .frame(width: 44, height: 44)
+                    } else {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(
+                                viewModel.freeTextQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    ? LucakuColor.textTertiary : LucakuColor.accent
+                            )
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(
+                    viewModel.isSubmittingFreeText
+                        || viewModel.freeTextQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+                .accessibilityLabel("Add this topic")
+            }
+
+            if let confirmation = viewModel.freeTextConfirmation {
+                Text(confirmation)
+                    .font(LucakuTypography.subhead)
+                    .foregroundStyle(LucakuColor.accent)
+                    .padding(.top, LucakuSpacing.sp2)
+                    .transition(.opacity)
+            }
+        }
+        .animation(LucakuMotion.house, value: viewModel.freeTextConfirmation)
+    }
+
+    private func submitFreeText() async {
+        guard let token = session.accessToken else { return }
+        await viewModel.submitFreeText(token: token)
     }
 
     // MARK: - Standing interests

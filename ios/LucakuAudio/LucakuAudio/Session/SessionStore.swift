@@ -1,6 +1,21 @@
 import Foundation
 import Security
 
+/// Posted by `APIClient` whenever any request comes back `401` — the token
+/// was rejected (expired, revoked by a server-side logout elsewhere,
+/// `token_version` bumped). `SessionStore` observes this itself so a stale
+/// session gets cleared and `ContentView` routes back to `LoginView`
+/// automatically, no matter which screen/call triggered the 401.
+///
+/// Before this existed, `SessionStore.clear()` was only ever called from the
+/// manual Settings "Log out" button — an expired token left every other
+/// screen stuck showing a generic "not signed in" error forever, since
+/// nothing else route back to Login. Found in the 2026-09-18 architecture
+/// review, fixed here.
+extension Notification.Name {
+    static let sessionExpired = Notification.Name("com.lucaku.audio.sessionExpired")
+}
+
 /// Holds the signed-in customer's bearer token in memory and mirrors it to
 /// the Keychain so it survives an app relaunch.
 ///
@@ -14,9 +29,25 @@ final class SessionStore: ObservableObject {
     @Published private(set) var accessToken: String?
 
     private let keychainKey = "com.lucaku.audio.accessToken"
+    private var sessionExpiredObserver: NSObjectProtocol?
 
     init() {
         accessToken = KeychainHelper.read(key: keychainKey)
+
+        // `queue: .main` delivers this on the main thread, matching this
+        // @MainActor class's own isolation — see the Notification.Name
+        // extension above for why this exists.
+        sessionExpiredObserver = NotificationCenter.default.addObserver(
+            forName: .sessionExpired, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.clear()
+        }
+    }
+
+    deinit {
+        if let sessionExpiredObserver {
+            NotificationCenter.default.removeObserver(sessionExpiredObserver)
+        }
     }
 
     var isAuthenticated: Bool { accessToken != nil }

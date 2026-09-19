@@ -96,6 +96,11 @@ class RequestOut(BaseModel):
     last_answered_at: datetime | None
     fulfilled_episode_id: str | None
     creado_en: datetime
+    # {topic, scope, geography, depth} from ai_platform.structure_request — exposed so a
+    # client can show/categorize a request by its topic without re-deriving it (see the
+    # free-text-interests feature: "Arsenal FC" structures to topic≈"Arsenal FC", and the
+    # client shows that topic as the category rather than forcing a fixed catalogue id).
+    structured: dict
 
 
 class RequestDetailOut(RequestOut):
@@ -177,12 +182,15 @@ async def crear_request(
 @router.get("", response_model=list[RequestOut])
 async def listar_requests(
     status_filtro: RequestStatus | None = Query(default=None, alias="status"),
+    kind_filtro: RequestKind | None = Query(default=None, alias="kind"),
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(Request).where(Request.customer_id == cliente.id)
     if status_filtro:
         stmt = stmt.where(Request.status == status_filtro)
+    if kind_filtro:
+        stmt = stmt.where(Request.kind == kind_filtro)
     stmt = stmt.order_by(Request.creado_en.desc())
     result = await db.execute(stmt)
     return [_request_out(r) for r in result.scalars().all()]
@@ -503,4 +511,5 @@ def _request_out(req: Request) -> RequestOut:
         last_answered_at=req.last_answered_at,
         fulfilled_episode_id=str(req.fulfilled_episode_id) if req.fulfilled_episode_id else None,
         creado_en=req.creado_en,
+        structured=req.structured or {},
     )

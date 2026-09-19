@@ -130,6 +130,18 @@ struct RequestTodayBody: Encodable {
     }
 }
 
+/// {topic, scope, geography, depth} — `ai_platform.structure_request`'s
+/// output, stored on `Request.structured` and now exposed on `RequestOut`.
+/// Every `Request` that exists has one: a rejected structuring attempt
+/// never creates a row (see requests.py's `_structure_or_reject`), so this
+/// is never optional/partial on a real request.
+struct RequestStructured: Decodable, Equatable {
+    let topic: String
+    let scope: String
+    let geography: String?
+    let depth: String
+}
+
 /// Matches backend/app/api/routes/requests.py's RequestOut — returned by
 /// POST /api/home/request-today (a thin wrapper over POST /requests).
 struct RequestOut: Decodable {
@@ -141,6 +153,7 @@ struct RequestOut: Decodable {
     let lastAnsweredAt: Date?
     let fulfilledEpisodeId: String?
     let creadoEn: Date
+    let structured: RequestStructured
 
     enum CodingKeys: String, CodingKey {
         case id, kind
@@ -150,6 +163,7 @@ struct RequestOut: Decodable {
         case lastAnsweredAt = "last_answered_at"
         case fulfilledEpisodeId = "fulfilled_episode_id"
         case creadoEn = "creado_en"
+        case structured
     }
 }
 
