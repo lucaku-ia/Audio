@@ -268,18 +268,35 @@ struct SettingsView: View {
         systemImage: String,
         description: String
     ) -> some View {
-        VStack(spacing: LucakuSpacing.sp6) {
-            ContentUnavailableView(
-                title,
-                systemImage: systemImage,
-                description: Text(description)
-            )
+        // Laid out by hand rather than wrapping ContentUnavailableView in a
+        // VStack: that view expands to fill all available height, which pushes
+        // anything below it to the very bottom of the screen — where the
+        // floating mini player covers it. The Sign Out button has to stay
+        // visibly attached to the message it belongs to.
+        VStack(spacing: LucakuSpacing.sp4) {
+            Spacer()
+            Image(systemName: systemImage)
+                .font(.system(size: 52, weight: .regular))
+                .foregroundStyle(LucakuColor.textTertiary)
+            VStack(spacing: LucakuSpacing.sp2) {
+                Text(title)
+                    .font(LucakuTypography.title3)
+                    .foregroundStyle(LucakuColor.textPrimary)
+                Text(description)
+                    .font(LucakuTypography.subhead)
+                    .foregroundStyle(LucakuColor.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
             Button("Sign Out", role: .destructive) {
                 Task { await signOut() }
             }
             .font(LucakuTypography.body)
             .frame(minHeight: 44)
+            .padding(.top, LucakuSpacing.sp2)
+            Spacer()
+            Spacer()
         }
+        .padding(.horizontal, LucakuSpacing.sp6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
