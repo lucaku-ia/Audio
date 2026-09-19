@@ -57,7 +57,10 @@ struct MainTabView: View {
                 // own tap-to-open behavior. There's no Player tab to switch
                 // to any more (see the type doc above), so this expands the
                 // Now Playing overlay instead.
-                HomeView(onOpenBlock: { block in openInPlayer(block) })
+                HomeView(
+                    onOpenBlock: { block in openInPlayer(block) },
+                    onSeeInterests: { selection = .interests }
+                )
                     .tabItem { Label("Home", systemImage: selection == .home ? "house.fill" : "house") }
                     .tag(Tab.home)
 

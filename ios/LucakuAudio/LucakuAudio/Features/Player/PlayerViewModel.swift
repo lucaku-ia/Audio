@@ -35,6 +35,11 @@ final class PlayerViewModel: ObservableObject {
 
     @Published private(set) var loadState: LoadState = .idle
     @Published private(set) var episode: EpisodeOut?
+    /// Seed string for the generated cover art (see `LucakuCover`) of the
+    /// episode in the player — set to whatever the card/tile the customer
+    /// tapped was seeded with, so the mini player wears the same colour as
+    /// the card it came from.
+    @Published private(set) var coverSeed: String = "lucaku"
     /// Previously-played episodes for the "Earlier" section. Each row here
     /// represents a WHOLE past episode (search/history has no per-block
     /// detail for old episodes), so these rows are visually identical to a
@@ -180,6 +185,7 @@ final class PlayerViewModel: ObservableObject {
                 loadedEpisodeId = nil
             }
             self.episode = episode
+            self.coverSeed = episode.headline ?? "today"
             audioUnavailableMessage = nil
             loadState = .loaded
         case .failure(let error):
@@ -199,6 +205,42 @@ final class PlayerViewModel: ObservableObject {
             var todayId: String?
             if case .success(let loadedEpisode) = episode { todayId = loadedEpisode.id }
             earlier = history.items.filter { $0.episodeId != todayId }
+        }
+    }
+
+    /// The episode currently loaded into the shared player, if any — Home
+    /// compares this against today's episode id so a playing sample or past
+    /// day never lights up today's block rows.
+    var loadedEpisodeIdentifier: String? { episode?.id }
+
+    /// Loads one specific episode (a shared sample from "For you"/"Explore",
+    /// or a past day from Recent) into the shared player. Unlike `load(token:)`
+    /// — which always means "today's own latest episode" — this is what makes
+    /// Home's shelves actually playable. `autoplay: true` starts it from the
+    /// first block right away (the Spotify-style "tap a card, it plays" feel).
+    /// Returns false (and sets `audioUnavailableMessage`) if the episode
+    /// couldn't be fetched, so the caller can leave the UI alone.
+    @discardableResult
+    func loadEpisode(id: String, token: String, autoplay: Bool, coverSeed: String? = nil) async -> Bool {
+        if episode?.id == id, hasEpisode {
+            if autoplay { selectBlock(0, autoplay: true) }
+            return true
+        }
+        do {
+            let fetched = try await APIClient.shared.episode(id: id, token: token)
+            // A genuinely different episode than whatever's in the engine —
+            // reset playback so we never keep streaming the old one's audio.
+            audioService.stop()
+            loadedEpisodeId = nil
+            self.episode = fetched
+            self.coverSeed = coverSeed ?? fetched.headline ?? "lucaku"
+            audioUnavailableMessage = nil
+            loadState = .loaded
+            if autoplay { selectBlock(0, autoplay: true) }
+            return true
+        } catch {
+            audioUnavailableMessage = error.localizedDescription
+            return false
         }
     }
 

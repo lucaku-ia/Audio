@@ -128,20 +128,7 @@ async def get_job(
     return _job_out(job)
 
 
-@router.get("/episodes/latest", response_model=EpisodeOut)
-async def latest_episode(
-    cliente: Cliente = Depends(get_current_cliente),
-    db: AsyncSession = Depends(get_db),
-):
-    """Not a Player/Home endpoint (neither exists yet) — exists so a generated
-    episode's script and sources can actually be inspected without one."""
-    result = await db.execute(
-        select(Episode).where(Episode.customer_id == cliente.id).order_by(Episode.published_at.desc()).limit(1)
-    )
-    episode = result.scalar_one_or_none()
-    if not episode:
-        raise HTTPException(404, "No episode yet")
-
+async def _episode_out(db: AsyncSession, episode: Episode) -> EpisodeOut:
     blocks_result = await db.execute(select(Block).where(Block.episode_id == episode.id).order_by(Block.start_s))
     blocks = blocks_result.scalars().all()
 
@@ -154,3 +141,38 @@ async def latest_episode(
             for b in blocks
         ],
     )
+
+
+@router.get("/episodes/latest", response_model=EpisodeOut)
+async def latest_episode(
+    cliente: Cliente = Depends(get_current_cliente),
+    db: AsyncSession = Depends(get_db),
+):
+    """The customer's own most recent episode."""
+    result = await db.execute(
+        select(Episode).where(Episode.customer_id == cliente.id).order_by(Episode.published_at.desc()).limit(1)
+    )
+    episode = result.scalar_one_or_none()
+    if not episode:
+        raise HTTPException(404, "No episode yet")
+    return await _episode_out(db, episode)
+
+
+# Declared AFTER /episodes/latest on purpose — FastAPI matches routes in
+# declaration order, and "latest" would otherwise be tried as a UUID here first.
+@router.get("/episodes/{episode_id}", response_model=EpisodeOut)
+async def get_episode(
+    episode_id: uuid.UUID,
+    cliente: Cliente = Depends(get_current_cliente),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Any single episode the caller is allowed to hear: one of their own (a past
+    day from Recent) or a shared-inventory sample (Home's "For you" / "Explore"
+    shelves). Anyone else's personal episode is a plain 404, not a 403 — same
+    "don't confirm it exists" posture as every other customer-scoped lookup.
+    """
+    episode = await db.get(Episode, episode_id)
+    if not episode or not (episode.shared or episode.customer_id == cliente.id):
+        raise HTTPException(404, "Episode not found")
+    return await _episode_out(db, episode)

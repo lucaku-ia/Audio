@@ -31,6 +31,17 @@ enum HomeFormat {
         return formatter.string(from: Date())
     }
 
+    /// "Good morning" / "Good afternoon" / "Good evening" by the device's
+    /// local hour — the greeting the top of Home leads with.
+    static var greeting: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        switch hour {
+        case 5..<12: return "Good morning"
+        case 12..<18: return "Good afternoon"
+        default: return "Good evening"
+        }
+    }
+
     /// RecentEpisodeOut.date is a plain ISO "YYYY-MM-DD" string from the
     /// backend. Parsed defensively — falls back to the raw string if the
     /// backend ever changes format, rather than crashing the row.
@@ -47,12 +58,120 @@ enum HomeFormat {
         dateFormatter.dateFormat = "MMM d"
         return (weekdayFormatter.string(from: date), dateFormatter.string(from: date))
     }
+
+    /// "personal_finance" -> "Personal finance". Used only as a fallback when
+    /// the localized catalogue label for a tag isn't available.
+    static func prettyTag(_ tag: String) -> String {
+        let spaced = tag.replacingOccurrences(of: "_", with: " ")
+        return spaced.prefix(1).uppercased() + spaced.dropFirst()
+    }
+}
+
+// MARK: - Generated cover art
+
+/// Lucaku has no episode artwork (an episode is a voiced briefing, not an
+/// album), and Spotify-style Home screens live or die on rich, colourful
+/// covers. So covers are generated, deterministically, from a seed string
+/// (an interest tag, a topic, an episode headline): the same seed always
+/// gets the same gradient and glyph, so a topic looks the same everywhere it
+/// appears — its tile, its shelf card, the mini player.
+enum LucakuCover {
+    /// (dark corner, bright corner) pairs. Saturated on purpose: the app is
+    /// dark-first, and these are the only strong colour on screen.
+    private static let palette: [(UInt32, UInt32)] = [
+        (0x7F1D1D, 0xEF4444), // red
+        (0x7C2D12, 0xF97316), // orange
+        (0x713F12, 0xEAB308), // amber
+        (0x14532D, 0x22C55E), // green
+        (0x134E4A, 0x14B8A6), // teal
+        (0x1E3A8A, 0x3B82F6), // blue
+        (0x312E81, 0x818CF8), // indigo
+        (0x581C87, 0xC084FC), // purple
+        (0x831843, 0xEC4899), // pink
+        (0x1F2937, 0x6B7280), // slate
+    ]
+
+    private static func color(_ hex: UInt32) -> Color {
+        Color(
+            red: Double((hex >> 16) & 0xFF) / 255.0,
+            green: Double((hex >> 8) & 0xFF) / 255.0,
+            blue: Double(hex & 0xFF) / 255.0
+        )
+    }
+
+    /// djb2 — stable across launches (Swift's own `hashValue` is randomized
+    /// per process, which would re-colour every cover on every launch).
+    private static func stableIndex(for seed: String) -> Int {
+        var hash: UInt64 = 5381
+        for scalar in seed.lowercased().unicodeScalars {
+            hash = (hash &* 33) &+ UInt64(scalar.value)
+        }
+        return Int(hash % UInt64(palette.count))
+    }
+
+    static func gradient(for seed: String) -> LinearGradient {
+        let pair = palette[stableIndex(for: seed)]
+        return LinearGradient(
+            colors: [color(pair.0), color(pair.1)],
+            startPoint: .topLeading, endPoint: .bottomTrailing
+        )
+    }
+
+    /// The cover's darker corner colour — used to tint the mini player.
+    static func tint(for seed: String) -> Color {
+        color(palette[stableIndex(for: seed)].0)
+    }
+
+    /// A glyph that hints at the subject, by keyword (English and Spanish —
+    /// topics are the customer's own words). Falls back to a waveform.
+    static func symbol(for seed: String) -> String {
+        let text = seed.lowercased()
+        let table: [([String], String)] = [
+            (["market", "econom", "peso", "dolar", "dólar", "financ", "invest", "inflation", "interest rate", "tasa"],
+             "chart.line.uptrend.xyaxis"),
+            (["tech", "artificial", "software", "crypto", "cripto", "inteligencia"], "cpu"),
+            (["sport", "deporte", "football", "fútbol", "futbol", "soccer", "liga", "nba", "tennis", "fc"], "sportscourt"),
+            (["science", "ciencia", "space", "espacio", "physics"], "atom"),
+            (["health", "salud", "medic", "wellness"], "heart"),
+            (["world", "mundo", "international", "global"], "globe"),
+            (["politic", "polític", "govern", "gobierno", "congress"], "building.columns"),
+            (["climate", "clima", "environment", "ambiente", "energy"], "leaf"),
+            (["entertain", "cine", "movie", "music", "música", "culture", "cultura"], "theatermasks"),
+            (["local", "colombia", "city", "ciudad"], "mappin.and.ellipse"),
+        ]
+        for (keywords, symbol) in table where keywords.contains(where: { text.contains($0) }) {
+            return symbol
+        }
+        return "waveform"
+    }
+}
+
+struct CoverArt: View {
+    let seed: String
+    var cornerRadius: CGFloat = LucakuRadius.row
+    /// Overrides the keyword-derived glyph.
+    var glyph: String?
+
+    var body: some View {
+        Rectangle()
+            .fill(LucakuCover.gradient(for: seed))
+            .overlay {
+                GeometryReader { proxy in
+                    Image(systemName: glyph ?? LucakuCover.symbol(for: seed))
+                        .font(.system(size: min(proxy.size.width, proxy.size.height) * 0.44, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.34))
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
 }
 
 // MARK: - Section header
 
 /// Matches home_v3.html's `.section-head` — a title2 label with an optional
-/// trailing link-style button (e.g. "Manage").
+/// trailing link-style button (e.g. "Manage"). Still used by the Interests
+/// and Search screens; Home's own shelves use `HomeShelfHeader` below.
 struct HomeSectionHeader: View {
     let title: String
     var actionTitle: String?
@@ -74,6 +193,267 @@ struct HomeSectionHeader: View {
             }
         }
         .padding(.bottom, LucakuSpacing.sp3)
+    }
+}
+
+/// Bold shelf title (Spotify-style) with an optional one-line subtitle and an
+/// optional trailing action.
+struct HomeShelfHeader: View {
+    let title: String
+    var subtitle: String?
+    var actionTitle: String?
+    var action: (() -> Void)?
+
+    var body: some View {
+        HStack(alignment: .lastTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(LucakuColor.textPrimary)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(LucakuTypography.footnote)
+                        .foregroundStyle(LucakuColor.textSecondary)
+                }
+            }
+            Spacer(minLength: LucakuSpacing.sp2)
+            if let actionTitle, let action {
+                Button(action: action) {
+                    Text(actionTitle)
+                        .font(LucakuTypography.subhead.weight(.semibold))
+                        .foregroundStyle(LucakuColor.accent)
+                }
+                .buttonStyle(.plain)
+                .frame(minHeight: 44)
+            }
+        }
+        .padding(.bottom, LucakuSpacing.sp3)
+    }
+}
+
+// MARK: - Topic tile (Spotify's "quick access" grid)
+
+/// One of the customer's standing topics, shown as a compact cover + title
+/// tile in a two-column grid at the top of Home.
+struct TopicTile: View {
+    let title: String
+    let seed: String
+    var onTap: () -> Void = {}
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 0) {
+                CoverArt(seed: seed, cornerRadius: 0)
+                    .frame(width: 56, height: 56)
+                Text(title)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(LucakuColor.textPrimary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 10)
+                Spacer(minLength: 0)
+            }
+            .frame(height: 56)
+            .background(LucakuColor.surface2)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Episode shelf card
+
+/// A square-cover card for a shelf — used for shared-inventory samples
+/// ("For you" / "Explore"). Tapping it plays the episode.
+struct EpisodeShelfCard: View {
+    let title: String
+    let subtitle: String
+    let seed: String
+    let isPlaying: Bool
+    var onTap: () -> Void = {}
+
+    // Computed, not a stored `private let`: a private stored property would
+    // make this view's synthesized memberwise initializer private too, and
+    // HomeView (another file) constructs it.
+    private var side: CGFloat { 148 }
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 8) {
+                CoverArt(seed: seed, cornerRadius: 8)
+                    .frame(width: side, height: side)
+                    .overlay(alignment: .bottomTrailing) {
+                        Circle()
+                            .fill(LucakuColor.accent)
+                            .frame(width: 36, height: 36)
+                            .overlay(
+                                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundStyle(LucakuColor.accentOn)
+                                    .offset(x: isPlaying ? 0 : 1)
+                            )
+                            .shadow(color: .black.opacity(0.35), radius: 6, x: 0, y: 3)
+                            .padding(8)
+                    }
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(LucakuColor.textPrimary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(width: side, alignment: .leading)
+                Text(subtitle)
+                    .font(LucakuTypography.caption1)
+                    .foregroundStyle(LucakuColor.textSecondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(width: side, alignment: .leading)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Hero cards
+
+/// Today's episode, when it's ready — the big "Made for you" card.
+struct TodayHeroCard: View {
+    let headline: String
+    let meta: String
+    let seed: String
+    let isPlaying: Bool
+    var onPlay: () -> Void
+
+    var body: some View {
+        HStack(spacing: LucakuSpacing.sp4) {
+            CoverArt(seed: seed, cornerRadius: 10)
+                .frame(width: 128, height: 128)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("TODAY'S EPISODE")
+                    .font(.system(size: 11, weight: .bold))
+                    .tracking(0.8)
+                    .foregroundStyle(LucakuColor.accent)
+                Text(headline)
+                    .font(.system(size: 19, weight: .bold))
+                    .foregroundStyle(LucakuColor.textPrimary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                Text(meta)
+                    .font(LucakuTypography.footnote)
+                    .foregroundStyle(LucakuColor.textSecondary)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+                Button(action: onPlay) {
+                    HStack(spacing: 6) {
+                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        Text(isPlaying ? "Pause" : "Play")
+                    }
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(LucakuColor.accentOn)
+                    .padding(.horizontal, 18)
+                    .frame(height: 40)
+                    .background(Capsule().fill(LucakuColor.accent))
+                }
+                .buttonStyle(.plain)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(LucakuSpacing.sp3)
+        .background(
+            RoundedRectangle(cornerRadius: LucakuRadius.card, style: .continuous)
+                .fill(LucakuColor.surface)
+        )
+    }
+}
+
+/// Today's episode when it isn't ready: either nothing has been started yet
+/// (offer to generate it now — a customer shouldn't have to wait until
+/// tomorrow morning to hear the product work), it's being recorded, or the
+/// scheduled run is on its way / running long.
+struct MakingHeroCard: View {
+    let isLate: Bool
+    let requestsCount: Int?
+    let eta: Date?
+    let isGenerating: Bool
+    let errorMessage: String?
+    var onGenerate: () -> Void
+
+    private var canGenerate: Bool { eta == nil && !isGenerating }
+
+    private var topicsPhrase: String {
+        guard let requestsCount else { return "your topics" }
+        return "\(requestsCount) topic\(requestsCount == 1 ? "" : "s")"
+    }
+
+    private var title: String {
+        if isGenerating { return "Recording your episode…" }
+        if isLate { return "Running a little long" }
+        if eta != nil { return "Your episode is on its way" }
+        return "Ready when you are"
+    }
+
+    private var subtitle: String {
+        if isGenerating {
+            return "Researching and voicing \(topicsPhrase) — about a minute or two. You can keep browsing."
+        }
+        if let eta { return "Ready around \(HomeFormat.shortTime(eta))" }
+        return "Lucaku researches \(topicsPhrase) and records them for you. Hear it now instead of waiting for tomorrow morning."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: LucakuSpacing.sp4) {
+            HStack(alignment: .top, spacing: LucakuSpacing.sp3) {
+                ZStack {
+                    Circle().fill(LucakuColor.accentTintStrong).frame(width: 52, height: 52)
+                    if isGenerating || eta != nil {
+                        ProgressView().tint(LucakuColor.accent)
+                    } else {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(LucakuColor.accent)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 19, weight: .bold))
+                        .foregroundStyle(LucakuColor.textPrimary)
+                    Text(subtitle)
+                        .font(LucakuTypography.subhead)
+                        .foregroundStyle(LucakuColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if canGenerate {
+                Button(action: onGenerate) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "sparkles")
+                        Text("Generate my episode now")
+                    }
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(LucakuColor.accentOn)
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .background(Capsule().fill(LucakuColor.accent))
+                }
+                .buttonStyle(.plain)
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(LucakuTypography.caption1)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(LucakuSpacing.sp4)
+        .background(
+            RoundedRectangle(cornerRadius: LucakuRadius.card, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [LucakuColor.accent.opacity(0.30), LucakuColor.surface],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    )
+                )
+        )
     }
 }
 
@@ -219,26 +599,25 @@ private struct ChipButton: View {
 
 // MARK: - Recent shelf
 
-/// Horizontal "Recent" shelf — ScrollView + LazyHStack per the mockup's
-/// `.shelf` pattern. Real fields only: `RecentEpisodeOut` has no per-day
-/// topic count, so each tile shows duration/style (when there's a real
-/// episode) or "No briefing" (for a synthesized empty-day entry) rather than
-/// inventing a topic count the API doesn't provide.
+/// Horizontal "Recent" shelf — cover tiles for the last few days. Real
+/// fields only: a day with an episode shows its headline/duration; a
+/// synthesized "no news that day" entry shows a quiet placeholder and isn't
+/// tappable (there's nothing to play).
 struct RecentShelfView: View {
     let episodes: [RecentEpisodeOut]
     var onSelect: (RecentEpisodeOut) -> Void = { _ in }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: LucakuSpacing.sp3) {
+            LazyHStack(alignment: .top, spacing: LucakuSpacing.sp3) {
                 ForEach(episodes) { episode in
                     Button { onSelect(episode) } label: {
                         RecentShelfTile(episode: episode)
                     }
                     .buttonStyle(.plain)
+                    .disabled(episode.episodeId == nil)
                 }
             }
-            .padding(.vertical, 2)
         }
     }
 }
@@ -246,110 +625,48 @@ struct RecentShelfView: View {
 private struct RecentShelfTile: View {
     let episode: RecentEpisodeOut
 
+    private var side: CGFloat { 148 }
+
     private var isSkipped: Bool { episode.state == "no_news" }
     private var weekdayAndDate: (weekday: String, dateLabel: String) {
         HomeFormat.weekdayAndDate(fromISO: episode.date)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: LucakuSpacing.sp2) {
-            RoundedRectangle(cornerRadius: LucakuRadius.sheet, style: .continuous)
-                .fill(isSkipped ? LucakuColor.borderSoft : LucakuColor.surface2)
-                .frame(width: 104, height: 104)
-                .overlay(
-                    Text(weekdayAndDate.weekday)
-                        .font(.system(size: 26, weight: .semibold))
-                        .foregroundStyle(isSkipped ? LucakuColor.textTertiary : LucakuColor.textSecondary)
-                )
-
-            if isSkipped {
-                Text("No briefing")
-                    .font(LucakuTypography.caption1)
-                    .foregroundStyle(LucakuColor.textSecondary)
-                Text("weekend skip")
-                    .font(LucakuTypography.caption1)
-                    .foregroundStyle(LucakuColor.textSecondary)
-            } else {
-                Text(weekdayAndDate.dateLabel)
-                    .font(LucakuTypography.caption1)
-                    .fontWeight(.regular)
-                    .foregroundStyle(LucakuColor.textPrimary)
-                Text(captionDetail)
-                    .font(LucakuTypography.caption1)
-                    .foregroundStyle(LucakuColor.textSecondary)
+        VStack(alignment: .leading, spacing: 8) {
+            Group {
+                if isSkipped {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(LucakuColor.surface)
+                        .overlay(
+                            Image(systemName: "moon.zzz")
+                                .font(.system(size: 34, weight: .regular))
+                                .foregroundStyle(LucakuColor.textTertiary)
+                        )
+                } else {
+                    CoverArt(seed: episode.headline ?? episode.date, cornerRadius: 8)
+                }
             }
+            .frame(width: side, height: side)
+
+            Text(isSkipped ? "No news" : (episode.headline ?? "Daily briefing"))
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isSkipped ? LucakuColor.textSecondary : LucakuColor.textPrimary)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .frame(width: side, alignment: .leading)
+            Text(captionDetail)
+                .font(LucakuTypography.caption1)
+                .foregroundStyle(LucakuColor.textSecondary)
+                .lineLimit(1)
+                .frame(width: side, alignment: .leading)
         }
-        .frame(width: 104, alignment: .leading)
     }
 
     private var captionDetail: String {
-        var parts: [String] = []
-        if let minutes = HomeFormat.minutes(episode.durationS) { parts.append(minutes) }
-        if let style = episode.style { parts.append(style) }
-        return parts.isEmpty ? " " : parts.joined(separator: " · ")
-    }
-}
-
-// MARK: - Your interests
-
-/// DESIGN_SPEC_V3.md's "Your interests" section. NOTE ON DATA: there is no
-/// interests-management endpoint wired up anywhere in this scaffold's
-/// `APIClient` (no cadence, no per-interest toggle) — `HomeOut` only carries
-/// `shared_inventory`, each entry already tagged with a real `reason` string
-/// derived server-side from the customer's onboarding interests (see
-/// home.py's `_derive_shared_inventory`). Rather than fabricate cadence text
-/// ("Every weekday morning") the mockup shows, this renders the row using
-/// only the two real fields available (`reason`, `headline`) in the same
-/// visual shape as the mockup's `.interest-row`. The trailing chevron and
-/// "Manage" link are visual/structural placeholders — wire them to a real
-/// interests-management endpoint once one exists (TODO).
-struct InterestsSectionView: View {
-    let items: [SharedInventoryOut]
-    var onManage: () -> Void = {}
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HomeSectionHeader(title: "Your interests", actionTitle: "Manage", action: onManage)
-            VStack(spacing: 0) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    InterestRow(item: item, isLast: index == items.count - 1)
-                }
-            }
-        }
-    }
-}
-
-private struct InterestRow: View {
-    let item: SharedInventoryOut
-    let isLast: Bool
-
-    var body: some View {
-        HStack(spacing: LucakuSpacing.sp3) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.reason)
-                    .font(LucakuTypography.body)
-                    .foregroundStyle(LucakuColor.textPrimary)
-                if let headline = item.headline {
-                    Text(headline)
-                        .font(LucakuTypography.footnote)
-                        .foregroundStyle(LucakuColor.textSecondary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: LucakuSpacing.sp2)
-            // TODO: wire to a real per-interest edit/manage flow once an
-            // interests-management endpoint exists; presentational only today.
-            Image(systemName: "chevron.right")
-                .font(.system(size: 14, weight: .regular))
-                .foregroundStyle(LucakuColor.textTertiary)
-                .frame(width: 44, height: 44)
-        }
-        .frame(minHeight: 56)
-        .overlay(alignment: .bottom) {
-            if !isLast {
-                Rectangle().fill(LucakuColor.borderSoft).frame(height: 1)
-            }
-        }
+        var parts = ["\(weekdayAndDate.weekday), \(weekdayAndDate.dateLabel)"]
+        if !isSkipped, let minutes = HomeFormat.minutes(episode.durationS) { parts.append(minutes) }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -396,7 +713,7 @@ struct EmptyCaughtUpView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.top, LucakuSpacing.sp6)
+            .padding(.top, LucakuSpacing.sp2)
             .padding(.bottom, LucakuSpacing.sp4)
 
             Rectangle().fill(LucakuColor.borderSoft).frame(height: 1)
@@ -432,103 +749,12 @@ struct EmptyCaughtUpView: View {
                         .foregroundStyle(.red)
                 }
             }
-            .padding(.bottom, LucakuSpacing.sp6)
-
-            if !recent.isEmpty {
-                HomeSectionHeader(title: "Revisit recent")
-                VStack(spacing: 0) {
-                    ForEach(Array(recent.enumerated()), id: \.element.id) { index, episode in
-                        RevisitRow(episode: episode, isLast: index == recent.count - 1) {
-                            onSelectRecent(episode)
-                        }
-                    }
-                }
-            }
+            .padding(.bottom, LucakuSpacing.sp2)
         }
     }
 }
 
-private struct RevisitRow: View {
-    let episode: RecentEpisodeOut
-    let isLast: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: LucakuSpacing.sp3) {
-                Text(HomeFormat.weekdayAndDate(fromISO: episode.date).dateLabel)
-                    .font(LucakuTypography.footnote)
-                    .foregroundStyle(LucakuColor.textTertiary)
-                    .frame(width: 40, alignment: .leading)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(episode.headline ?? "No news that day")
-                        .font(LucakuTypography.body)
-                        .foregroundStyle(LucakuColor.textPrimary)
-                        .lineLimit(2)
-                    if let minutes = HomeFormat.minutes(episode.durationS) {
-                        Text(minutes)
-                            .font(LucakuTypography.footnote)
-                            .foregroundStyle(LucakuColor.textSecondary)
-                    }
-                }
-                Spacer(minLength: LucakuSpacing.sp2)
-                Image(systemName: "play.fill")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(LucakuColor.textTertiary)
-                    .frame(width: 44, height: 44)
-            }
-            .padding(.vertical, LucakuSpacing.sp2)
-        }
-        .buttonStyle(.plain)
-        .frame(minHeight: 56)
-        .overlay(alignment: .bottom) {
-            if !isLast {
-                Rectangle().fill(LucakuColor.borderSoft).frame(height: 1)
-            }
-        }
-    }
-}
-
-// MARK: - In-progress hero (making / late)
-
-/// Not covered by the approved mockup (home_v3.html only shows "ready" and
-/// "empty_day"), but `making`/`late` are real states `GET /api/home` can
-/// return (see home.py's `_derive_banner`). Built as a reasonable extension
-/// of the same visual language (tokens, type scale, spacing) rather than
-/// left as the scaffold's plain `LabeledContent` list. Flagged in the PR as
-/// a SwiftUI-idiom translation, not a pixel-verified mockup match.
-struct HeroInProgressView: View {
-    let isLate: Bool
-    let requestsCount: Int?
-    let eta: Date?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: LucakuSpacing.sp3) {
-            HStack(spacing: LucakuSpacing.sp3) {
-                ZStack {
-                    Circle().fill(LucakuColor.accentTint).frame(width: 56, height: 56)
-                    ProgressView().tint(LucakuColor.accent)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(isLate ? "Running a little long" : "Today's episode is being put together")
-                        .font(LucakuTypography.headline)
-                        .foregroundStyle(LucakuColor.textPrimary)
-                    Text(subtitle)
-                        .font(LucakuTypography.footnote)
-                        .foregroundStyle(LucakuColor.textSecondary)
-                }
-            }
-        }
-        .padding(.vertical, LucakuSpacing.sp2)
-    }
-
-    private var subtitle: String {
-        var parts: [String] = []
-        if let requestsCount { parts.append("\(requestsCount) request\(requestsCount == 1 ? "" : "s") in progress") }
-        if let eta { parts.append("ready around \(HomeFormat.shortTime(eta))") }
-        return parts.isEmpty ? "Check back soon" : parts.joined(separator: " · ")
-    }
-}
+// MARK: - Re-entry
 
 /// `re_entry` — the customer has no active standing requests at all. Also
 /// not depicted in the mockup; a minimal, honest bridge to the one real

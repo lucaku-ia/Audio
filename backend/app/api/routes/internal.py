@@ -35,7 +35,7 @@ for the honest limits of what this catalogue does and doesn't do.
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,7 +84,11 @@ class SharedInventoryResultOut(BaseModel):
 
 
 @router.post("/generate-shared-inventory", response_model=list[SharedInventoryResultOut])
-async def generate_shared_inventory(db: AsyncSession = Depends(get_db)):
+async def generate_shared_inventory(
+    tag: str | None = Query(default=None, description="Only this tag — each one takes ~1 min (research + voice), "
+                                                       "so running all of them in one call can outlive an HTTP timeout."),
+    db: AsyncSession = Depends(get_db),
+):
     """
     Runs (or, if already run today, returns) one shared-inventory
     GenerationJob per tag in shared_inventory_seeds.json. Loaded fresh from
@@ -92,6 +96,10 @@ async def generate_shared_inventory(db: AsyncSession = Depends(get_db)):
     takes effect without a restart.
     """
     seeds = json.loads(_SHARED_SEEDS_PATH.read_text(encoding="utf-8"))["shared_seeds"]
+    if tag:
+        seeds = [s for s in seeds if s["tag"] == tag]
+        if not seeds:
+            raise HTTPException(404, f"Unknown tag '{tag}'")
     results = []
     for seed in seeds:
         job = await generate_shared_episode(db, tag=seed["tag"], seed_request_text=seed["seed_request_text"])

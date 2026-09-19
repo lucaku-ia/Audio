@@ -75,7 +75,20 @@ actor APIClient {
     /// this can be slow and time out for a customer with many active
     /// requests) — so this call may legitimately take a while.
     func runGeneration(token: String) async throws -> JobOut {
-        try await send(path: "/generation/run", method: "POST", token: token)
+        // URLSession's default request timeout is 60s of silence, and this
+        // route sends nothing until the whole research → write → voice
+        // pipeline finishes (routinely 1–2 minutes) — without a longer
+        // timeout the app reports a failure while the server is still
+        // happily generating the episode.
+        var request = try makeRequest(path: "/generation/run", method: "POST", token: token)
+        request.timeoutInterval = 300
+        return try await perform(request)
+    }
+
+    /// Any single episode the caller may hear: one of their own (a past day
+    /// from Recent) or a shared-inventory sample (Home's "For you"/"Explore").
+    func episode(id: String, token: String) async throws -> EpisodeOut {
+        try await send(path: "/generation/episodes/\(id)", method: "GET", token: token)
     }
 
     func job(id: String, token: String) async throws -> JobOut {
@@ -155,10 +168,13 @@ actor APIClient {
     /// GET /requests?status=... — used by Search to check which topics
     /// already have an active standing request, so "Add as a new interest"
     /// doesn't offer to create a duplicate for something already tracked.
-    func listRequests(status: String? = nil, token: String) async throws -> [RequestOut] {
+    func listRequests(status: String? = nil, kind: String? = nil, token: String) async throws -> [RequestOut] {
         var query: [URLQueryItem] = []
         if let status {
             query.append(URLQueryItem(name: "status", value: status))
+        }
+        if let kind {
+            query.append(URLQueryItem(name: "kind", value: kind))
         }
         return try await send(path: "/requests", method: "GET", query: query, token: token)
     }

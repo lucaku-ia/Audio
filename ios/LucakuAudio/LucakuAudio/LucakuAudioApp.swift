@@ -19,6 +19,11 @@ struct LucakuAudioApp: App {
             ContentView()
                 .environmentObject(session)
                 .environmentObject(playerViewModel)
+                // Dark-first: a listening app used at night and in the car,
+                // and the generated cover art only reads as rich against
+                // near-black. LucakuColor's tokens already carry a full dark
+                // palette; this pins the app to it.
+                .preferredColorScheme(.dark)
         }
     }
 }

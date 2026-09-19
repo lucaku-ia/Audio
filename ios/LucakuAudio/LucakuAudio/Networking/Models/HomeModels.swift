@@ -17,12 +17,16 @@ struct BannerOut: Decodable {
     /// order. Empty (default) for every other banner state. See
     /// BlockSummaryOut's docstring.
     let blocks: [BlockSummaryOut]
+    /// ready only — today's episode id, so Home can tell "the shared player is
+    /// playing today's episode" apart from "playing a sample / a past day".
+    let episodeId: String?
 
     enum CodingKeys: String, CodingKey {
         case state, headline
         case requestsCount = "requests_count"
         case durationS = "duration_s"
         case style, eta, blocks
+        case episodeId = "episode_id"
     }
 
     init(from decoder: Decoder) throws {
@@ -37,6 +41,7 @@ struct BannerOut: Decodable {
         // `[]` — decode defensively so those states don't fail the whole
         // Home load.
         blocks = try container.decodeIfPresent([BlockSummaryOut].self, forKey: .blocks) ?? []
+        episodeId = try container.decodeIfPresent(String.self, forKey: .episodeId)
     }
 }
 
@@ -78,6 +83,8 @@ struct RecentEpisodeOut: Decodable, Identifiable {
     let style: String?
     /// "completed" | "no_news"
     let state: String
+    /// nil for a synthesized "no news that day" entry — nothing to play.
+    let episodeId: String?
 
     var id: String { date }
 
@@ -85,6 +92,7 @@ struct RecentEpisodeOut: Decodable, Identifiable {
         case date, headline
         case durationS = "duration_s"
         case style, state
+        case episodeId = "episode_id"
     }
 }
 
@@ -95,6 +103,8 @@ struct SharedInventoryOut: Decodable, Identifiable {
     let style: String?
     /// e.g. "Because you follow technology"
     let reason: String
+    /// The interest tag this sample belongs to (e.g. "technology").
+    let tag: String?
 
     var id: String { episodeId }
 
@@ -102,7 +112,7 @@ struct SharedInventoryOut: Decodable, Identifiable {
         case episodeId = "episode_id"
         case headline
         case durationS = "duration_s"
-        case style, reason
+        case style, reason, tag
     }
 }
 
@@ -115,10 +125,23 @@ struct HomeOut: Decodable {
     /// concrete type since the backend itself has not settled its shape.
     let suggestions: [JSONValue]
     let sharedInventory: [SharedInventoryOut]
+    /// Shared samples for topics the customer does NOT follow yet — Home's
+    /// "Explore" shelf. Honestly labelled as exploration, never as a match.
+    let explore: [SharedInventoryOut]
 
     enum CodingKeys: String, CodingKey {
         case banner, recent, suggestions
         case sharedInventory = "shared_inventory"
+        case explore
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        banner = try container.decode(BannerOut.self, forKey: .banner)
+        recent = try container.decode([RecentEpisodeOut].self, forKey: .recent)
+        suggestions = try container.decodeIfPresent([JSONValue].self, forKey: .suggestions) ?? []
+        sharedInventory = try container.decodeIfPresent([SharedInventoryOut].self, forKey: .sharedInventory) ?? []
+        explore = try container.decodeIfPresent([SharedInventoryOut].self, forKey: .explore) ?? []
     }
 }
 

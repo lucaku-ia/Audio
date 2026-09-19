@@ -124,6 +124,10 @@ class BannerOut(BaseModel):
     style: str | None = None
     eta: datetime | None = None  # making/late only; see module scope note for how the Generator sets/refreshes it
     blocks: list[BlockSummaryOut] = Field(default_factory=list)  # ready only; see BlockSummaryOut docstring
+    # ready only — lets a client tell "the player is playing TODAY'S episode" apart from
+    # "the player is playing some other episode" (a past day or a shared sample), and open
+    # it directly via GET /generation/episodes/{id}.
+    episode_id: str | None = None
 
 
 class RecentEpisodeOut(BaseModel):
@@ -132,6 +136,7 @@ class RecentEpisodeOut(BaseModel):
     duration_s: int | None
     style: str | None
     state: str  # completed | no_news — see module scope note on playback position
+    episode_id: str | None = None  # null for a synthesized "no news that day" entry (nothing to play)
 
 
 class SharedInventoryOut(BaseModel):
@@ -140,6 +145,7 @@ class SharedInventoryOut(BaseModel):
     duration_s: int | None
     style: str | None
     reason: str  # e.g. "Because you follow technology" — see module scope note
+    tag: str | None = None  # the interest tag this sample belongs to (e.g. "technology")
 
 
 class HomeOut(BaseModel):
@@ -147,6 +153,11 @@ class HomeOut(BaseModel):
     recent: list[RecentEpisodeOut]
     suggestions: list = Field(default_factory=list)  # deferred — see module scope note
     shared_inventory: list[SharedInventoryOut] = Field(default_factory=list)
+    # Shared samples for tags the customer does NOT follow yet — "something new to try".
+    # Kept separate from shared_inventory so the "if we cannot say why, we do not show it"
+    # rule stays intact: shared_inventory's reason is a real match to their interests,
+    # this list's reason honestly says it's an exploration ("Explore {tag}"), not a match.
+    explore: list[SharedInventoryOut] = Field(default_factory=list)
 
 
 class RequestTodayBody(BaseModel):
@@ -213,6 +224,7 @@ async def _derive_banner(db: AsyncSession, cliente: Cliente) -> BannerOut:
             requests_count=len(answered_blocks),
             duration_s=episode.duration_s,
             style=episode.style,
+            episode_id=str(episode.id),
             blocks=[
                 BlockSummaryOut(**_block_common_fields(b), sequence=i)
                 for i, b in enumerate(all_blocks)
@@ -249,7 +261,10 @@ async def _derive_recent(db: AsyncSession, cliente: Cliente) -> list[RecentEpiso
 
     dates_with_episodes = {e.fecha for e in episodes}
     entries: list[RecentEpisodeOut] = [
-        RecentEpisodeOut(date=e.fecha, headline=e.headline, duration_s=e.duration_s, style=e.style, state="completed")
+        RecentEpisodeOut(
+            date=e.fecha, headline=e.headline, duration_s=e.duration_s, style=e.style,
+            state="completed", episode_id=str(e.id),
+        )
         for e in episodes
     ]
     entries += [
@@ -285,18 +300,7 @@ async def _derive_shared_inventory(db: AsyncSession, cliente: Cliente) -> list[S
     if not interests:
         return []
 
-    rows_result = await db.execute(
-        select(Episode, InventoryItem)
-        .join(InventoryItem, InventoryItem.episode_id == Episode.id)
-        .where(Episode.shared.is_(True))
-        .order_by(Episode.fecha.desc(), Episode.published_at.desc())
-    )
-    rows = rows_result.all()
-
-    latest_by_tag: dict[str, tuple[Episode, InventoryItem]] = {}
-    for episode, item in rows:
-        for tag in item.tags:
-            latest_by_tag.setdefault(tag, (episode, item))  # rows are already newest-first
+    latest_by_tag = await _latest_shared_by_tag(db)
 
     matched: list[SharedInventoryOut] = []
     for tag in interests:
@@ -307,11 +311,49 @@ async def _derive_shared_inventory(db: AsyncSession, cliente: Cliente) -> list[S
         reason = (item.reason_template or "Because you follow {tag}").format(tag=tag)
         matched.append(SharedInventoryOut(
             episode_id=str(episode.id), headline=episode.headline,
-            duration_s=episode.duration_s, style=episode.style, reason=reason,
+            duration_s=episode.duration_s, style=episode.style, reason=reason, tag=tag,
         ))
         if len(matched) >= 3:
             break
     return matched
+
+
+async def _latest_shared_by_tag(db: AsyncSession) -> dict[str, tuple[Episode, InventoryItem]]:
+    rows_result = await db.execute(
+        select(Episode, InventoryItem)
+        .join(InventoryItem, InventoryItem.episode_id == Episode.id)
+        .where(Episode.shared.is_(True))
+        .order_by(Episode.fecha.desc(), Episode.published_at.desc())
+    )
+    latest_by_tag: dict[str, tuple[Episode, InventoryItem]] = {}
+    for episode, item in rows_result.all():
+        for tag in item.tags:
+            latest_by_tag.setdefault(tag, (episode, item))  # rows are already newest-first
+    return latest_by_tag
+
+
+async def _derive_explore(db: AsyncSession, cliente: Cliente) -> list[SharedInventoryOut]:
+    """
+    Shared samples for tags the customer does NOT follow — Home's "Explore" shelf,
+    the "other episodes I might like" the customer asked for. Deliberately a
+    separate list from _derive_shared_inventory: that one only ever contains real
+    matches to what they said they care about, so its `reason` is a true
+    explanation. These are honestly labelled as exploration, never as a match.
+    """
+    state = await db.get(OnboardingState, cliente.id)
+    followed = set(state.selected_interests) if state and state.selected_interests else set()
+
+    explore: list[SharedInventoryOut] = []
+    for tag, (episode, _item) in (await _latest_shared_by_tag(db)).items():
+        if tag in followed:
+            continue
+        explore.append(SharedInventoryOut(
+            episode_id=str(episode.id), headline=episode.headline,
+            duration_s=episode.duration_s, style=episode.style, reason=f"Explore {tag}", tag=tag,
+        ))
+        if len(explore) >= 6:
+            break
+    return explore
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -324,7 +366,10 @@ async def home(
     banner = await _derive_banner(db, cliente)
     recent = await _derive_recent(db, cliente)
     shared_inventory = await _derive_shared_inventory(db, cliente)
-    return HomeOut(banner=banner, recent=recent, suggestions=[], shared_inventory=shared_inventory)
+    explore = await _derive_explore(db, cliente)
+    return HomeOut(
+        banner=banner, recent=recent, suggestions=[], shared_inventory=shared_inventory, explore=explore,
+    )
 
 
 @router.post("/request-today", response_model=RequestOut, status_code=201)
