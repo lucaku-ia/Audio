@@ -58,3 +58,39 @@ struct OnboardingStateOut: Decodable {
 struct InterestsBody: Encodable {
     let interests: [String]
 }
+
+/// `GET /onboarding/suggestions?interest=` response — a curated seed-list
+/// pick for one interest (`app/data/onboarding_seeds.json`, not AI; see that
+/// route's own docstring). Each string is ready to save as-is via
+/// `POST /requests`, or edit first.
+struct SuggestionsOut: Decodable {
+    let interest: String
+    let suggestions: [String]
+}
+
+/// `PATCH /onboarding/step` request body. `step` is one of the backend's
+/// `OnboardingStep` enum's raw values — sent as a plain string since this
+/// client only ever forwards a value it already got from `StateOut.step`,
+/// never constructs one from scratch.
+struct SetStepBody: Encodable {
+    let step: String
+}
+
+/// `PATCH /onboarding/notifications` request body.
+struct NotificationsBody: Encodable {
+    let enabled: Bool
+}
+
+/// `POST /onboarding/confirm` response (`ConfirmationOut`) — the PRD's T-60
+/// first-episode scheduling message, computed from `Profile.delivery_time`.
+struct OnboardingConfirmationOut: Decodable {
+    let message: String
+    /// "scheduled" | "on_demand"
+    let path: String
+    let firstEpisodeEta: Date
+
+    enum CodingKeys: String, CodingKey {
+        case message, path
+        case firstEpisodeEta = "first_episode_eta"
+    }
+}

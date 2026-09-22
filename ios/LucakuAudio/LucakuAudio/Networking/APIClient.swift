@@ -105,6 +105,13 @@ actor APIClient {
         try await send(path: "/profile", method: "GET", token: token)
     }
 
+    /// PUT /api/profile — Onboarding's full initial write (delivery time,
+    /// max length, voice, narration style). See `ProfileSetupBody`'s doc for
+    /// why this is a separate call from `updateSettings` (PATCH) below.
+    func setupProfile(_ body: ProfileSetupBody, token: String) async throws -> ProfileOut {
+        try await send(path: "/profile", method: "PUT", jsonBody: body, token: token)
+    }
+
     /// Partial update — only the fields set on `body` are sent (see
     /// `SettingsBody`'s doc comment), matching the backend's
     /// `model_fields_set` partial-update semantics.
@@ -129,6 +136,39 @@ actor APIClient {
     /// per-interest add/remove endpoint server-side (see OnboardingModels.swift).
     func setInterests(_ interests: [String], token: String) async throws -> OnboardingStateOut {
         try await send(path: "/onboarding/interests", method: "PATCH", jsonBody: InterestsBody(interests: interests), token: token)
+    }
+
+    func onboardingSuggestions(interest: String, token: String) async throws -> SuggestionsOut {
+        try await send(
+            path: "/onboarding/suggestions", method: "GET",
+            query: [URLQueryItem(name: "interest", value: interest)], token: token
+        )
+    }
+
+    func acceptOnboardingConsent(token: String) async throws {
+        _ = try await sendRaw(path: "/onboarding/consent", method: "POST", token: token)
+    }
+
+    @discardableResult
+    func setOnboardingStep(_ step: String, token: String) async throws -> OnboardingStateOut {
+        try await send(path: "/onboarding/step", method: "PATCH", jsonBody: SetStepBody(step: step), token: token)
+    }
+
+    func confirmOnboarding(token: String) async throws -> OnboardingConfirmationOut {
+        try await send(path: "/onboarding/confirm", method: "POST", token: token)
+    }
+
+    @discardableResult
+    func setOnboardingNotifications(enabled: Bool, token: String) async throws -> OnboardingStateOut {
+        try await send(
+            path: "/onboarding/notifications", method: "PATCH",
+            jsonBody: NotificationsBody(enabled: enabled), token: token
+        )
+    }
+
+    @discardableResult
+    func completeOnboarding(token: String) async throws -> OnboardingStateOut {
+        try await send(path: "/onboarding/complete", method: "POST", token: token)
     }
 
     // MARK: - Account & data (backend/app/api/routes/account.py)

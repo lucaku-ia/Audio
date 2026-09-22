@@ -28,6 +28,15 @@ extension Notification.Name {
 final class SessionStore: ObservableObject {
     @Published private(set) var accessToken: String?
 
+    /// The client routes on this (`TokenResponse.onboardingComplete` /
+    /// `MeResponse.onboardingComplete`): `false` -> OnboardingView, `true` ->
+    /// the main tab bar. `nil` means "not known yet" — happens right after
+    /// restoring a token from the Keychain on launch, before `ContentView`
+    /// has had a chance to confirm it with `GET /auth/me` (see
+    /// `refreshOnboardingStatus`). Never defaults to `true`: an unconfirmed
+    /// session should show a loading state, not skip onboarding by accident.
+    @Published private(set) var onboardingComplete: Bool?
+
     private let keychainKey = "com.lucaku.audio.accessToken"
     private var sessionExpiredObserver: NSObjectProtocol?
 
@@ -52,13 +61,33 @@ final class SessionStore: ObservableObject {
 
     var isAuthenticated: Bool { accessToken != nil }
 
-    func store(token: String) {
+    func store(token: String, onboardingComplete: Bool) {
         accessToken = token
+        self.onboardingComplete = onboardingComplete
         KeychainHelper.save(key: keychainKey, value: token)
+    }
+
+    /// Called once onboarding actually finishes (`POST /onboarding/complete`
+    /// succeeded) so `ContentView` routes into the main tab bar without
+    /// waiting for another network round trip.
+    func markOnboardingComplete() {
+        onboardingComplete = true
+    }
+
+    /// Confirms `onboardingComplete` for a session restored from the
+    /// Keychain (which only has the bearer token, not this flag). Cheap and
+    /// idempotent — `ContentView` calls it once per launch while
+    /// `onboardingComplete` is still `nil`.
+    func refreshOnboardingStatus() async {
+        guard let accessToken else { return }
+        if let me = try? await APIClient.shared.me(token: accessToken) {
+            onboardingComplete = me.onboardingComplete
+        }
     }
 
     func clear() {
         accessToken = nil
+        onboardingComplete = nil
         KeychainHelper.delete(key: keychainKey)
     }
 }

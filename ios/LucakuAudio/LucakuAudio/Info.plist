@@ -17,5 +17,9 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Lucaku uses your microphone so you can answer onboarding questions by speaking instead of typing.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Lucaku turns your spoken answers into text on-device, only while you're answering an onboarding question.</string>
 </dict>
 </plist>

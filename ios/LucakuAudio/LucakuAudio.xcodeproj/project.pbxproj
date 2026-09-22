@@ -50,6 +50,9 @@
 		A7B44C3FD34840806F4392D1 /* OnboardingModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51CA43878CF2C5863DBB7EA4 /* OnboardingModels.swift */; };
 		23A05794EAAC1C9CABBE2ECC /* InterestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC361A1FEAC920AD3A9F1206 /* InterestsView.swift */; };
 		7B29F2B22B5FDDECAF312A11 /* InterestsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EA55CB2C7850CF74DD91464 /* InterestsViewModel.swift */; };
+		8CF6D96B6D16E99187886683 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EDFAA2BF229CEE6F1AD4029 /* SpeechService.swift */; };
+		D1E7FF5E6F885CC2B1D86190 /* OnboardingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4FA3DAA5B636A8580EAF7AE /* OnboardingViewModel.swift */; };
+		2E36D12221ABA2EB5B9BA806 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9E26F9D6CDA135FA4A1E38 /* OnboardingView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -98,6 +101,9 @@
 		51CA43878CF2C5863DBB7EA4 /* OnboardingModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingModels.swift; sourceTree = "<group>"; };
 		FC361A1FEAC920AD3A9F1206 /* InterestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterestsView.swift; sourceTree = "<group>"; };
 		8EA55CB2C7850CF74DD91464 /* InterestsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterestsViewModel.swift; sourceTree = "<group>"; };
+		2EDFAA2BF229CEE6F1AD4029 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
+		A4FA3DAA5B636A8580EAF7AE /* OnboardingViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViewModel.swift; sourceTree = "<group>"; };
+		2A9E26F9D6CDA135FA4A1E38 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -187,6 +193,15 @@
 			path = Interests;
 			sourceTree = "<group>";
 		};
+		9BFB99EC7AE4924902656E20 = {
+			isa = PBXGroup;
+			children = (
+				A4FA3DAA5B636A8580EAF7AE /* OnboardingViewModel.swift */,
+				2A9E26F9D6CDA135FA4A1E38 /* OnboardingView.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
 		796E980923CF46D0A07AD00A = {
 			isa = PBXGroup;
 			children = (
@@ -230,6 +245,7 @@
 				C35734AC05914397BD561AAD /* Search */,
 				3A74793DD825986B19E4CFE1 /* Settings */,
 				F6B4E1EEA454F57E9C9BE6B4 /* Interests */,
+				9BFB99EC7AE4924902656E20 /* Onboarding */,
 				353C0013BE7672732D602DCA /* AudioDemo */,
 			);
 			path = Features;
@@ -244,10 +260,19 @@
 			path = Audio;
 			sourceTree = "<group>";
 		};
+		CE184E05FE589DADC2621BB3 = {
+			isa = PBXGroup;
+			children = (
+				2EDFAA2BF229CEE6F1AD4029 /* SpeechService.swift */,
+			);
+			path = Voice;
+			sourceTree = "<group>";
+		};
 		A5B3B95F3B8E4C8A9C6F0D1E = {
 			isa = PBXGroup;
 			children = (
 				CA6B37274ACD72658311BFD2 /* Audio */,
+				CE184E05FE589DADC2621BB3 /* Voice */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -417,6 +442,9 @@
 				A7B44C3FD34840806F4392D1 /* OnboardingModels.swift in Sources */,
 				23A05794EAAC1C9CABBE2ECC /* InterestsView.swift in Sources */,
 				7B29F2B22B5FDDECAF312A11 /* InterestsViewModel.swift in Sources */,
+				8CF6D96B6D16E99187886683 /* SpeechService.swift in Sources */,
+				D1E7FF5E6F885CC2B1D86190 /* OnboardingViewModel.swift in Sources */,
+				2E36D12221ABA2EB5B9BA806 /* OnboardingView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

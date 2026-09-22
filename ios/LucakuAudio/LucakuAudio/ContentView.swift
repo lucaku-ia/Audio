@@ -1,13 +1,30 @@
 import SwiftUI
 
-/// App shell — routes between the login screen and the main TabView based on
-/// whether a bearer token is stored.
+/// App shell — routes between Login, Onboarding, and the main TabView.
+///
+/// A signed-in customer with `onboardingComplete == false` sees
+/// `OnboardingView`, never the tab bar directly — matching the backend's own
+/// routing rule (`TokenResponse`/`MeResponse.onboardingComplete`: "false ->
+/// Onboarding, true -> Home", stated in both auth.py and this app's own
+/// `TokenResponse` doc comment). A restored session (token read from the
+/// Keychain on launch) doesn't know this flag yet, so it's confirmed once via
+/// `GET /auth/me` before routing — see `SessionStore.refreshOnboardingStatus`.
 struct ContentView: View {
     @EnvironmentObject private var session: SessionStore
 
     var body: some View {
         if session.isAuthenticated {
-            MainTabView()
+            switch session.onboardingComplete {
+            case true:
+                MainTabView()
+            case false:
+                OnboardingView(onFinished: { session.markOnboardingComplete() })
+            case nil:
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(LucakuColor.bg)
+                    .task { await session.refreshOnboardingStatus() }
+            }
         } else {
             LoginView()
         }

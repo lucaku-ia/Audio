@@ -72,11 +72,15 @@ struct LoginView: View {
             case .login:
                 token = try await APIClient.shared.login(email: email, password: password)
             case .signup:
+                // Device locale, not hardcoded — Cliente.idioma is captured
+                // once here and inherited everywhere else (onboarding
+                // labels/suggestions, the Generator's script language).
+                let idioma = Locale.current.language.languageCode?.identifier == "es" ? "es" : "en"
                 token = try await APIClient.shared.signup(
-                    SignupRequest(email: email, password: password, nombre: nombre.isEmpty ? email : nombre, idioma: "en")
+                    SignupRequest(email: email, password: password, nombre: nombre.isEmpty ? email : nombre, idioma: idioma)
                 )
             }
-            session.store(token: token.accessToken)
+            session.store(token: token.accessToken, onboardingComplete: token.onboardingComplete)
         } catch {
             errorMessage = error.localizedDescription
         }

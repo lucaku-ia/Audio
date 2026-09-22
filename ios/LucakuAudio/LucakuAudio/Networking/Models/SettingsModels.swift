@@ -66,6 +66,29 @@ struct ProfileOut: Decodable {
     }
 }
 
+/// PUT /api/profile request body (`ProfileBody` in profile.py) — the
+/// Onboarding-only full initial write (as opposed to `SettingsBody`'s partial
+/// PATCH). Deliberately has no `language` field: language is copied from
+/// `Cliente.idioma` server-side the first time this creates the row, per the
+/// umbrella PRD rule "captured once, never asked again" — see profile.py's
+/// module docstring.
+struct ProfileSetupBody: Encodable {
+    var voiceId: String?
+    var narrationStyle: NarrationStyle = .news
+    /// "HH:MM" local time.
+    var deliveryTime: String?
+    var deliveryTimezone: String = "America/Bogota"
+    var maxLengthMinutes: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case voiceId = "voice_id"
+        case narrationStyle = "narration_style"
+        case deliveryTime = "delivery_time"
+        case deliveryTimezone = "delivery_timezone"
+        case maxLengthMinutes = "max_length_minutes"
+    }
+}
+
 /// PATCH /api/profile request body (`SettingsBody` in profile.py). Every
 /// field is optional — only properties actually set are encoded, since
 /// Swift's synthesized `Encodable` uses `encodeIfPresent` for `Optional`
