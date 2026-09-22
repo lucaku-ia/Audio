@@ -14,12 +14,15 @@ struct ContentView: View {
 
     var body: some View {
         if session.isAuthenticated {
-            switch session.onboardingComplete {
-            case true:
+            // `if/else` rather than `switch` over `Bool?` — the compiler
+            // doesn't accept bare `true`/`false`/`nil` case patterns as
+            // provably exhaustive over an Optional<Bool> ("switch must be
+            // exhaustive"), even though they cover every case in practice.
+            if session.onboardingComplete == true {
                 MainTabView()
-            case false:
+            } else if session.onboardingComplete == false {
                 OnboardingView(onFinished: { session.markOnboardingComplete() })
-            case nil:
+            } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(LucakuColor.bg)
