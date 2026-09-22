@@ -53,7 +53,7 @@ instead.
 - **Design**: three screens (Home, Player, Search/Interests) are designed, approved, and share one consistent token system grounded in real Apple HIG/Spotify/Audible research rather than guesswork. Login has been through three rounds of direct founder feedback and the founder has said it's not the current priority — don't invest further there without checking first. Look-and-feel links are in "Design system" below.
 - **What's blocking further progress that only the founder can unblock**: Google Cloud Console (OAuth client ID for Google Sign-In), and Apple Developer Program enrollment ($99/yr — needed for push notifications, real-device testing, and eventually App Store submission). Voyage AI is the decided embeddings provider (see "Suggested next steps") but the account/key still needs to be created.
 
-## Current status (as of 2026-09-19)
+## Current status (as of 2026-09-21)
 
 Backend fully built (see table below); a real native iOS client now exists too — see
 "Mobile app (iOS)" further down. Backend live in production on Railway:
@@ -64,7 +64,8 @@ Backend fully built (see table below); a real native iOS client now exists too �
 | Login (signup/login/logout/me, JWT + revocation) | ✅ Built & deployed | `app/api/routes/auth.py`, `app/models/cliente.py` | Login PRD (Juan, Draft v2) |
 | Request Management (CRUD + versioning) | ✅ Built & deployed | `app/api/routes/requests.py`, `app/models/request.py` | Request Management PRD (Andrés, Draft v1) |
 | Profile (voice, narration style, delivery time, length) | ✅ Built & deployed | `app/api/routes/profile.py`, `app/models/profile.py` | Request Management / Onboarding |
-| Onboarding (resumable state, interests, seed-list suggestions, T-60 confirmation) | ✅ Built & deployed | `app/api/routes/onboarding.py`, `app/models/onboarding.py`, `app/data/onboarding_seeds.json` | Onboarding PRD (Andrés, Draft v4) |
+| Onboarding — backend (resumable state, interests, seed-list suggestions, T-60 confirmation) | ✅ Built & deployed | `app/api/routes/onboarding.py`, `app/models/onboarding.py`, `app/data/onboarding_seeds.json` | Onboarding PRD (Andrés, Draft v4) |
+| Onboarding — iOS (8-step guided flow, voice narration + dictation) | ✅ Built, compiles clean. **Not yet run on a device** | `Features/Onboarding/`, `Services/Voice/SpeechService.swift` | Onboarding PRD (Andrés, Draft v4) |
 | AI Platform — `structure_request` + `research_and_write_block` (structuring, safety screen, research+writing) | ✅ Built & deployed | `app/services/ai_platform.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
 | AI Platform — prompt registry (DB-backed prompt versioning, fail-safe fallback, `GET /api/internal/prompts`) | ✅ Built & deployed | `app/models/prompt_registry.py`, `app/services/prompt_registry.py`, `app/api/routes/internal.py` | AI Platform PRD (Andrés + Juan, Draft v1) |
 | Episode Generator — shared pipeline (load → research+write → assemble → trim → headline → voice → publish), on-demand and scheduled paths, idempotent per (customer, date, path) | ✅ Built & deployed, **with working TTS** | `app/services/episode_generator.py`, `app/api/routes/generation.py`, `app/services/scheduler.py` | Episode Generator PRD (Juan, Draft v1) |
@@ -342,6 +343,61 @@ Deferred, and why:
   real — every table was cleaned up in the right order with no foreign-key
   violation, and the Event row ended up anonymized (`customer_id = NULL`)
   rather than removed.
+
+### Onboarding (iOS)
+
+Built 2026-09-21: the guided onboarding flow the app never had — signup used to
+drop straight into the tab bar (no onboarding at all), which is what read as
+"just a plain screen of text" to the founder. Now `ContentView` routes a
+signed-in customer with `onboardingComplete == false` into `OnboardingView`
+instead — matching the routing rule `TokenResponse`/`MeResponse` already carry.
+A session restored from the Keychain (which only has the bearer token) confirms
+the flag once via `GET /auth/me` (`SessionStore.refreshOnboardingStatus`) before
+routing.
+
+`OnboardingViewModel` is an 8-step state machine — consent (local-only, no
+backend equivalent, gates `POST /onboarding/consent` per the PRD's Ley 1581 de
+2012 requirement), interests, requests, delivery, sound, confirm, notifications,
+tour — resumable against the real backend: `GET /onboarding/state` on launch
+picks up wherever the customer left off, exactly like the PRD asks. One
+asymmetry worth knowing: `delivery` and `sound` are two separate UI steps (per
+the PRD's own two customer stories) but both write through the same
+`PUT /api/profile` (`ProfileSetupBody` — a full write, not `SettingsBody`'s
+partial PATCH), so each step's save resends every profile field the view model
+is currently holding, not just its own — otherwise a later step's save would
+silently blank out an earlier one's answer. Requests is the one non-skippable
+step (≥1 standing request required, per the PRD's own tenet 3), backed by the
+already-built `GET /onboarding/suggestions` per selected interest, plus a
+free-text field for anything not on the list.
+
+**Voice**, per the founder's explicit ask ("puedes poner voz... si uno no sabe
+temas"): `Services/Voice/SpeechService.swift` wraps on-device
+`AVSpeechSynthesizer` (every step's prompt has a speaker button that reads it
+aloud) and `SFSpeechRecognizer` + `AVAudioEngine` (the free-text request field
+has a mic button that dictates instead of typing). This is UI narration/
+dictation only — not the Generator's ElevenLabs voice, which is what the
+customer's actual daily episode sounds like. Requires
+`NSMicrophoneUsageDescription` / `NSSpeechRecognitionUsageDescription` in
+Info.plist (added alongside).
+
+One real build error, found and fixed via the GitHub Actions sideload workflow
+(see "Verifying a change" below) rather than a local Xcode build: `ContentView`'s
+routing was written as `switch session.onboardingComplete { case true: ... case
+false: ... case nil: ... }` — Swift's exhaustiveness checker doesn't accept bare
+`true`/`false`/`nil` patterns as provably covering `Bool?`, even though they do
+in practice. Rewritten as `if`/`else if`/`else`.
+
+`SpeechService`'s `recognitionTask` completion handler updates `@Published`
+state from inside a `Task { @MainActor in ... }` — written correctly the first
+time by applying the lesson from an earlier build error in
+`AudioPlayerService.swift`'s KVO observers (Swift 6's "reference to captured
+var 'self' in concurrently-executing code"): `[weak self]` is captured fresh on
+the inner `Task` itself, not carried in from an outer closure.
+
+**Not yet done**: UI localization (every string is hardcoded English for a
+Spanish-speaking customer base — see item 7c in "Suggested next steps"), and
+this has never been run on a real device — the mic/speech pieces specifically
+can't be verified any other way (Simulator has no real microphone input).
 
 ### The recurring migration gotcha
 
@@ -720,14 +776,9 @@ further polish here without checking first.
    definition shadows the first, so the header is `X-Internal-Dashboard-Key` —
    worth deleting the dead first copy. The seed content itself is still a
    placeholder, not team-curated (see "Shared inventory" above).
-7b. **Guided, voice-led onboarding in the iOS app — not built.** The backend
-   onboarding (interest chips, curated suggestions per interest via
-   `GET /onboarding/suggestions`, delivery time, voice/style, confirm) is complete,
-   but the app has no onboarding flow at all: signup drops straight into the tab
-   bar, which is why it reads as "just text". Founder wants: spoken prompts
-   (ElevenLabs TTS already exists) and spoken answers (iOS `Speech` framework,
-   on-device; needs mic + speech-recognition usage strings in Info.plist), and
-   suggestions for someone who doesn't know what to ask.
+7b. ~~Guided, voice-led onboarding in the iOS app~~ — **built** (2026-09-21), see
+   "Onboarding (iOS)" below. **Not yet seen on a device** — the mic/speech pieces
+   specifically need one (Simulator has no real microphone input).
 7c. **UI localization.** Every string in the iOS app is hardcoded English while
    the founder and customers are Spanish-speaking (`Cliente.idioma` defaults to
    `es`); the backend already localizes catalogue labels and suggestions.
@@ -745,6 +796,15 @@ further polish here without checking first.
     highlight disappears when playback is paused mid-block (cosmetic only), and
     `Features/Home/PlayerListView.swift` is now dead code since the Player tab no
     longer exists (safe to delete).
+
+Done as of 2026-09-21: guided, voice-led Onboarding built for iOS — the app had no
+onboarding at all before this (signup dropped straight into the tab bar), which was
+the real cause behind "it's just text" feedback. 8-step resumable flow, on-device
+speech narration (prompts read aloud) and dictation (the free-text request field),
+per-interest curated suggestions for anyone unsure what to ask. See "Onboarding
+(iOS)" above for the full breakdown, including two Swift 6 build errors hit and
+fixed via the CI sideload workflow. Not yet run on a real device — the mic/speech
+pieces specifically need one.
 
 Done as of 2026-09-19 (evening, after the first real-device build): Home redesigned
 (dark-first, generated cover art, topic grid, hero card, shelves, tinted floating mini
