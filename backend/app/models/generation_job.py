@@ -2,7 +2,7 @@
 import enum
 import uuid
 from datetime import datetime, date as date_type
-from sqlalchemy import DateTime, Date, JSON, ForeignKey, Enum as SAEnum, String, UniqueConstraint
+from sqlalchemy import DateTime, Date, Integer, JSON, ForeignKey, Enum as SAEnum, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
@@ -38,6 +38,14 @@ class GenerationJob(Base):
     snapshot: Mapped[dict] = mapped_column(JSON, default=lambda: {})  # active_for_generation result that was used
     stages: Mapped[list] = mapped_column(JSON, default=lambda: [])  # [{name, started, completed, cost, latency}]
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    # How many times the pipeline has been RE-run in place on this same row after a
+    # terminal `empty` result — see app.services.episode_generator's "Defect 2" note
+    # on run_generation. 0 for a job that has only ever run once (its original
+    # attempt, whatever the outcome). The unique constraint above forbids a second
+    # row for this (customer_id, fecha, path), so a permitted re-run mutates this
+    # row rather than inserting a new one — this column is how run_generation
+    # enforces the capped number of extra attempts per day.
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class InventoryItem(Base):
