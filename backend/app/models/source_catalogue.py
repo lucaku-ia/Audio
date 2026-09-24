@@ -7,7 +7,7 @@ publisher, license)...").
 Scope note — what this table is and is NOT (read before assuming it
 restricts search): this is a provenance/licensing *record*, not a search
 allowlist. The Generator's actual research call
-(app/services/ai_platform.research_and_write_block) uses Claude's
+(app/services/ai_platform.research_topic) uses Claude's
 server-side `web_search` tool, which is a general open-web tool — the
 `anthropic` SDK's `web_search_20260209` tool type, as used in this
 codebase, has no "restrict to these domains" parameter that would let a
