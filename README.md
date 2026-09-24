@@ -47,7 +47,8 @@ instead.
 ## TL;DR for anyone new to this repo
 
 - **Backend**: fully built for every feature that doesn't need a new external credential. Live in production on Railway, real ElevenLabs TTS (word-level timestamps verified against a real live call, see "Episode Generator scope"), real web-grounded research (Claude's `web_search` tool). See the status table below.
-- **The backend sleeps when idle, and waking it costs ~14 seconds.** Measured against production: first request after a quiet spell 14.4s, every one after it 0.4s. This is almost certainly what "the app crashes a lot" / "it's frozen" has actually been. Nothing in this repo is broken — it's Railway hosting configuration, and it is the highest-leverage thing left to fix. See "Session of 2026-09-23" below.
+- **No episode has had audio since 2026-09-18, because the ElevenLabs account is out of credits.** Research and writing work fine; the voicing step has been failing silently for days, and the app has been showing "making your episode" the whole time. **Fixing it is a billing change nobody has made.** See "Why there is no audio" below — that section also has the real per-customer cost model, which is the thing to read before pricing anything.
+- **Requests hang ~14s and sometimes 500 under load**, because generation runs inline in the HTTP handler and holds a DB connection through the whole research call, exhausting a 5+10 pool. Real errors in the logs. Not Railway sleeping — an earlier draft of this README said that, and it was wrong.
 - **Mobile**: a real native iOS app (SwiftUI, not a wrapper) exists. PR #27 (tab architecture fix + real Home/Search/Interests) is **merged** — #23–#26 are correctly closed without merging, superseded by it. Full detail in "Mobile app (iOS)" below.
 - **Free-text AI-categorized interests: done, verified against production.** The previous session's isolated worktree (bad `ANTHROPIC_API_KEY`, never actually saw a categorization result) was abandoned rather than fixed — this was rebuilt directly against this repo's own working deployment instead, where the key already works. Backend: `RequestOut.structured` exposed, `GET /requests?kind=` filter added. iOS: a "Search for anything" field in Interests wired to `POST /requests`. Verified live: typing "Arsenal FC" categorizes to `{topic: "Arsenal FC", geography: null}`; "La Liga" to `{topic: "La Liga football", geography: "Spain"}` — exactly the two test cases the founder wanted to see. iOS changes are unverified by an actual Xcode build (no macOS access this session) — build-check before trusting in production.
 - **Session-expiry gap: fixed.** An expired/invalid token used to leave every screen showing a silent "not signed in" error forever (`SessionStore.clear()` was only wired to the manual Log-out button). `APIClient` now posts a notification on any 401; `SessionStore` observes it and clears itself, so the app's existing auth-routing sends the customer back to Login automatically. Same Xcode-build caveat as above.
@@ -835,28 +836,150 @@ The onboarding flow Andrés built on 2026-09-21 had never been run anywhere. It 
 walked end to end in the Simulator against production for the first time, then on a
 real iPhone. Several things turned up that only running it could reveal.
 
-### The big one: the backend sleeps, and waking it takes ~14 seconds
+### The big one: there is no audio, and the reason is a billing limit
 
-Measured directly against production, repeatedly:
+`POST /api/generation/run`, run against production on 2026-09-24, got as far as the
+voicing stage and stopped there:
 
 ```
-first login after idle : 14.4 s
-login #2               :  0.41 s
-login #3               :  0.41 s
-/health                :  0.27 s
+quota_exceeded — This request exceeds your quota of 10000.
+You have 291 credits remaining, while 782 credits are required for this request.
 ```
 
-Railway is putting the container to sleep when idle. **Every first action after a
-quiet spell hangs for roughly fifteen seconds**, which is almost certainly what has
-been read as "the app crashes a lot" / "it's frozen" — the app is fine, it's waiting.
-This is the single largest thing making the product feel broken, and it is a hosting
-configuration problem, not an app bug.
+**ElevenLabs' free tier is 10,000 credits a month and it is spent.** A 66-second
+episode costs ~780 credits, so the free tier was never going to be more than about a
+dozen episodes. It ran out shortly after 2026-09-18, which is why the single episode
+in the database with real audio is dated 2026-09-18 and nothing since has any.
 
-Two fixes, both worth doing and neither done yet:
-- **Backend**: keep the container warm (a scheduled ping every few minutes, or a plan
-  tier that doesn't sleep).
-- **App**: a slow first call should read as patience, not breakage — "waking up…"
-  rather than a bare spinner.
+Everything before voicing works, and works well. The same run produced, in 39 seconds
+for $0.35, a real Spanish news script with cited sources:
+
+> En inteligencia artificial, el movimiento más relevante de las últimas horas fue una
+> doble jugada entre los dos grandes laboratorios. Anthropic lanzó Claude Opus 5.5 y
+> recortó su precio un veinte por ciento…
+
+— sourced to SiliconANGLE and CNBC. So the research half of the product is real. There
+are several days of scripts sitting in the database that nobody can listen to.
+
+**This is unblocked by a billing change, not by code.** Upgrading the ElevenLabs plan
+keeps the same account and the same API key; nothing needs redeploying.
+
+### …and then the system lies about it, which is what made the app feel broken
+
+Three compounding defects, all ours, all worth fixing regardless of the quota:
+
+1. **The job is never marked failed.** On a TTS exception `run_generation` appends the
+   error to `job.stages` and leaves `job.status` at `voicing`
+   ([episode_generator.py:673](backend/app/services/episode_generator.py:673)). Home's
+   banner therefore reads `making` forever, with an ETA an hour out that will never
+   arrive. A test account sat in that state for five days.
+2. **The episode is published anyway**, with `audio_url: null`, `published_at` set and
+   `duration_s` claiming 66 seconds. The app is handed something that looks ready and
+   has no audio. This is the most likely explanation for the "crash" reports, and it is
+   a far better suspect than the mic code.
+3. **The DB pool is exhausted under any real use.** From the deploy logs:
+   `sqlalchemy.exc.TimeoutError: QueuePool limit of size 5 overflow 10 reached,
+   connection timed out, timeout 30.00`. `POST /generation/run` runs the whole pipeline
+   inline in the request handler ([generation.py:107](backend/app/api/routes/generation.py:107)
+   is candid about it) and holds its connection for the full ~40s of research, so other
+   requests queue behind it and then 500. `create_async_engine` sets no pool size, so
+   it is the SQLAlchemy default of 5 + 10 overflow.
+
+**Correction to an earlier draft of this section:** it attributed the 14-second first
+request to Railway putting the container to sleep. That was wrong. The service has no
+sleep setting enabled and the deploy logs show continuous traffic; the hangs are pool
+starvation, item 3 above. The measurement (14.4s cold, 0.41s warm) was real; the
+explanation was not.
+
+### What an episode actually costs
+
+Measured, not estimated, from the run above: **782 ElevenLabs credits for 66 seconds**
+of speech (11.8 credits/second) and **$0.348 of Claude** for one researched block.
+ElevenLabs bills ~$0.18 per 1,000 credits, near-flat across plans — $0.142/audio-minute
+on Starter down to only $0.117 on the $299 Scale tier, so there is no volume discount
+to grow into.
+
+At the current shape (one block per minute of audio):
+
+| Episode length | Voice | Research | Per daily listener/month |
+|---|---|---|---|
+| 1 min | $0.13 | $0.35 | $14 |
+| 5 min | $0.64 | $1.75 | $72 |
+| 10 min | $1.28 | $3.50 | **$144** |
+
+Two things worth internalising before pricing anything:
+
+- **Research, not voice, is the dominant cost** at real episode length — 73% of it. The
+  expensive part is not the part that feels like magic.
+- **$5/customer/month is reachable, but only at ~1 minute a day**, and only if research
+  is close to free. Voice alone at 2 min/day already exceeds $5. That is arithmetic, not
+  an engineering problem.
+
+Note the cost figures logged in `AICall` are a slight undercount: Anthropic's
+`web_search` tool bills per search on top of tokens, and
+[ai_platform.py:68](backend/app/services/ai_platform.py:68) says so — roughly $0.03 per
+block, immaterial to the table above.
+
+### Research split from writing, so it can be cached (PR #36)
+
+The founder's proposal, and the right one: store what research finds, and when two
+customers ask about the same thing, reuse the findings instead of researching from cold.
+
+**To be unambiguous, because it is easy to hear this the wrong way: the facts are
+shared, the episode never is.** Two customers on one topic share a research pass and
+still get their own script, in their own style and language, voiced into their own audio
+file. Nobody hears anybody else's episode. Sharing the *findings* is what makes
+per-customer episodes affordable; it is not a step toward one briefing for everyone.
+
+`research_and_write_block` made that impossible — one model call did both jobs and took
+`customer_id`, `style` and `language`, so there was nothing customer-neutral to store.
+PR #36 splits it:
+
+| | `research_topic` | `write_block` |
+|---|---|---|
+| Web search | yes | **no** |
+| Input | topic, scope, geography | findings, style, language, depth |
+| Knows the listener | **no** (ids are for cost attribution only) | yes |
+| Cacheable | yes — a pure function of (topic, time) | no, and shouldn't be |
+
+Two things fall out beyond cost. The **writing stage does real work now** — it was a
+bare status flip with no model call behind it. And **a writer can no longer invent a
+citation**: returned sources are resolved by url against what research actually found,
+so a hallucinated url yields no citation rather than a fabricated one, and the license
+labels attached at research time survive.
+
+The prompts have not yet faced a real model — there is no Anthropic key in the local
+environment and Railway deploys only `main` — so structure, wiring and the invariants
+are tested but **prompt quality is not**. Watch the first generation after #36 merges.
+
+### Why the cache is a product feature, not just a saving
+
+The PRD already asked for this and it was deferred for want of a semantic index. From
+[episode_generator.py:69](backend/app/services/episode_generator.py:69):
+
+> Real novelty judgment ("new since we last told this customer"… last 14 days): the
+> index doesn't exist yet… **A request can currently get a near-identical block two days
+> running if the topic hasn't moved.**
+
+So today the product repeats itself, which is a failure of its core promise rather than
+a cost problem. One store answers three needs at once:
+
+1. **Cost** — don't re-research what is already known
+2. **Novelty** — don't tell someone what they have already heard *(currently broken)*
+3. **Continuity** — thread the story: *"that price cut from Tuesday — OpenAI just
+   answered it"*
+
+Shape it as two things, not one. **Findings**: shared, keyed on topic plus a freshness
+window that varies by topic velocity (news in hours, standings in days, background in
+weeks). **Told**: per customer, tiny, just references to which findings that person has
+already heard. The expensive half stays shared; per-customer continuity costs a join
+table.
+
+Two cautions. Continuity means feeding history into the writing prompt, which cuts
+slightly against the saving — though compact summaries are nothing next to 50k tokens of
+raw search results. And a memory too pleased with itself ("as we mentioned Tuesday, and
+as we noted Monday…") is worse than no memory; knowing when the thread matters is
+editorial judgment living in the writing prompt.
 
 ### Onboarding dead-ended on a permanent spinner (PR #32)
 
@@ -955,19 +1078,37 @@ a hairline: the tint read as grey-green mud on a light background.
 
 ## Suggested next steps
 
-**The two things worth doing first**, both from the 2026-09-23 walkthrough above:
+**Do these first.** Everything else in the list below is secondary to the fact that the
+product currently produces no audio and does not admit it.
 
-- **A. Stop the backend sleeping.** ~14s on every first request is the single biggest
-  reason the product feels broken, it affects every customer on every cold start, and
-  it is a hosting setting plus a small app-side change — not a rewrite. Keep the
-  container warm, and make a slow first call read as "waking up…" rather than a bare
-  spinner.
-- **B. Find the crash.** A real crash was reported on a real device and has never been
-  reproduced. The mic/speech code (`Services/Voice/SpeechService.swift`) is the leading
-  suspect purely because it is the one part of the app that has never run anywhere but
-  a real phone — the Simulator has no microphone. Cheapest path: Xcode → Window →
-  Devices and Simulators → View Device Logs after it happens, which gives the exact
-  frame. Second-cheapest: have someone tap the mic button on a device and watch.
+- **A. Upgrade the ElevenLabs plan.** *(founder only — billing.)* Nothing generates audio
+  until this happens. Free tier is 10,000 credits/month against ~780 per episode.
+  elevenlabs.io → the account whose key is in Railway → Subscription. Starter at $6/month
+  is ~40 short episodes, enough to dogfood for a month; don't buy capacity that can't be
+  filled yet. Same account, same key, no redeploy.
+- **B. Stop the system lying when voicing fails.** A TTS failure must mark the job failed
+  with a real reason, must not publish an episode with `audio_url: null` as though it were
+  ready, and Home must say something honest instead of "making" with an ETA that never
+  arrives. This is what a customer actually experiences today. Also clear the jobs
+  currently stuck at `voicing`.
+- **C. Get generation off the request path.** `POST /generation/run` holds a pool
+  connection for ~40s and starves every other request (`QueuePool limit of size 5 overflow
+  10 reached` in the logs). Background the work, and set an explicit pool size while
+  you're there — `create_async_engine` is using the library default.
+- **D. Build the findings store.** PR #36 split research from writing to make this
+  possible; the store itself is the payoff — cost, novelty and continuity in one
+  structure. See "Why the cache is a product feature" above for the shape.
+- **E. Find the crash.** Still unreproduced, but note that suspicion has moved: an
+  episode published with no audio (B above) is a much better candidate than the mic code.
+  Fix B first and see whether "the crash" survives it. If it does: Xcode → Window →
+  Devices and Simulators → View Device Logs gives the exact frame.
+
+**Measure, don't estimate.** Every cost figure in the plan rests on a single measured
+block ($0.348, one topic, two sources). Before designing around the model, run a handful
+of real blocks and get a distribution — and settle whether a cheaper model can do the
+research, since research is 73% of the cost and `MODEL` is currently `claude-opus-5`
+([ai_platform.py:63](backend/app/services/ai_platform.py:63)) for "search the web and
+write a one-minute news script". That is an hour of work and it needs nothing from anyone.
 
 1. ~~Finish the free-text-interests worktree~~ — **done**, rebuilt directly against
    `main` and verified against production. See "Free-text AI-categorized interests"
@@ -1045,6 +1186,18 @@ a hairline: the tint read as grey-green mud on a light background.
     `Features/Home/PlayerListView.swift` is now dead code since the Player tab no
     longer exists (safe to delete).
 
+Done as of 2026-09-24: found why there is no audio — the ElevenLabs free-tier quota is
+spent, and has been since shortly after 2026-09-18. Confirmed by triggering a real
+generation against production, which also proved the research half works well ($0.35,
+39 seconds, real Spanish script with cited sources). Found three of our own defects
+alongside it: the job is never marked failed when voicing dies, the episode is published
+anyway with no audio, and the DB pool is exhausted by generation running inline in the
+request handler. Corrected this README's earlier claim that the 14-second hangs were
+Railway sleeping — they are pool starvation. Measured the real per-episode cost and wrote
+down the cost model ($144/month per daily 10-minute listener; research is 73% of it).
+Split research from writing (#36) so findings can be cached and shared across customers
+without sharing episodes. Full detail in "Session of 2026-09-23" above.
+
 Done as of 2026-09-23: the onboarding flow was run end to end for the first time —
 Simulator and a real iPhone — which is what turned up the permanent-spinner dead-end
 (#32), the `confirm()` endpoint promising an episode nothing was generating (#31), the
@@ -1055,8 +1208,9 @@ app (#34): real app icon, Spanish branded Login, and a muted cover palette repla
 the saturated one. Full write-up in "Session of 2026-09-23" above.
 
 Open pull requests as of this writing: **#31** (backend first-run fixes), **#32**
-(confirm dead-end), **#33** (brand files), **#34** (brand in app). **#12** is an older
-Login composition pass and is superseded by #34 — close it rather than merging.
+(confirm dead-end), **#33** (brand files), **#34** (brand in app), **#35** (this
+README), **#36** (research/writing split). **#12** is an older Login composition pass
+and is superseded by #34 — close it rather than merging.
 
 Done as of 2026-09-21: guided, voice-led Onboarding built for iOS — the app had no
 onboarding at all before this (signup dropped straight into the tab bar), which was
