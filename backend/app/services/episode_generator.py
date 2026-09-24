@@ -48,14 +48,26 @@ formulas.
 
 Built: idempotency per (customer, fecha, path) — see run_generation. A
 second call for the same customer/day/path returns the existing job as-is
-(whatever its status, including "empty" or "failed") instead of creating a
-duplicate. Enforced both in-app (a SELECT before the INSERT) and at the DB
-level (a UniqueConstraint on generation_jobs, backfilled onto existing
-tables in app/db/migraciones.py). Two concurrent calls for the same
-(customer, fecha, path) can both pass the SELECT and race on INSERT; the
-loser's IntegrityError is caught and it returns the winner's job instead of
-a 500 — see run_generation's docstring for what this does and doesn't
-guarantee.
+(whatever its status, including "failed") instead of creating a duplicate.
+Enforced both in-app (a SELECT before the INSERT) and at the DB level (a
+UniqueConstraint on generation_jobs, backfilled onto existing tables in
+app/db/migraciones.py). Two concurrent calls for the same (customer, fecha,
+path) can both pass the SELECT and race on INSERT; the loser's
+IntegrityError is caught and it returns the winner's job instead of a 500 —
+see run_generation's docstring for what this does and doesn't guarantee.
+
+Fixed (Defect 2 — an "empty" job used to be exactly as final as "ready" or
+"failed", which meant a customer who got a genuinely empty day and then
+added a new standing request was stuck seeing that same empty result for
+the rest of the day, no matter what they added): a terminal `empty` job for
+today can now be retried, up to _MAX_EMPTY_RETRIES_PER_DAY times, but only
+when the customer has a standing request created after that job's
+creado_en — see _empty_job_can_retry. A retry mutates the same
+GenerationJob row in place (customer_id, fecha, path is still unique — a
+retry was never going to insert a second row) and bumps its new
+`retry_count` column. Every other terminal status is unaffected: `ready`
+and `failed` are still returned unchanged on a repeat call, exactly as
+before this fix.
 
 Deferred, and why:
 - Real per-block timestamp alignment: ElevenLabs' character-level timing
@@ -216,6 +228,27 @@ _HARD_LIMIT_SLACK_MINUTES = 30
 # it's blown), just a reasonable, clearly-labelled re-estimate so Home has something
 # concrete to show rather than leaving eta null again. See check_late_jobs.
 _LATE_GRACE_MINUTES = 15
+
+# Defect 2 fix — cap on how many extra times run_generation will re-research a
+# same-day job that already came back terminal `empty`, once the customer has
+# added a standing request since. See _empty_job_can_retry and run_generation's
+# docstring for the full mechanism; this constant is the "not unbounded" half of
+# that fix, and here's the arithmetic behind the number:
+#
+# Measured cost of one full pipeline pass through research_and_write_block +
+# synthesize for a single-request customer is ~$0.43 research + ~$0.15 voicing
+# (~$0.58/run; see Instrumentation's per-stage cost tracking on GenerationJob.stages,
+# which is exactly what this number comes from). Nothing in this codebase caps a
+# customer's overall daily spend yet (the AI Platform PRD's own "budgets/rate
+# limits" item is still listed as deferred), so a per-job retry cap is the only
+# lever available today to keep "let a genuinely empty day be revisited" from
+# turning into "an unbounded cost sink triggered by repeatedly adding/removing
+# standing requests." Capping at 2 retries means at most 3 total pipeline passes
+# for one (customer, fecha, path) in a day — the original attempt plus 2 — for a
+# worst case of roughly 3 x $0.58 ~= $1.74 per customer per day from this path.
+# That's a small, explicit, easily-raised number, not a real budget calculation;
+# revisit once a real per-customer daily spend tracker exists.
+_MAX_EMPTY_RETRIES_PER_DAY = 2
 
 # Shared inventory — see module docstring's "Built: shared inventory" section.
 # The domain marks a Cliente row as a synthetic, system-owned account rather
@@ -387,6 +420,47 @@ async def _promote_pending_version(db: AsyncSession, req: Request) -> None:
     req.pending_version_id = None
 
 
+async def _empty_job_can_retry(db: AsyncSession, customer_id: uuid.UUID, job: GenerationJob) -> bool:
+    """
+    Defect 2 fix: a same-day job that ended in terminal `empty` ("no news
+    today") must not lock the customer out of ever getting a real episode
+    for the rest of that day — not even after they add a new standing
+    request that could plausibly have news. Before this, run_generation's
+    idempotency check treated `empty` exactly like `ready`/`failed`: any
+    later call just returned the same stale job, so a customer who added a
+    request minutes after an empty result got that empty result again,
+    forever, until the next day's job.
+
+    Allows a bounded re-run only when BOTH hold:
+    - The retry cap (_MAX_EMPTY_RETRIES_PER_DAY) hasn't been hit yet — see
+      that constant's docstring for the cost math behind the number.
+    - The customer has a standing request created after this job's
+      `creado_en` — the signal that something actually changed since the
+      pipeline last ran and found nothing. Without this check, calling
+      run_generation again would just re-spend the research cost to
+      rediscover the same empty result for the same requests.
+
+    One_off requests deliberately don't count here: a one_off is answered
+    (or not) by the very next run regardless, and never sits around waiting
+    like a standing request does — it isn't the "new thing to check" the PRD
+    means by an empty day being revisited after the customer adds a request.
+    """
+    if job.status != JobStatus.empty:
+        return False
+    if job.retry_count >= _MAX_EMPTY_RETRIES_PER_DAY:
+        return False
+    result = await db.execute(
+        select(Request.id)
+        .where(
+            Request.customer_id == customer_id,
+            Request.kind == RequestKind.standing,
+            Request.creado_en > job.creado_en,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def run_generation(
     db: AsyncSession,
     cliente: Cliente,
@@ -414,19 +488,43 @@ async def run_generation(
     Idempotent per (customer, fecha, path): "never fill" means a second
     call for the same customer/day/path must not produce a second episode,
     so this returns the existing job unchanged (whatever its status —
-    ready, empty, failed, etc.) instead of erroring or re-running the
-    pipeline. Enforced here via a SELECT before the INSERT, backed by a
-    DB-level UniqueConstraint (see GenerationJob.__table_args__) as the
-    source of truth.
+    ready, failed, etc.) instead of erroring or re-running the pipeline.
+    Enforced here via a SELECT before the INSERT, backed by a DB-level
+    UniqueConstraint (see GenerationJob.__table_args__) as the source of
+    truth.
+
+    Defect 2 fix — the one exception to "unchanged": a job whose status is
+    the terminal `empty` ("no news today") is no longer forever final for
+    that day. If the customer has since added a standing request, and this
+    (customer, fecha, path) hasn't already been retried past
+    _MAX_EMPTY_RETRIES_PER_DAY times, this re-runs the pipeline on the SAME
+    row (the unique constraint forbids a second row for this key) instead of
+    returning the stale empty result — see _empty_job_can_retry for the
+    exact conditions and the retry cap's docstring for the cost reasoning.
+    Every other terminal status (ready, failed) is still returned unchanged,
+    same as before this fix — only `empty` gets a second chance, since only
+    `empty` can be invalidated by "the customer asked for something new."
+
+    The returned GenerationJob also carries a plain (non-persisted) Python
+    attribute, `started_new_run: bool`, set before every return in this
+    function — True when this call actually kicked off (or re-ran) the
+    pipeline, False when it just handed back an existing job unchanged. Only
+    a genuinely new HTTP-facing trigger point needs this (see
+    app/api/routes/generation.py's JobOut.run_started); scheduler.py and
+    generate_shared_episode's own callers don't read it and are unaffected.
 
     Two concurrent calls for the same (customer, fecha, path) can both pass
-    the SELECT before either commits and race to INSERT; rather than let
-    the loser surface the resulting IntegrityError as a 500, the insert
-    below is wrapped to catch exactly that race and return the winner's job
-    instead — still no row lock (e.g. SELECT ... FOR UPDATE), so this is a
-    catch-and-recover rather than a true mutex, but it means a concurrent
-    on-demand call and scheduler tick for the same customer both get a
-    clean job back rather than one of them erroring.
+    the initial SELECT before either commits and race to INSERT a brand-new
+    row; rather than let the loser surface the resulting IntegrityError as a
+    500, that insert is wrapped to catch exactly that race and return the
+    winner's job instead — still no row lock (e.g. SELECT ... FOR UPDATE),
+    so this is a catch-and-recover rather than a true mutex, but it means a
+    concurrent on-demand call and scheduler tick for the same customer both
+    get a clean job back rather than one of them erroring. The same caveat
+    now also applies, undefended, to two concurrent empty-job retries: both
+    could pass _empty_job_can_retry and both UPDATE the same row — a lost-
+    update race, not a crash, and no worse than the pre-existing "no
+    distributed lock" gap this module's other docstrings already flag.
 
     Also promotes each request's pending RequestVersion (if any) to current
     before reading its structured data for research — see
@@ -446,33 +544,50 @@ async def run_generation(
 
     existing_job = await _find_existing()
     if existing_job is not None:
-        return existing_job
-
-    job_created_at = datetime.utcnow()
-    eta = await _compute_eta(db, cliente, path, today, job_created_at)
-    job = GenerationJob(
-        customer_id=cliente.id,
-        fecha=today,
-        path=path,
-        status=JobStatus.researching,
-        eta=eta,
-        stages=[],
-    )
-    db.add(job)
-    try:
-        await db.commit()  # persist the job row on its own before doing any work, so a failure
-    except IntegrityError:
-        # Lost the race to a concurrent call for the same (customer, fecha, path) —
-        # its insert landed first. Recover by returning that row instead of a 500.
-        await db.rollback()
-        existing_job = await _find_existing()
-        if existing_job is not None:
+        if not await _empty_job_can_retry(db, cliente.id, existing_job):
+            existing_job.started_new_run = False
             return existing_job
-        raise  # constraint violation for a reason other than the expected race
-    await db.refresh(job)  # below can mark *this* row failed instead of losing it to rollback
-    await emitir(db, "job_created", customer_id=cliente.id, source="episode_generator",
-                 job_id=str(job.id), path=job.path.value)
-    await db.commit()
+        # Re-run in place — see _empty_job_can_retry and this function's own
+        # "Defect 2 fix" docstring note for why this mutates the existing row
+        # instead of inserting a new one.
+        job = existing_job
+        job.retry_count += 1
+        job.status = JobStatus.researching
+        job.stages = []
+        job.eta = await _compute_eta(db, cliente, path, today, datetime.utcnow())
+        await emitir(db, "job_retried", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), path=job.path.value, retry_count=job.retry_count)
+        await db.commit()
+        await db.refresh(job)
+    else:
+        job_created_at = datetime.utcnow()
+        eta = await _compute_eta(db, cliente, path, today, job_created_at)
+        job = GenerationJob(
+            customer_id=cliente.id,
+            fecha=today,
+            path=path,
+            status=JobStatus.researching,
+            eta=eta,
+            stages=[],
+        )
+        db.add(job)
+        try:
+            await db.commit()  # persist the job row on its own before doing any work, so a failure
+        except IntegrityError:
+            # Lost the race to a concurrent call for the same (customer, fecha, path) —
+            # its insert landed first. Recover by returning that row instead of a 500.
+            await db.rollback()
+            existing_job = await _find_existing()
+            if existing_job is not None:
+                existing_job.started_new_run = False
+                return existing_job
+            raise  # constraint violation for a reason other than the expected race
+        await db.refresh(job)  # below can mark *this* row failed instead of losing it to rollback
+        await emitir(db, "job_created", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), path=job.path.value)
+        await db.commit()
+
+    job.started_new_run = True
 
     try:
         research_start = time.monotonic()
