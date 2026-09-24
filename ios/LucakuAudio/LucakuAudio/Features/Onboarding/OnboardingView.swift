@@ -568,7 +568,6 @@ private struct DeliveryStepView: View {
                     .labelsHidden()
                     .datePickerStyle(.wheel)
                     .frame(maxWidth: .infinity)
-                    .colorScheme(.dark)
             }
             .padding(.bottom, LucakuSpacing.sp6)
 

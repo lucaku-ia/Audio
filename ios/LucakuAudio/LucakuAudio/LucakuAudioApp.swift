@@ -19,11 +19,12 @@ struct LucakuAudioApp: App {
             ContentView()
                 .environmentObject(session)
                 .environmentObject(playerViewModel)
-                // Dark-first: a listening app used at night and in the car,
-                // and the generated cover art only reads as rich against
-                // near-black. LucakuColor's tokens already carry a full dark
-                // palette; this pins the app to it.
-                .preferredColorScheme(.dark)
+                // Deliberately NOT pinned to a colour scheme: the app follows
+                // the phone's own light/dark setting. LucakuColor carries a
+                // full palette for both, and the approved mockups were signed
+                // off in light. An earlier `.preferredColorScheme(.dark)` here
+                // forced dark on everyone regardless of their system setting —
+                // removed after the founder saw it on a light-mode device.
         }
     }
 }
