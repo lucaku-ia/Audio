@@ -49,7 +49,11 @@ struct OnboardingView: View {
             speech.stopSpeaking()
             speech.stopListening()
         }
-        .alert("Something went wrong", isPresented: errorBinding) {
+        // Titled "One more thing" rather than "Something went wrong": the most
+        // common message here isn't a failure but the backend asking the
+        // customer to be more specific (e.g. which team, which league), which
+        // is a normal part of shaping a request — see APIError.errorDescription.
+        .alert("One more thing", isPresented: errorBinding) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(viewModel.errorMessage ?? "")

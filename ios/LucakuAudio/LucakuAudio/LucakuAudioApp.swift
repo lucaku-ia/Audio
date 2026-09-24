@@ -14,17 +14,23 @@ struct LucakuAudioApp: App {
     // object via `@EnvironmentObject`.
     @StateObject private var playerViewModel = PlayerViewModel()
 
+    /// Per-device light/dark override; `.system` means "follow the phone".
+    @AppStorage("appearancePreference") private var appearanceRaw = AppearancePreference.system.rawValue
+
+    private var appearance: AppearancePreference {
+        AppearancePreference(rawValue: appearanceRaw) ?? .system
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(session)
                 .environmentObject(playerViewModel)
-                // Deliberately NOT pinned to a colour scheme: the app follows
-                // the phone's own light/dark setting. LucakuColor carries a
-                // full palette for both, and the approved mockups were signed
-                // off in light. An earlier `.preferredColorScheme(.dark)` here
-                // forced dark on everyone regardless of their system setting —
-                // removed after the founder saw it on a light-mode device.
+                // Follows the phone's own setting by default (.system → nil),
+                // overridable per device from Settings → Appearance. An earlier
+                // build hardcoded `.preferredColorScheme(.dark)` here, which
+                // forced dark even on a phone set to light.
+                .preferredColorScheme(appearance.colorScheme)
         }
     }
 }

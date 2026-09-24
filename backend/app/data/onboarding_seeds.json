@@ -66,12 +66,12 @@
       "label_en": "Sports",
       "seeds_es": [
         "Dame un resumen diario de los resultados de fútbol que me importan.",
-        "¿Cómo le fue a mi equipo favorito esta semana?",
+        "¿Cómo le fue al Real Madrid esta semana en LaLiga?",
         "Mantenme al día con las noticias de deportes más importantes del día."
       ],
       "seeds_en": [
         "Give me a daily summary of the soccer results I care about.",
-        "How did my favorite team do this week?",
+        "How did Arsenal do this week in the Premier League?",
         "Keep me up to date on the most important sports news of the day."
       ]
     },

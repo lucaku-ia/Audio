@@ -18,6 +18,16 @@ enum APIError: LocalizedError {
         case .notAuthenticated:
             return "You're not signed in."
         case .server(let status, let message):
+            // A 4xx from this backend is usually a deliberate, customer-facing
+            // sentence, not a fault — `structure_request`'s clarity screen
+            // replies things like "We couldn't tell which team you mean;
+            // reply with the team name and league". Dressing that up as
+            // "Server error (400)" buries the one part the customer needs to
+            // act on. 5xx (and anything without a message) really is a fault,
+            // so it keeps the status code for reporting.
+            if (400..<500).contains(status), !message.isEmpty {
+                return message
+            }
             return "Server error (\(status)): \(message)"
         case .decoding:
             return "The server's response didn't match what this app expected."
