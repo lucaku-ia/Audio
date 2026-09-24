@@ -32,6 +32,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var session: SessionStore
     @StateObject private var viewModel = SettingsViewModel()
+    @AppStorage("appearancePreference") private var appearanceRaw = AppearancePreference.system.rawValue
 
     @State private var showDeleteConfirmation = false
     @State private var showExportShareSheet = false
@@ -44,16 +45,16 @@ struct SettingsView: View {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .noProfile:
-                    ContentUnavailableView(
-                        "Finish setup to see Settings",
+                    unavailableFallback(
+                        title: "Finish setup to see Settings",
                         systemImage: "gearshape",
-                        description: Text("Your profile hasn't been created yet — complete onboarding first.")
+                        description: "Your profile hasn't been created yet — complete onboarding first."
                     )
                 case .failed(let message):
-                    ContentUnavailableView(
-                        "Couldn't load Settings",
+                    unavailableFallback(
+                        title: "Couldn't load Settings",
                         systemImage: "exclamationmark.triangle",
-                        description: Text(message)
+                        description: message
                     )
                 case .loaded:
                     settingsList
@@ -65,6 +66,61 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Non-loaded states
+
+    /// Settings' non-loaded states still have to offer the two things that
+    /// don't depend on a Profile: Appearance (a purely local device
+    /// preference) and Sign Out.
+    ///
+    /// Sign Out especially: without it, an account with no Profile had no way
+    /// out of the app at all — no settings, no account switch, and not even a
+    /// reinstall escape, since the session survives app deletion via the
+    /// Keychain. It is the one control that must never be gated behind the
+    /// very thing the customer is stuck on.
+    ///
+    /// Laid out by hand rather than putting a `ContentUnavailableView` in a
+    /// VStack: that view expands to fill all available height, which pushes
+    /// anything below it to the bottom of the screen, where the floating mini
+    /// player covers it.
+    private func unavailableFallback(
+        title: String,
+        systemImage: String,
+        description: String
+    ) -> some View {
+        VStack(spacing: LucakuSpacing.sp4) {
+            Spacer()
+            Image(systemName: systemImage)
+                .font(.system(size: 52, weight: .regular))
+                .foregroundStyle(LucakuColor.textTertiary)
+            VStack(spacing: LucakuSpacing.sp2) {
+                Text(title)
+                    .font(LucakuTypography.title3)
+                    .foregroundStyle(LucakuColor.textPrimary)
+                Text(description)
+                    .font(LucakuTypography.subhead)
+                    .foregroundStyle(LucakuColor.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            Picker("Appearance", selection: $appearanceRaw) {
+                ForEach(AppearancePreference.allCases) { option in
+                    Text(option.displayName).tag(option.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 280)
+            .padding(.top, LucakuSpacing.sp2)
+            Button("Sign Out", role: .destructive) {
+                Task { await signOut() }
+            }
+            .font(LucakuTypography.body)
+            .frame(minHeight: 44)
+            Spacer()
+            Spacer()
+        }
+        .padding(.horizontal, LucakuSpacing.sp6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     // MARK: - List
 
     private var settingsList: some View {
@@ -72,6 +128,7 @@ struct SettingsView: View {
             accountSection
             deliverySection
             voiceSection
+            appearanceSection
             languageSection
             membershipSection
             dataSection
@@ -186,6 +243,23 @@ struct SettingsView: View {
     }
 
     // MARK: - Language (Cliente.idioma / Profile.language)
+
+    /// Local device preference, so unlike every other section here it needs no
+    /// Profile and no network call — which is why it's also offered in the
+    /// no-profile state below.
+    private var appearanceSection: some View {
+        Section {
+            Picker(selection: $appearanceRaw) {
+                ForEach(AppearancePreference.allCases) { option in
+                    Text(option.displayName).tag(option.rawValue)
+                }
+            } label: {
+                Label("Appearance", systemImage: "circle.lefthalf.filled")
+            }
+        } footer: {
+            Text("\"System\" follows your phone's own light or dark setting.")
+        }
+    }
 
     private var languageSection: some View {
         Section {
