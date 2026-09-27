@@ -687,6 +687,15 @@ private struct ConfirmStepView: View {
     let onContinue: () -> Void
     @EnvironmentObject private var session: SessionStore
 
+    /// Set once the first `.task`-triggered attempt finishes, success or not.
+    /// Needed because `.task` only fires when this view first appears — it
+    /// does NOT refire just because `isConfirming` flips back to false after
+    /// a failure, so without this flag a failed attempt (e.g. the request
+    /// getting cancelled by a brief app backgrounding) left the screen
+    /// permanently blank with no way forward. "Try again" below calls
+    /// `attemptConfirm()` directly instead of hoping `.task` reruns.
+    @State private var didAttempt = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let message = viewModel.confirmationMessage {
@@ -695,14 +704,26 @@ private struct ConfirmStepView: View {
                 PrimaryButton(title: "Continue", action: onContinue)
             } else if viewModel.isConfirming {
                 ProgressView().tint(LucakuColor.accent).frame(maxWidth: .infinity, minHeight: 200)
+            } else if didAttempt {
+                VStack(spacing: LucakuSpacing.sp4) {
+                    Text("Couldn't confirm your setup.")
+                        .font(LucakuTypography.body)
+                        .foregroundStyle(LucakuColor.textSecondary)
+                        .multilineTextAlignment(.center)
+                    PrimaryButton(title: "Try again") { Task { await attemptConfirm() } }
+                }
+                .frame(maxWidth: .infinity, minHeight: 200)
             } else {
                 Color.clear.frame(height: 1)
-                    .task {
-                        guard let token = session.accessToken else { return }
-                        await viewModel.confirm(token: token)
-                    }
+                    .task { await attemptConfirm() }
             }
         }
+    }
+
+    private func attemptConfirm() async {
+        guard let token = session.accessToken else { return }
+        await viewModel.confirm(token: token)
+        didAttempt = true
     }
 }
 

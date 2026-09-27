@@ -1,0 +1,268 @@
+<title>Lucaku Audio Status</title>
+<style>
+:root{
+  --bg:#F4F6F7; --surface:#FFFFFF; --surface2:#EEF2F3; --border:#D7DFE2; --border-soft:#E4E9EB;
+  --text:#122026; --text2:#48606A; --text3:#7C9299;
+  --accent:#1E647E; --accent-tint:#E5EEF1; --accent-on:#FFFFFF;
+  --good:#1A7A4C; --good-tint:#E4F5EC;
+  --warn:#95660A; --warn-tint:#FBF0DC;
+  --crit:#B23A2E; --crit-tint:#FBE9E7;
+  --shadow: 0 1px 2px rgba(18,32,38,.06), 0 8px 24px rgba(18,32,38,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0B1416; --surface:#121F24; --surface2:#182930; --border:#233840; --border-soft:#1C2E36;
+    --text:#F0F4F5; --text2:#9FB4BB; --text3:#6C8790;
+    --accent:#74B9D1; --accent-tint:#173038; --accent-on:#05262F;
+    --good:#4ADE9B; --good-tint:#0F2A21;
+    --warn:#F2B84B; --warn-tint:#2E2510;
+    --crit:#FF8A78; --crit-tint:#301714;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 28px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0B1416; --surface:#121F24; --surface2:#182930; --border:#233840; --border-soft:#1C2E36;
+  --text:#F0F4F5; --text2:#9FB4BB; --text3:#6C8790;
+  --accent:#74B9D1; --accent-tint:#173038; --accent-on:#05262F;
+  --good:#4ADE9B; --good-tint:#0F2A21;
+  --warn:#F2B84B; --warn-tint:#2E2510;
+  --crit:#FF8A78; --crit-tint:#301714;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 28px rgba(0,0,0,.35);
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Inter:wght@400;500;600;700&display=swap');
+
+*{box-sizing:border-box}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
+  font-size:14px; line-height:1.5;
+  padding-inline:20px; padding-block:28px 60px;
+}
+h1,h2,h3{font-family:'Manrope',sans-serif; text-wrap:balance; margin:0}
+.wrap{max-width:920px; margin-inline:auto; display:flex; flex-direction:column; gap:36px}
+
+/* ---- Header ---- */
+.header{display:flex; flex-direction:column; gap:10px}
+.eyebrow{
+  font-family:'Manrope',sans-serif; font-weight:700; font-size:11px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--accent);
+}
+.header h1{font-size:30px; font-weight:800; color:var(--text)}
+.header p{color:var(--text2); font-size:14.5px; max-width:62ch; margin:0}
+.header .meta{color:var(--text3); font-size:12.5px; font-variant-numeric:tabular-nums}
+
+/* ---- Stat strip ---- */
+.stats{display:grid; grid-template-columns:repeat(4,1fr); gap:10px}
+@media (max-width:640px){ .stats{grid-template-columns:repeat(2,1fr)} }
+.stat{
+  background:var(--surface); border:1px solid var(--border-soft); border-radius:12px;
+  padding:14px 16px; display:flex; flex-direction:column; gap:2px; box-shadow:var(--shadow);
+}
+.stat .n{font-family:'Manrope',sans-serif; font-weight:800; font-size:26px; font-variant-numeric:tabular-nums}
+.stat .l{color:var(--text2); font-size:12px}
+.stat.crit .n{color:var(--crit)}
+.stat.warn .n{color:var(--warn)}
+.stat.good .n{color:var(--good)}
+
+/* ---- Section ---- */
+.section{display:flex; flex-direction:column; gap:12px}
+.section-head{display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap}
+.section-head h2{font-size:18px; font-weight:800}
+.section-head .sub{color:var(--text3); font-size:12.5px}
+
+/* ---- Pills ---- */
+.pill{
+  display:inline-flex; align-items:center; gap:5px; font-family:'Manrope',sans-serif; font-weight:700;
+  font-size:11px; letter-spacing:.02em; padding:3px 9px; border-radius:99px; white-space:nowrap;
+}
+.pill::before{content:""; width:6px; height:6px; border-radius:99px; background:currentColor}
+.pill.good{background:var(--good-tint); color:var(--good)}
+.pill.warn{background:var(--warn-tint); color:var(--warn)}
+.pill.crit{background:var(--crit-tint); color:var(--crit)}
+.pill.muted{background:var(--surface2); color:var(--text3)}
+
+/* ---- Module table ---- */
+.tablewrap{background:var(--surface); border:1px solid var(--border-soft); border-radius:14px; box-shadow:var(--shadow); overflow:hidden}
+.row{
+  display:grid; grid-template-columns:1.6fr auto 1fr; gap:14px; align-items:center;
+  padding:13px 18px; border-bottom:1px solid var(--border-soft);
+}
+.row:last-child{border-bottom:none}
+.row .name{font-weight:600; color:var(--text)}
+.row .note{color:var(--text3); font-size:12px}
+.row .prd{color:var(--text3); font-size:11.5px; text-align:right}
+@media (max-width:640px){
+  .row{grid-template-columns:1fr; gap:6px}
+  .row .prd{text-align:left}
+}
+
+/* ---- Timeline (founder feedback -> fixes) ---- */
+.timeline{display:flex; flex-direction:column}
+.tl-item{
+  display:grid; grid-template-columns:96px 1fr; gap:16px; padding-block:14px;
+  border-bottom:1px solid var(--border-soft);
+}
+.tl-item:last-child{border-bottom:none}
+.tl-date{color:var(--text3); font-size:11.5px; font-variant-numeric:tabular-nums; padding-top:2px}
+.tl-body{display:flex; flex-direction:column; gap:5px}
+.tl-title{font-weight:700; font-size:13.5px}
+.tl-desc{color:var(--text2); font-size:13px}
+.tl-desc b{color:var(--text); font-weight:600}
+@media (max-width:560px){ .tl-item{grid-template-columns:1fr} .tl-date{padding-top:0} }
+
+/* ---- Blocker cards ---- */
+.blockers{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+@media (max-width:640px){ .blockers{grid-template-columns:1fr} }
+.blocker{
+  background:var(--surface); border:1px solid var(--border-soft); border-left:3px solid var(--warn);
+  border-radius:10px; padding:13px 15px; display:flex; flex-direction:column; gap:4px; box-shadow:var(--shadow);
+}
+.blocker .t{font-weight:700; font-size:13px}
+.blocker .d{color:var(--text2); font-size:12.5px}
+
+/* ---- Next steps ---- */
+.steps{display:flex; flex-direction:column; gap:8px}
+.step{
+  display:flex; gap:10px; align-items:flex-start; background:var(--surface);
+  border:1px solid var(--border-soft); border-radius:10px; padding:11px 14px; box-shadow:var(--shadow);
+}
+.step .num{
+  font-family:'Manrope',sans-serif; font-weight:800; font-size:11px; color:var(--accent);
+  background:var(--accent-tint); border-radius:99px; width:20px; height:20px; flex:none;
+  display:flex; align-items:center; justify-content:center; margin-top:1px;
+}
+.step .txt{font-size:13px; color:var(--text2)}
+.step .txt b{color:var(--text); font-weight:600}
+
+footer{color:var(--text3); font-size:11.5px; text-align:center; padding-top:8px}
+</style>
+
+<div class="wrap">
+
+  <div class="header">
+    <span class="eyebrow">Lucaku Audio — Project Status</span>
+    <h1>From manufacturing platform to a daily audio briefing</h1>
+    <p>Backend live in production on Railway. Native iOS app exists, has been through one
+      real-device round with the founder, and a second round of fixes just landed.</p>
+    <span class="meta">Snapshot as of 2026-09-24 · repo <code>lucaku-ia/Audio</code>, branch <code>main</code></span>
+  </div>
+
+  <div class="stats">
+    <div class="stat good"><span class="n">14</span><span class="l">backend modules deployed</span></div>
+    <div class="stat warn"><span class="n">1</span><span class="l">iOS feature unverified on device</span></div>
+    <div class="stat crit"><span class="n">4</span><span class="l">blockers only the founder can clear</span></div>
+    <div class="stat"><span class="n">2</span><span class="l">real-device feedback rounds</span></div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
+      <h2>Backend — Railway production</h2>
+      <span class="sub">audio-production-2a77.up.railway.app</span>
+    </div>
+    <div class="tablewrap">
+      <div class="row"><span class="name">Login</span><span class="pill good">deployed</span><span class="prd">Login PRD</span></div>
+      <div class="row"><span class="name">Request Management</span><span class="pill good">deployed</span><span class="prd">Request Mgmt PRD</span></div>
+      <div class="row"><span class="name">Profile</span><span class="pill good">deployed</span><span class="prd">Onboarding PRD</span></div>
+      <div class="row"><span class="name">Onboarding — backend</span><span class="pill good">deployed</span><span class="prd">Onboarding PRD</span></div>
+      <div class="row"><span class="name">AI Platform — structuring &amp; research</span><span class="pill good">deployed</span><span class="prd">AI Platform PRD</span></div>
+      <div class="row"><span class="name">AI Platform — prompt registry</span><span class="pill good">deployed</span><span class="prd">AI Platform PRD</span></div>
+      <div class="row"><span class="name">Episode Generator <span class="note">— real TTS, scheduled + on-demand</span></span><span class="pill good">deployed</span><span class="prd">Episode Gen. PRD</span></div>
+      <div class="row"><span class="name">Home <span class="note">— suggestions need semantic index</span></span><span class="pill good">deployed</span><span class="prd">Home PRD</span></div>
+      <div class="row"><span class="name">Search &amp; keyword lookup <span class="note">— Q&amp;A needs semantic index</span></span><span class="pill good">deployed</span><span class="prd">Search &amp; AI PRD</span></div>
+      <div class="row"><span class="name">Notifications &amp; Settings <span class="note">— push delivery deferred</span></span><span class="pill good">deployed</span><span class="prd">Notif. &amp; Settings PRD</span></div>
+      <div class="row"><span class="name">Instrumentation dashboard</span><span class="pill good">deployed</span><span class="prd">Instrumentation PRD</span></div>
+      <div class="row"><span class="name">Shared inventory pipeline <span class="note">— built, production has 0 samples</span></span><span class="pill warn">empty</span><span class="prd">Episode Gen. PRD</span></div>
+      <div class="row"><span class="name">Semantic index (Voyage AI)</span><span class="pill crit">not started</span><span class="prd">AI Platform PRD</span></div>
+      <div class="row"><span class="name">Player <span class="note">— no dedicated screen beyond rating/refine</span></span><span class="pill crit">not started</span><span class="prd">Player PRD</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
+      <h2>iOS app</h2>
+      <span class="sub">SwiftUI, native — sideloadable via GitHub Actions, no Mac required</span>
+    </div>
+    <div class="tablewrap">
+      <div class="row"><span class="name">Home <span class="note">— dark redesign, cover art, real playback</span></span><span class="pill good">on device</span><span class="prd">Home PRD</span></div>
+      <div class="row"><span class="name">Search &amp; Interests <span class="note">— incl. free-text AI categorization</span></span><span class="pill good">on device</span><span class="prd">Search / Onboarding</span></div>
+      <div class="row"><span class="name">Settings</span><span class="pill good">on device</span><span class="prd">Notif. &amp; Settings PRD</span></div>
+      <div class="row"><span class="name">Onboarding — 8-step guided flow, voice narration &amp; dictation</span><span class="pill warn">compiles clean, not on device</span><span class="prd">Onboarding PRD</span></div>
+      <div class="row"><span class="name">Login screen <span class="note">— founder wants brand/logo work first</span></span><span class="pill muted">on hold</span><span class="prd">Login PRD</span></div>
+      <div class="row"><span class="name">App icon &amp; brand identity</span><span class="pill crit">not started</span><span class="prd">—</span></div>
+      <div class="row"><span class="name">Player screen</span><span class="pill crit">not started</span><span class="prd">Player PRD</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
+      <h2>What the founder has seen so far</h2>
+      <span class="sub">two real-device rounds, in order</span>
+    </div>
+    <div class="tablewrap timeline">
+      <div class="tl-item">
+        <span class="tl-date">Round 1<br>09-18</span>
+        <div class="tl-body">
+          <span class="tl-title">Liked the colours &amp; motion. Flagged: no onboarding, no logo, empty accounts.</span>
+          <span class="tl-desc">Investigation found the "no player / no audio / empty Home" reports were one root
+            cause — <b>zero content on his account</b>, not a playback bug. Playback itself was verified working.
+            The real gap: there was <b>no onboarding UI at all</b>, so a new account could never get set up, and
+            Settings stayed permanently locked behind it.</span>
+        </div>
+      </div>
+      <div class="tl-item">
+        <span class="tl-date">Fix<br>09-21</span>
+        <div class="tl-body">
+          <span class="tl-title">Built the full guided onboarding — interests, voice narration, mic dictation</span>
+          <span class="tl-desc">8-step resumable flow against the backend that was already there. Curated
+            per-interest suggestions for anyone unsure what to ask, on-device speech in both directions.</span>
+        </div>
+      </div>
+      <div class="tl-item">
+        <span class="tl-date">Round 2<br>09-22</span>
+        <div class="tl-body">
+          <span class="tl-title">Ran the new flow end to end — found a dead-end suggestion and a scary-looking error</span>
+          <span class="tl-desc">A seeded suggestion ("How did my favorite team do?") was too vague for the
+            classifier to ever accept — replaced with concrete examples. A rejection was surfacing as
+            <b>"Something went wrong — Server error (400)"</b> instead of the actually-useful guidance sentence
+            underneath it — now shown plainly, under "One more thing".</span>
+        </div>
+      </div>
+      <div class="tl-item">
+        <span class="tl-date">Fix<br>09-23</span>
+        <div class="tl-body">
+          <span class="tl-title">Stopped forcing dark mode</span>
+          <span class="tl-desc">The app was pinned to dark regardless of the phone's own setting. A team member
+            saw it in light mode, which also matches how the mockups were signed off — the app now follows the
+            system setting.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
+      <h2>Blocked on the founder</h2>
+      <span class="sub">nothing else can move these forward</span>
+    </div>
+    <div class="blockers">
+      <div class="blocker"><span class="t">Apple Developer Program</span><span class="d">$99/yr — unblocks TestFlight, push notifications, real App Store distribution. Enrollment in progress.</span></div>
+      <div class="blocker"><span class="t">Voyage AI account</span><span class="d">Powers the semantic index — Search Q&amp;A, Home suggestions, real novelty judgment. Provider already chosen.</span></div>
+      <div class="blocker"><span class="t">Google Cloud OAuth client</span><span class="d">Needed before Google Sign-In is anything more than a visual stub on the login screen.</span></div>
+      <div class="blocker"><span class="t">Brand identity direction</span><span class="d">Logo, app icon, style — colours are approved and should stay, but there's no mark yet.</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-head"><h2>Next up</h2></div>
+    <div class="steps">
+      <div class="step"><span class="num">1</span><span class="txt"><b>Try onboarding on a real iPhone</b> — the mic and speech pieces can't be verified any other way; Simulator has no real microphone.</span></div>
+      <div class="step"><span class="num">2</span><span class="txt"><b>Populate the shared inventory</b> so Home's "For you" / "Explore" shelves aren't empty on day one.</span></div>
+      <div class="step"><span class="num">3</span><span class="txt"><b>App icon &amp; brand mark</b> — the single biggest "feels unfinished" driver on a real home screen.</span></div>
+      <div class="step"><span class="num">4</span><span class="txt">Wire the Player screen's refine / follow-up / rating buttons to the backend endpoints that already exist.</span></div>
+      <div class="step"><span class="num">5</span><span class="txt">Localize the iOS UI — every string is hardcoded English for a Spanish-speaking customer base.</span></div>
+    </div>
+  </div>
+
+  <footer>Full detail, scope notes, and PRD citations live in the repo's README.md</footer>
+</div>
