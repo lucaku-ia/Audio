@@ -9,8 +9,8 @@ shared semantic index for Home/Search, evals, multi-provider fallback,
 budgets/rate limits) is deliberately deferred — each needs the epic that
 consumes it (Home, Search) to exist first.
 
-Also now backs the Episode Generator's research+writing stage
-(research_and_write_block) and voicing stage (synthesize) — see
+Also now backs the Episode Generator's research stage (research_topic),
+its writing stage (write_block) and its voicing stage (synthesize) — see
 app/services/episode_generator.py for the scope note on what's built
 there. The Generator PRD's own tenet applies here too: this function
 decides *how* to research or voice (a bounded web search call; a TTS
@@ -80,10 +80,10 @@ async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, ve
                      usage, latency_ms: int, context: dict, rejected_reason: str | None = None) -> float:
     """
     Logs the AICall row and returns its `cost` so direct callers (currently
-    research_and_write_block and synthesize) can thread per-call cost up to
+    research_topic, write_block and synthesize) can thread per-call cost up to
     the Generator's stage-cost accounting without either function's public
     signature growing new business-logic parameters — see the "Cost per
-    stage" scope note on research_and_write_block/synthesize below and in
+    stage" scope note on research_topic/write_block/synthesize below and in
     app/services/episode_generator.py's run_generation for why this (not a
     time-window AICall query) was chosen.
     """
@@ -189,17 +189,27 @@ async def structure_request(
 class BlockResult(BaseModel):
     summary: str
     script: str
-    sources: list[dict]
+    # Deliberately untyped rather than list[dict]: this field holds two things
+    # at two moments. Straight out of the model it is whatever the writer
+    # claimed — the write_block prompt asks for bare url strings — and
+    # list[dict] would fail validation there, sending a perfectly good block
+    # down _parse_block_result's no_news fallback and losing the whole segment
+    # silently. _resolve_sources then replaces it with the real, license-
+    # labeled source records from Findings, so every consumer downstream still
+    # sees list[dict]. Do not narrow this without also changing that prompt.
+    sources: list
     no_news: bool
     # Not part of the model's own JSON output (_parse_block_result never sees
-    # it) — set by research_and_write_block after _log_call returns, so the
-    # Generator's research stage can accumulate real per-call cost across the
+    # it) — set by write_block after _log_call returns, so the Generator's
+    # writing stage can accumulate real per-call cost across the
     # per-active-request loop without querying AICall back out of the DB.
-    # See episode_generator.run_generation's "Cost per stage" note.
+    # Findings.cost carries the research half separately; the two are logged
+    # and reported as distinct stages. See run_generation's "Cost per stage".
     cost: float = 0.0
 
 
-RESEARCH_AND_WRITE_BLOCK_VERSION = "v1"
+RESEARCH_TOPIC_VERSION = "v1"
+WRITE_BLOCK_VERSION = "v1"
 
 _DEPTH_WORDS = {"brief": "about 50-70 words", "standard": "about 100-140 words", "deep": "about 180-240 words"}
 _STYLE_DESCRIPTIONS = {
@@ -208,74 +218,118 @@ _STYLE_DESCRIPTIONS = {
     "casual": "a casual, conversational voice, like a knowledgeable friend catching you up",
 }
 
-RESEARCH_AND_WRITE_BLOCK_SYSTEM = """You research one customer's standing request for a daily audio briefing and write the spoken segment that answers it for today.
+RESEARCH_TOPIC_SYSTEM = """You research one topic for a daily briefing. You do not write the briefing — another step does that. Your only job is to establish what is true and new, as plainly as possible.
 
-Use the web_search tool to find what is genuinely new or notable today (or in the last 1-2 days) about the topic. Never invent facts; only report what your searches actually returned, and cite every source you use.
+Use the web_search tool to find what is genuinely new or notable today (or in the last 1-2 days) about the topic. Never invent facts; only report what your searches actually returned, and attribute every finding to the source it came from.
 
-After researching, respond with ONLY a single JSON object (no other text, no markdown fences) with these fields:
-- "summary": one sentence, plain text, summarizing the block (for internal indexing, not read aloud).
-- "script": the spoken segment itself, written in {style_description}, in {language}, targeting {word_target}. Written to be read aloud — no headers, no bullet points, no markdown.
-- "sources": a list of objects {{"url": ..., "title": ..., "publisher": ...}} for every fact used. Empty list only if no_news is true.
-- "no_news": true if your research found nothing new, notable, or researchable for this request today — in that case "script" and "summary" should be empty strings and "sources" an empty list. Do not pad or speculate to avoid returning no_news; an honestly empty day is correct behavior, not a failure."""
+Write findings as neutral fact, not as narration: no style, no voice, no audience, no language other than English regardless of who asked. A later step renders them for a specific listener.
+
+Respond with ONLY a single JSON object (no other text, no markdown fences) with these fields:
+- "findings": a list of objects {{"headline": ..., "detail": ..., "source_urls": [...]}}, most important first. "headline" is one plain clause naming what happened. "detail" is the substance — figures, names, dates, what changed — in a few plain sentences, enough that someone could write from it without searching again. "source_urls" lists the urls this specific finding rests on.
+- "sources": a list of objects {{"url": ..., "title": ..., "publisher": ...}} for every source cited by any finding.
+- "no_news": true if your research found nothing new, notable, or researchable about this topic today — in that case "findings" and "sources" should be empty. Do not pad or speculate to avoid returning no_news; an honestly empty day is correct behavior, not a failure."""
+
+WRITE_BLOCK_SYSTEM = """You write one spoken segment of a daily audio briefing for one listener, from research findings that have already been gathered for you.
+
+You have no web access and you do not need it. Work only from the findings given. Never add a fact that is not in them, and never soften or inflate what they say. If the findings are thin, the segment is short — that is correct.
+
+Write in {style_description}, in {language}, targeting {word_target}. It will be read aloud by a synthetic voice, so write for the ear: no headers, no bullet points, no markdown, no parenthetical asides, and spell out figures the way a person would say them.
+
+Respond with ONLY a single JSON object (no other text, no markdown fences) with these fields:
+- "summary": one sentence, plain text, summarizing the segment (for internal indexing, not read aloud).
+- "script": the spoken segment itself.
+- "sources": the list of source urls you actually used, copied exactly from the findings. Do not invent urls and do not include sources you did not draw on.
+- "no_news": true only if the findings contain nothing worth saying to this listener — in that case "script" and "summary" are empty strings and "sources" empty."""
 
 
-async def research_and_write_block(
+class Finding(BaseModel):
+    headline: str
+    detail: str
+    source_urls: list[str] = []
+
+
+class Findings(BaseModel):
+    """
+    Customer-neutral research output: what is true about a topic right now,
+    with no listener, style, or language baked in.
+
+    This is the half of block production that is *shareable and cacheable*.
+    Two customers asking about the same topic want the same facts; they do
+    not want the same segment. Keeping this type free of customer_id, style
+    and language is what makes it storable under a (topic, freshness) key and
+    reusable across customers and across days — see write_block for the half
+    that is deliberately per-customer.
+
+    Nothing caches these yet; splitting the call is the prerequisite, and the
+    findings store is the next step (README, "Suggested next steps").
+    """
+    findings: list[Finding]
+    sources: list[dict]
+    no_news: bool
+    # Not model output — set by research_topic after _log_call returns, so the
+    # Generator's research stage can accumulate real cost without reading
+    # AICall back out of the DB. BlockResult.cost carries the writing half.
+    cost: float = 0.0
+
+
+async def research_topic(
     db: AsyncSession,
     raw_text: str,
     topic: str,
     scope: str,
     geography: str | None,
-    depth: str,
-    style: str,
-    language: str,
     customer_id: uuid.UUID,
     request_id: uuid.UUID,
-) -> BlockResult:
+) -> Findings:
     """
-    research_and_write_block — the Episode Generator's research+judge_novelty
-    +write_block stages, collapsed into one call for this MVP. Uses Claude's
-    server-side web_search tool (a general open-web, API-driven tool — not
-    scraping — so it satisfies the PRD's "only licensed or API sources, no
-    scraping" tenet at the mechanism level) so the whole research+write step
-    happens in a single request/response, no client-side tool loop needed.
+    research_topic — the Episode Generator's research stage, now on its own.
+    Uses Claude's server-side web_search tool (a general open-web, API-driven
+    tool — not scraping — so it satisfies the PRD's "only licensed or API
+    sources, no scraping" tenet at the mechanism level), so the whole research
+    step is one request/response with no client-side tool loop.
 
-    Scope reduction vs. the full PRD: true novelty judgment (§4, "against
-    the customer's previous blocks in the shared index, last 14 days") isn't
-    implemented — there's no shared index yet (AI Platform hasn't built it).
-    This call only judges "is there anything new today", not "new since we
-    last told this customer" — see episode_generator.py for the fuller note.
+    Why this is separate from write_block (it used to be one fused call,
+    research_and_write_block): research is expensive and identical for
+    everyone asking about a topic, while writing is cheap and must differ per
+    listener. Fused, neither could be cached — every customer paid full price
+    to re-research the same news, and the same model call that gathered facts
+    also chose the words, so there was nothing customer-neutral to store.
+    Split, the expensive half is a pure function of (topic, scope, geography,
+    time) and the cheap half carries style, language and depth.
+
+    `customer_id` and `request_id` are passed for cost attribution only — they
+    are NOT part of the prompt and must not become part of it, or the output
+    stops being shareable. That is the whole point of the split.
 
     Source catalogue / license labeling (PRD §5's "config file: source, API,
     license, language, topics" and §4's "every block stores its sources
-    (url, title, publisher, license)"): app/models/source_catalogue.py now
-    holds that curated catalogue, and every source this function returns is
-    passed through app.services.source_catalogue.attach_licenses before
-    being handed back, which best-effort matches the source's domain against
-    it and adds an explicit "license" key (the matched license_name, or None
-    if the domain isn't catalogued — never fabricated). Read that module's
-    docstring before assuming more: this is a provenance/labeling layer
-    applied AFTER web_search already ran — it does not and cannot restrict
-    web_search itself to the catalogued domains, since the `web_search_20260209`
-    tool used below is a general open-web tool with no API-level allowlist
-    parameter this codebase uses.
+    (url, title, publisher, license)"): app/models/source_catalogue.py holds
+    that curated catalogue, and every source this function returns is passed
+    through app.services.source_catalogue.attach_licenses, which best-effort
+    matches the source's domain against it and adds an explicit "license" key
+    (the matched license_name, or None if the domain isn't catalogued — never
+    fabricated). Read that module's docstring before assuming more: this is a
+    provenance/labeling layer applied AFTER web_search already ran — it does
+    not and cannot restrict web_search itself to the catalogued domains, since
+    the `web_search_20260209` tool used below is a general open-web tool with
+    no API-level allowlist parameter this codebase uses.
+
+    Attaching licenses here rather than in write_block is deliberate: it
+    happens once per topic, not once per listener, and a cached Findings then
+    carries its provenance with it.
     """
-    depth = depth if depth in _DEPTH_WORDS else "standard"
-    style = style if style in _STYLE_DESCRIPTIONS else "news"
-    language_name = "Spanish" if language == "es" else "English"
-
-    system_template, version = await get_active_prompt(
-        db, "research_and_write_block",
-        fallback_version=RESEARCH_AND_WRITE_BLOCK_VERSION, fallback_system_prompt=RESEARCH_AND_WRITE_BLOCK_SYSTEM,
-    )
-    system = system_template.format(
-        style_description=_STYLE_DESCRIPTIONS[style],
-        language=language_name,
-        word_target=_DEPTH_WORDS[depth],
+    system, version = await get_active_prompt(
+        db, "research_topic",
+        fallback_version=RESEARCH_TOPIC_VERSION, fallback_system_prompt=RESEARCH_TOPIC_SYSTEM,
     )
 
-    user_content = f"Request (customer's own words): {raw_text}\nTopic: {topic}\nScope: {scope}"
+    user_content = f"Topic: {topic}\nScope: {scope}"
     if geography:
         user_content += f"\nGeography: {geography}"
+    # The customer's own words are included because they carry intent the
+    # structured fields lose ("how did Arsenal do" wants results, not
+    # transfers) — not to personalize the findings, which stay neutral.
+    user_content += f"\nWhat the person asked for, in their words: {raw_text}"
 
     start = time.monotonic()
     response = _client.messages.create(
@@ -290,16 +344,127 @@ async def research_and_write_block(
     latency_ms = int((time.monotonic() - start) * 1000)
 
     cost = await _log_call(
-        db, customer_id=customer_id, prompt="research_and_write_block", version=version,
-        purpose="research_and_write_block", usage=response.usage, latency_ms=latency_ms,
+        db, customer_id=customer_id, prompt="research_topic", version=version,
+        purpose="research_topic", usage=response.usage, latency_ms=latency_ms,
+        context={"customer_id": str(customer_id), "request_id": str(request_id), "topic": topic},
+    )
+
+    text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
+    findings = _parse_findings(text)
+    findings.cost = cost
+    findings.sources = await attach_licenses(db, findings.sources)
+    return findings
+
+
+async def write_block(
+    db: AsyncSession,
+    findings: Findings,
+    raw_text: str,
+    topic: str,
+    depth: str,
+    style: str,
+    language: str,
+    customer_id: uuid.UUID,
+    request_id: uuid.UUID,
+) -> BlockResult:
+    """
+    write_block — turns already-gathered Findings into this listener's spoken
+    segment. No web access, so its input is small (findings, not raw search
+    results) and it is the cheap half of the pair; see research_topic for why
+    they are separate.
+
+    Everything listener-specific lives here: style, language, depth, and the
+    customer's own phrasing. Two customers sharing a topic share the findings
+    and still get different segments, in their own style and language, voiced
+    separately. Nothing about a shared briefing is implied by the split — the
+    facts are shared, the episode never is.
+
+    The returned `sources` are looked up from `findings.sources` by url rather
+    than taken from the model's own output, so a writer that hallucinates a
+    url contributes nothing: it can only select from what research actually
+    found, and the license labels attached at research time survive intact.
+    """
+    depth = depth if depth in _DEPTH_WORDS else "standard"
+    style = style if style in _STYLE_DESCRIPTIONS else "news"
+    language_name = "Spanish" if language == "es" else "English"
+
+    system_template, version = await get_active_prompt(
+        db, "write_block",
+        fallback_version=WRITE_BLOCK_VERSION, fallback_system_prompt=WRITE_BLOCK_SYSTEM,
+    )
+    system = system_template.format(
+        style_description=_STYLE_DESCRIPTIONS[style],
+        language=language_name,
+        word_target=_DEPTH_WORDS[depth],
+    )
+
+    findings_json = json.dumps(
+        [f.model_dump() for f in findings.findings], ensure_ascii=False, indent=2
+    )
+    user_content = (
+        f"Topic: {topic}\n"
+        f"What the person asked for, in their words: {raw_text}\n\n"
+        f"Findings:\n{findings_json}"
+    )
+
+    start = time.monotonic()
+    response = _client.messages.create(
+        model=MODEL,
+        max_tokens=4096,
+        thinking={"type": "adaptive"},
+        output_config={"effort": "medium"},
+        system=system,
+        messages=[{"role": "user", "content": user_content}],
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+
+    cost = await _log_call(
+        db, customer_id=customer_id, prompt="write_block", version=version,
+        purpose="write_block", usage=response.usage, latency_ms=latency_ms,
         context={"customer_id": str(customer_id), "request_id": str(request_id)},
     )
 
     text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
     result = _parse_block_result(text)
     result.cost = cost
-    result.sources = await attach_licenses(db, result.sources)
+    result.sources = _resolve_sources(result.sources, findings.sources)
     return result
+
+
+def _resolve_sources(used: list, available: list[dict]) -> list[dict]:
+    """
+    Maps the writer's claimed source urls back onto the real source records
+    research produced (already license-labeled), dropping anything it did not
+    find there. A hallucinated url resolves to nothing rather than to a
+    fabricated citation — "no source, no block" applied at the citation level.
+
+    Tolerates the writer returning whole objects instead of bare url strings,
+    which the prompt asks against but a model may still do.
+    """
+    by_url = {s.get("url"): s for s in available if s.get("url")}
+    resolved: list[dict] = []
+    for item in used:
+        url = item.get("url") if isinstance(item, dict) else item
+        source = by_url.get(url)
+        if source and source not in resolved:
+            resolved.append(source)
+    return resolved
+
+
+def _parse_findings(text: str) -> Findings:
+    try:
+        return Findings.model_validate_json(text)
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return Findings.model_validate(json.loads(match.group(0)))
+        except Exception:
+            pass
+    # Model didn't return parseable JSON — treat as no_news rather than
+    # writing from nothing (Generator tenet: "no source, no block").
+    return Findings(findings=[], sources=[], no_news=True)
 
 
 def _parse_block_result(text: str) -> BlockResult:

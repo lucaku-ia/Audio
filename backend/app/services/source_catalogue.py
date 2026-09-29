@@ -95,7 +95,7 @@ async def attach_licenses(db: AsyncSession, sources: list[dict]) -> list[dict]:
 
     This does NOT mean the source was actually restricted to catalogued
     domains — Claude's web_search tool call in
-    app/services/ai_platform.research_and_write_block is a general
+    app/services/ai_platform.research_topic is a general
     open-web search with no API-level allowlist parameter this codebase
     uses. A source with license=None here is simply "not one of our
     catalogued licensed/API sources" — it may still be a perfectly good,

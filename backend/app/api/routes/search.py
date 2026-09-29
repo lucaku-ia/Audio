@@ -19,7 +19,7 @@ after" keyword search) and its own engineering notes draw the line between
 feature, which needs the AI Platform's shared semantic index. That index
 does not exist yet (see app/services/ai_platform.py's scope note and the
 README's AI Platform section — only structure_request and
-research_and_write_block are built). Building even a stub answer endpoint
+research_topic/write_block are built). Building even a stub answer endpoint
 without that index would violate the PRD's own tenet, "answers come only
 from what exists" — there would be nothing real to ground an answer in, so
 it is skipped entirely rather than half-built. Pick this up once the AI

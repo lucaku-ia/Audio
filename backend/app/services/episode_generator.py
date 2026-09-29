@@ -4,7 +4,8 @@ Episode Generator PRD (Juan, Draft v1, proposed by Andrés for review).
 Scope note — what's built vs. deferred:
 
 Built: the on-demand path's pipeline — load -> research+write (per active
-request, via app.services.ai_platform.research_and_write_block) -> assemble
+request, via ai_platform.research_topic) -> write (per listener, via
+ai_platform.write_block) -> assemble
 -> trim -> headline -> publish. Triggered manually via
 POST /api/generation/run (app/api/routes/generation.py).
 
@@ -68,7 +69,7 @@ Deferred, and why:
   seamless join; revisit with a proper audio mux if gaps/clicks show up.
 - Real novelty judgment ("new since we last told this customer," using the
   last 14 days of blocks via the AI Platform's shared semantic index):
-  the index doesn't exist yet. research_and_write_block only judges "is
+  the index doesn't exist yet. research_topic only judges "is
   there anything new today" in isolation, not against history. A request
   can currently get an near-identical block two days running if the topic
   hasn't moved — that's the gap the real index closes.
@@ -174,10 +175,10 @@ any pending version instead of leaving it to be wrongly promoted here.
 Built: cost per stage. Each `job.stages` entry (research/assemble/voicing)
 and its matching `stage_completed` Event payload now carry a `cost` field —
 the sum of real AICall cost incurred during that stage, not the timing-only
-entries this used to be. research_and_write_block runs once per active
+entries this used to be. research_topic and write_block each run once per active
 request inside the research stage's loop, so research_cost accumulates
 across every call in that loop, not just the last one. Threaded up without
-touching research_and_write_block's/synthesize's public *business*
+touching research_topic's/write_block's/synthesize's public *business*
 parameters: ai_platform._log_call now returns the cost of the AICall row it
 just wrote, and both direct callers pass it back to their own caller
 (BlockResult gained a `cost` field; synthesize now returns `(bytes, cost)`
@@ -500,7 +501,11 @@ async def run_generation(
         )
         req_by_id = {str(r.id): r for r in active_result.scalars().all()}
 
-        blocks: list[dict] = []
+        # Research: customer-neutral, one pass per topic. Kept separate from
+        # writing below so the expensive half is cacheable/shareable per topic
+        # while the cheap half stays per-listener — see
+        # ai_platform.research_topic's docstring for the full reasoning.
+        researched: list[dict] = []
         research_cost = 0.0
         for req_out in all_requests:
             req = req_by_id.get(req_out.id)
@@ -508,20 +513,17 @@ async def run_generation(
                 continue
             await _promote_pending_version(db, req)  # "applies from next generation" — this run is that next one
             structured = req.structured or {}
-            block_result = await ai_platform.research_and_write_block(
+            findings = await ai_platform.research_topic(
                 db,
                 raw_text=req.raw_text,
                 topic=structured.get("topic", req.raw_text[:60]),
                 scope=structured.get("scope", ""),
                 geography=structured.get("geography"),
-                depth=structured.get("depth", "standard"),
-                style=style,
-                language=language,
                 customer_id=cliente.id,
                 request_id=req.id,
             )
-            blocks.append({"request": req, "result": block_result})
-            research_cost += block_result.cost
+            researched.append({"request": req, "structured": structured, "findings": findings})
+            research_cost += findings.cost
 
         research_latency_ms = int((time.monotonic() - research_start) * 1000)
         job.stages = [*job.stages, {"stage": "research", "latency_ms": research_latency_ms, "cost": research_cost}]
@@ -529,6 +531,41 @@ async def run_generation(
                      job_id=str(job.id), stage="research", latency_ms=research_latency_ms, cost=research_cost)
 
         await _advance_status_unless_late(db, job, JobStatus.writing)
+
+        # Writing: per-listener, no web access, findings as input. This stage
+        # used to be a bare status flip with no work behind it; the split gives
+        # it the work the PRD always described.
+        writing_start = time.monotonic()
+        await emitir(db, "stage_started", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), stage="writing")
+
+        blocks: list[dict] = []
+        writing_cost = 0.0
+        for item in researched:
+            # An empty research day needs no writing call — skip rather than
+            # pay a model to tell us it has nothing to say.
+            if item["findings"].no_news:
+                continue
+            req, structured = item["request"], item["structured"]
+            block_result = await ai_platform.write_block(
+                db,
+                findings=item["findings"],
+                raw_text=req.raw_text,
+                topic=structured.get("topic", req.raw_text[:60]),
+                depth=structured.get("depth", "standard"),
+                style=style,
+                language=language,
+                customer_id=cliente.id,
+                request_id=req.id,
+            )
+            blocks.append({"request": req, "result": block_result})
+            writing_cost += block_result.cost
+
+        writing_latency_ms = int((time.monotonic() - writing_start) * 1000)
+        job.stages = [*job.stages, {"stage": "writing", "latency_ms": writing_latency_ms, "cost": writing_cost}]
+        await emitir(db, "stage_completed", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), stage="writing", latency_ms=writing_latency_ms, cost=writing_cost)
+
         answerable = [b for b in blocks if not b["result"].no_news]
 
         if not answerable:

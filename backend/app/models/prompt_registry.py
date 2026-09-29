@@ -38,7 +38,7 @@ class PromptVersion(Base):
     """
     One version of one named prompt. `name` matches the `purpose`/`prompt`
     strings already passed to `_log_call` in app/services/ai_platform.py
-    (e.g. "structure_request", "research_and_write_block") so AICall rows
+    (e.g. "structure_request", "research_topic", "write_block") so AICall rows
     and registry rows line up by the same key.
 
     Exactly one row per `name` should have `is_active=True` at a time —

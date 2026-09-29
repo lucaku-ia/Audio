@@ -53,10 +53,10 @@ What's built vs. deferred, against the PRD's dashboard requirements:
 - Cost per stage (research / assemble / voicing) -> also in
   `/generation-funnel`, as `cost_by_stage`. Previously deliberately not
   wired: attributing cost to a stage would have meant either changing
-  `research_and_write_block`'s/`synthesize`'s public signatures (judged out
+  `research_topic`'s/`write_block`'s/`synthesize`'s public signatures (judged out
   of scope) or a lossy time-window query over AICall. Closed by having
   `ai_platform._log_call` return the cost it just logged so its two direct
-  callers (research_and_write_block, synthesize) can carry it upward
+  callers (research_topic, write_block, synthesize) can carry it upward
   without a new business-logic parameter — see episode_generator.py's
   run_generation for where that cost is accumulated per stage into
   `GenerationJob.stages` and the `stage_completed` Event payload.
@@ -154,7 +154,7 @@ async def cost_summary(
     Cost per active customer and cost per component (`purpose`), from
     AICall — the PRD's #1 dashboard requirement. `purpose` values today are
     whatever ai_platform.py actually logs: structure_request,
-    research_and_write_block, synthesize (see that module's `_log_call`
+    research_topic, write_block, synthesize (see that module's `_log_call`
     call sites) — no fixed enum exists on the model, so this reports
     whatever purposes are present in the data rather than a hardcoded list.
     """
