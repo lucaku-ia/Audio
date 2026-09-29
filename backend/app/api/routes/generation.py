@@ -37,6 +37,16 @@ class JobOut(BaseModel):
     status: str
     creado_en: datetime
     stages: list = []  # carries the {"error": ...} entry when status == "failed"
+    # Defect 2 fix — distinguishes "this call handed back an existing job
+    # unchanged" (False) from "this call actually started or re-ran the
+    # pipeline" (True), so a client polling POST /generation/run repeatedly
+    # (e.g. after an empty day, once it lets a customer retry) can tell those
+    # apart instead of just seeing the same job shape either way. Only ever
+    # set on the response of POST /run, which is the only endpoint that calls
+    # run_generation itself — GET /jobs/{id} just reads back an existing row
+    # and was never the thing that started or didn't start anything, so it's
+    # left null there rather than guessed.
+    run_started: bool | None = None
 
 
 class BlockOut(BaseModel):
@@ -92,10 +102,10 @@ class EpisodeOut(BaseModel):
     blocks: list[BlockOut]
 
 
-def _job_out(job: GenerationJob) -> JobOut:
+def _job_out(job: GenerationJob, run_started: bool | None = None) -> JobOut:
     return JobOut(
         id=str(job.id), fecha=job.fecha, path=job.path.value, status=job.status.value,
-        creado_en=job.creado_en, stages=job.stages or [],
+        creado_en=job.creado_en, stages=job.stages or [], run_started=run_started,
     )
 
 
@@ -111,9 +121,15 @@ async def run(
     deployment should queue this as a background job per PRD §5 (per-stage
     status streamed to Home), not run it inline in a request handler. Fine
     for manual testing at this stage.
+
+    `run_started` on the response (see JobOut) tells the caller whether this
+    call actually (re-)ran the pipeline or just handed back an existing job
+    unchanged — see run_generation's own docstring, notably its "Defect 2
+    fix" note on a terminal `empty` job now being retryable once, up to a
+    cap, rather than permanently final for the day.
     """
     job = await run_generation(db, cliente)
-    return _job_out(job)
+    return _job_out(job, run_started=getattr(job, "started_new_run", None))
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
