@@ -47,13 +47,15 @@ instead.
 ## TL;DR for anyone new to this repo
 
 - **Backend**: fully built for every feature that doesn't need a new external credential. Live in production on Railway, real ElevenLabs TTS (word-level timestamps verified against a real live call, see "Episode Generator scope"), real web-grounded research (Claude's `web_search` tool). See the status table below.
+- **No episode has had audio since 2026-09-18, because the ElevenLabs account is out of credits.** Research and writing work fine; the voicing step has been failing silently for days, and the app has been showing "making your episode" the whole time. **Fixing it is a billing change nobody has made.** See "Why there is no audio" below — that section also has the real per-customer cost model, which is the thing to read before pricing anything.
+- **Requests hang ~14s and sometimes 500 under load**, because generation runs inline in the HTTP handler and holds a DB connection through the whole research call, exhausting a 5+10 pool. Real errors in the logs. Not Railway sleeping — an earlier draft of this README said that, and it was wrong.
 - **Mobile**: a real native iOS app (SwiftUI, not a wrapper) exists. PR #27 (tab architecture fix + real Home/Search/Interests) is **merged** — #23–#26 are correctly closed without merging, superseded by it. Full detail in "Mobile app (iOS)" below.
 - **Free-text AI-categorized interests: done, verified against production.** The previous session's isolated worktree (bad `ANTHROPIC_API_KEY`, never actually saw a categorization result) was abandoned rather than fixed — this was rebuilt directly against this repo's own working deployment instead, where the key already works. Backend: `RequestOut.structured` exposed, `GET /requests?kind=` filter added. iOS: a "Search for anything" field in Interests wired to `POST /requests`. Verified live: typing "Arsenal FC" categorizes to `{topic: "Arsenal FC", geography: null}`; "La Liga" to `{topic: "La Liga football", geography: "Spain"}` — exactly the two test cases the founder wanted to see. iOS changes are unverified by an actual Xcode build (no macOS access this session) — build-check before trusting in production.
 - **Session-expiry gap: fixed.** An expired/invalid token used to leave every screen showing a silent "not signed in" error forever (`SessionStore.clear()` was only wired to the manual Log-out button). `APIClient` now posts a notification on any 401; `SessionStore` observes it and clears itself, so the app's existing auth-routing sends the customer back to Login automatically. Same Xcode-build caveat as above.
 - **Design**: three screens (Home, Player, Search/Interests) are designed, approved, and share one consistent token system grounded in real Apple HIG/Spotify/Audible research rather than guesswork. Login has been through three rounds of direct founder feedback and the founder has said it's not the current priority — don't invest further there without checking first. Look-and-feel links are in "Design system" below.
 - **What's blocking further progress that only the founder can unblock**: Google Cloud Console (OAuth client ID for Google Sign-In), and Apple Developer Program enrollment ($99/yr — needed for push notifications, real-device testing, and eventually App Store submission). Voyage AI is the decided embeddings provider (see "Suggested next steps") but the account/key still needs to be created.
 
-## Current status (as of 2026-09-21)
+## Current status (as of 2026-09-23)
 
 Backend fully built (see table below); a real native iOS client now exists too — see
 "Mobile app (iOS)" further down. Backend live in production on Railway:
@@ -828,7 +830,285 @@ news"`, `"Resumen diario de IA..."`). That follows the backend's default languag
 setting and is not a bug, but nobody has explicitly decided whether Spanish-by-default
 is the intended behaviour for all customers.
 
+## Session of 2026-09-23 — first-run walkthrough, branding, and a slow backend
+
+The onboarding flow Andrés built on 2026-09-21 had never been run anywhere. It was
+walked end to end in the Simulator against production for the first time, then on a
+real iPhone. Several things turned up that only running it could reveal.
+
+### The big one: there is no audio, and the reason is a billing limit
+
+`POST /api/generation/run`, run against production on 2026-09-24, got as far as the
+voicing stage and stopped there:
+
+```
+quota_exceeded — This request exceeds your quota of 10000.
+You have 291 credits remaining, while 782 credits are required for this request.
+```
+
+**ElevenLabs' free tier is 10,000 credits a month and it is spent.** A 66-second
+episode costs ~780 credits, so the free tier was never going to be more than about a
+dozen episodes. It ran out shortly after 2026-09-18, which is why the single episode
+in the database with real audio is dated 2026-09-18 and nothing since has any.
+
+Everything before voicing works, and works well. The same run produced, in 39 seconds
+for $0.35, a real Spanish news script with cited sources:
+
+> En inteligencia artificial, el movimiento más relevante de las últimas horas fue una
+> doble jugada entre los dos grandes laboratorios. Anthropic lanzó Claude Opus 5.5 y
+> recortó su precio un veinte por ciento…
+
+— sourced to SiliconANGLE and CNBC. So the research half of the product is real. There
+are several days of scripts sitting in the database that nobody can listen to.
+
+**This is unblocked by a billing change, not by code.** Upgrading the ElevenLabs plan
+keeps the same account and the same API key; nothing needs redeploying.
+
+### …and then the system lies about it, which is what made the app feel broken
+
+Three compounding defects, all ours, all worth fixing regardless of the quota:
+
+1. **The job is never marked failed.** On a TTS exception `run_generation` appends the
+   error to `job.stages` and leaves `job.status` at `voicing`
+   ([episode_generator.py:673](backend/app/services/episode_generator.py:673)). Home's
+   banner therefore reads `making` forever, with an ETA an hour out that will never
+   arrive. A test account sat in that state for five days.
+2. **The episode is published anyway**, with `audio_url: null`, `published_at` set and
+   `duration_s` claiming 66 seconds. The app is handed something that looks ready and
+   has no audio. This is the most likely explanation for the "crash" reports, and it is
+   a far better suspect than the mic code.
+3. **The DB pool is exhausted under any real use.** From the deploy logs:
+   `sqlalchemy.exc.TimeoutError: QueuePool limit of size 5 overflow 10 reached,
+   connection timed out, timeout 30.00`. `POST /generation/run` runs the whole pipeline
+   inline in the request handler ([generation.py:107](backend/app/api/routes/generation.py:107)
+   is candid about it) and holds its connection for the full ~40s of research, so other
+   requests queue behind it and then 500. `create_async_engine` sets no pool size, so
+   it is the SQLAlchemy default of 5 + 10 overflow.
+
+**Correction to an earlier draft of this section:** it attributed the 14-second first
+request to Railway putting the container to sleep. That was wrong. The service has no
+sleep setting enabled and the deploy logs show continuous traffic; the hangs are pool
+starvation, item 3 above. The measurement (14.4s cold, 0.41s warm) was real; the
+explanation was not.
+
+### What an episode actually costs
+
+Measured, not estimated, from the run above: **782 ElevenLabs credits for 66 seconds**
+of speech (11.8 credits/second) and **$0.348 of Claude** for one researched block.
+ElevenLabs bills ~$0.18 per 1,000 credits, near-flat across plans — $0.142/audio-minute
+on Starter down to only $0.117 on the $299 Scale tier, so there is no volume discount
+to grow into.
+
+At the current shape (one block per minute of audio):
+
+| Episode length | Voice | Research | Per daily listener/month |
+|---|---|---|---|
+| 1 min | $0.13 | $0.35 | $14 |
+| 5 min | $0.64 | $1.75 | $72 |
+| 10 min | $1.28 | $3.50 | **$144** |
+
+Two things worth internalising before pricing anything:
+
+- **Research, not voice, is the dominant cost** at real episode length — 73% of it. The
+  expensive part is not the part that feels like magic.
+- **$5/customer/month is reachable, but only at ~1 minute a day**, and only if research
+  is close to free. Voice alone at 2 min/day already exceeds $5. That is arithmetic, not
+  an engineering problem.
+
+Note the cost figures logged in `AICall` are a slight undercount: Anthropic's
+`web_search` tool bills per search on top of tokens, and
+[ai_platform.py:68](backend/app/services/ai_platform.py:68) says so — roughly $0.03 per
+block, immaterial to the table above.
+
+### Research split from writing, so it can be cached (PR #36)
+
+The founder's proposal, and the right one: store what research finds, and when two
+customers ask about the same thing, reuse the findings instead of researching from cold.
+
+**To be unambiguous, because it is easy to hear this the wrong way: the facts are
+shared, the episode never is.** Two customers on one topic share a research pass and
+still get their own script, in their own style and language, voiced into their own audio
+file. Nobody hears anybody else's episode. Sharing the *findings* is what makes
+per-customer episodes affordable; it is not a step toward one briefing for everyone.
+
+`research_and_write_block` made that impossible — one model call did both jobs and took
+`customer_id`, `style` and `language`, so there was nothing customer-neutral to store.
+PR #36 splits it:
+
+| | `research_topic` | `write_block` |
+|---|---|---|
+| Web search | yes | **no** |
+| Input | topic, scope, geography | findings, style, language, depth |
+| Knows the listener | **no** (ids are for cost attribution only) | yes |
+| Cacheable | yes — a pure function of (topic, time) | no, and shouldn't be |
+
+Two things fall out beyond cost. The **writing stage does real work now** — it was a
+bare status flip with no model call behind it. And **a writer can no longer invent a
+citation**: returned sources are resolved by url against what research actually found,
+so a hallucinated url yields no citation rather than a fabricated one, and the license
+labels attached at research time survive.
+
+The prompts have not yet faced a real model — there is no Anthropic key in the local
+environment and Railway deploys only `main` — so structure, wiring and the invariants
+are tested but **prompt quality is not**. Watch the first generation after #36 merges.
+
+### Why the cache is a product feature, not just a saving
+
+The PRD already asked for this and it was deferred for want of a semantic index. From
+[episode_generator.py:69](backend/app/services/episode_generator.py:69):
+
+> Real novelty judgment ("new since we last told this customer"… last 14 days): the
+> index doesn't exist yet… **A request can currently get a near-identical block two days
+> running if the topic hasn't moved.**
+
+So today the product repeats itself, which is a failure of its core promise rather than
+a cost problem. One store answers three needs at once:
+
+1. **Cost** — don't re-research what is already known
+2. **Novelty** — don't tell someone what they have already heard *(currently broken)*
+3. **Continuity** — thread the story: *"that price cut from Tuesday — OpenAI just
+   answered it"*
+
+Shape it as two things, not one. **Findings**: shared, keyed on topic plus a freshness
+window that varies by topic velocity (news in hours, standings in days, background in
+weeks). **Told**: per customer, tiny, just references to which findings that person has
+already heard. The expensive half stays shared; per-customer continuity costs a join
+table.
+
+Two cautions. Continuity means feeding history into the writing prompt, which cuts
+slightly against the saving — though compact summaries are nothing next to 50k tokens of
+raw search results. And a memory too pleased with itself ("as we mentioned Tuesday, and
+as we noted Monday…") is worse than no memory; knowing when the thread matters is
+editorial judgment living in the writing prompt.
+
+### Onboarding dead-ended on a permanent spinner (PR #32)
+
+The confirm step's network call lived in a `.task` attached to a view inside the
+*not-yet-confirming* branch of an `if/else`. `confirm()` sets `isConfirming = true`
+synchronously, which swapped that branch out for the spinner — destroying the view
+that owned the task and cancelling the request mid-flight. The `defer` cleared the
+flag, the branch returned, the task fired again: an infinite loop. The error alert
+never appeared either, because each attempt clears `errorMessage` before it can
+render. A real account sat stuck at step `confirm` server-side for minutes.
+
+Worth remembering as a pattern: **never attach a `.task` to a view that the task's own
+state change will remove.**
+
+### `confirm()` promised an episode that was never coming (PR #31)
+
+Separately: `POST /api/onboarding/confirm` returns *"Your first episode will be ready
+by 23:36"* but never actually called `run_generation` — the wiring was left as a TODO
+from before the Generator existed, and the stale docstring still said so. Customers
+would have waited for an episode nothing was producing. #31 wires it up as a
+background task (not awaited inline, which would reproduce the blocking-spinner
+problem for real), adds a bounded retry after an honest `empty` day, and fixes the
+day-zero plumbing.
+
+Note the diagnosis history here, because it is instructive: the original hypothesis
+was "the confirm endpoint blocks on generation". That was wrong — the endpoint
+returned in 0.28 s. Verifying before fixing is what surfaced both the real client bug
+and the missing wiring.
+
+### The app forced dark mode on everyone (merged in #30)
+
+`LucakuAudioApp` pinned `.preferredColorScheme(.dark)`, plus a `.colorScheme(.dark)`
+on the onboarding time wheel. A phone set to light mode still got a fully dark app.
+This was a deliberate choice (a listening app used at night and in the car) that
+collided with the founder's stated preference and the approved mockups, which were
+signed off in light. Resolved as **an Appearance setting** — System / Light / Dark,
+stored per device — rather than either preference being forced globally.
+
+### A customer with no profile was trapped (merged in #30)
+
+`SettingsView` only rendered Sign Out in its `.loaded` state, so an account without a
+Profile had no way to sign out, switch accounts, or reach any setting. Deleting the
+app did not help either: **the session survives uninstall via the Keychain**, so the
+reinstalled app came straight back into the same stuck account. Sign Out and
+Appearance are now offered in the non-loaded states too.
+
+### The app offered a suggestion its own backend rejects (merged in #30)
+
+`onboarding_seeds.json` suggested *"How did my favorite team do this week?"*, which
+`structure_request`'s clarity screen always refuses: *"We couldn't tell which team you
+mean. Please reply with the team name (and league)."* Replaced with seeds naming a
+concrete team. The rejection also surfaced as *"Something went wrong — Server error
+(400)"*, burying a genuinely useful sentence; a 4xx carrying a message now shows that
+message under the title "One more thing".
+
+Related, and worth knowing for the autocomplete work: the classifier *wants*
+specificity. `"How did Arsenal do this week in the Premier League?"` is accepted and
+comes back with `structured.topic = "Arsenal Football Club"` — the per-item
+categorisation the founder asked for already works.
+
+### Brand identity (PR #33, applied in PR #34)
+
+Produced in a Claude Code **cloud session** rather than locally — worth noting as a
+working pattern: backend/design work needs no Mac and can run on cloud credits, while
+anything touching Xcode, the Simulator or a real device has to stay local.
+
+`design/brand/` now holds a wordmark, a compact mark, an iOS app icon, `BRAND.md`,
+and a showcase page including a redesigned Login. #34 brings these into the app: the
+real app icon (it shipped with iOS's blank default, which is most of why it read as
+unfinished on a home screen), and the Login rebuilt on that design — wordmark, promise
+line, a preview card that speaks a sample morning with the words lighting up, and a
+single sign-up link replacing the duplicate mode control. Login copy is Spanish;
+**the rest of the app is still English**, which remains an open gap.
+
+#34 also replaced the generated-cover palette. It held ten saturated hues
+(red/orange/amber/green/teal/blue/indigo/**purple**/pink/slate) picked by hashing the
+topic; the founder's reaction to landing on the purple was unambiguous. It also
+contradicted the design spec on two counts — the accent is meant to be the only strong
+colour, and generated art is meant to read "muted, desaturated… ambient, not
+celebratory". Now eight muted tones around the brand accent. The mini player, which
+had been laying the cover colour over its surface at 55%, went to a solid surface with
+a hairline: the tint read as grey-green mud on a light background.
+
+### Still open
+
+- **The crashes are unexplained.** Hangs are explained by the cold start above, but a
+  genuine crash was reported and never reproduced or diagnosed. The mic/speech code is
+  the leading suspect: it is the one part of the app that has never executed anywhere
+  but a real device, since the Simulator has no microphone. Nobody has confirmed
+  dictation works.
+- **Day-zero content still needs generating operationally.** #31 makes the plumbing
+  correct; `POST /internal/generate-shared-inventory` has to actually be run against
+  production, or a new customer still waits an hour for anything to listen to.
+- **UI localization** — everything outside the Login screen is hardcoded English for a
+  Spanish-speaking customer base.
+
 ## Suggested next steps
+
+**Do these first.** Everything else in the list below is secondary to the fact that the
+product currently produces no audio and does not admit it.
+
+- **A. Upgrade the ElevenLabs plan.** *(founder only — billing.)* Nothing generates audio
+  until this happens. Free tier is 10,000 credits/month against ~780 per episode.
+  elevenlabs.io → the account whose key is in Railway → Subscription. Starter at $6/month
+  is ~40 short episodes, enough to dogfood for a month; don't buy capacity that can't be
+  filled yet. Same account, same key, no redeploy.
+- **B. Stop the system lying when voicing fails.** A TTS failure must mark the job failed
+  with a real reason, must not publish an episode with `audio_url: null` as though it were
+  ready, and Home must say something honest instead of "making" with an ETA that never
+  arrives. This is what a customer actually experiences today. Also clear the jobs
+  currently stuck at `voicing`.
+- **C. Get generation off the request path.** `POST /generation/run` holds a pool
+  connection for ~40s and starves every other request (`QueuePool limit of size 5 overflow
+  10 reached` in the logs). Background the work, and set an explicit pool size while
+  you're there — `create_async_engine` is using the library default.
+- **D. Build the findings store.** PR #36 split research from writing to make this
+  possible; the store itself is the payoff — cost, novelty and continuity in one
+  structure. See "Why the cache is a product feature" above for the shape.
+- **E. Find the crash.** Still unreproduced, but note that suspicion has moved: an
+  episode published with no audio (B above) is a much better candidate than the mic code.
+  Fix B first and see whether "the crash" survives it. If it does: Xcode → Window →
+  Devices and Simulators → View Device Logs gives the exact frame.
+
+**Measure, don't estimate.** Every cost figure in the plan rests on a single measured
+block ($0.348, one topic, two sources). Before designing around the model, run a handful
+of real blocks and get a distribution — and settle whether a cheaper model can do the
+research, since research is 73% of the cost and `MODEL` is currently `claude-opus-5`
+([ai_platform.py:63](backend/app/services/ai_platform.py:63)) for "search the web and
+write a one-minute news script". That is an hour of work and it needs nothing from anyone.
 
 1. ~~Finish the free-text-interests worktree~~ — **done**, rebuilt directly against
    `main` and verified against production. See "Free-text AI-categorized interests"
@@ -840,12 +1120,14 @@ is the intended behaviour for all customers.
    Xcode build (no macOS access this session) — build-check before shipping.
 4. ~~Merge PR #27, close #23–#26~~ — **already done** (verified via the GitHub API,
    see "Mobile app (iOS)" above) — nothing left to do here.
-5. **Build-verify this session's iOS changes on a real Mac** — the free-text-interests
-   UI and the session-expiry fix were both written without Xcode access; a clean
-   `xcodebuild ... build` plus a Simulator smoke test (type "Arsenal FC" into
-   Interests, confirm the real category comes back; force a 401 — e.g. log out
-   server-side via another client — and confirm the app routes to Login) hasn't
-   happened yet.
+5. ~~Build-verify the iOS changes on a real Mac~~ — **done** (2026-09-23). The app
+   builds clean, was run in the Simulator against production through signup →
+   onboarding → Home → playback, and was installed and used on the founder's own
+   iPhone. Doing this is what surfaced everything in "Session of 2026-09-23" above.
+   One testing note worth keeping: **the Simulator Keychain survives app deletion**,
+   so a reinstall silently signs you back into the old account and makes fixed bugs
+   look unfixed. Reset it between auth tests:
+   `xcrun simctl keychain <udid> reset`.
 6. **The AI Platform's shared semantic index** — the prompt registry is now built (see
    "AI Platform scope" above); the semantic index is the one remaining AI Platform
    piece, and it's the real blocker for novelty judgment, Search & AI's Q&A, and
@@ -874,14 +1156,23 @@ is the intended behaviour for all customers.
    definition shadows the first, so the header is `X-Internal-Dashboard-Key` —
    worth deleting the dead first copy. The seed content itself is still a
    placeholder, not team-curated (see "Shared inventory" above).
-7b. ~~Guided, voice-led onboarding in the iOS app~~ — **built** (2026-09-21), see
-   "Onboarding (iOS)" below. **Not yet seen on a device** — the mic/speech pieces
-   specifically need one (Simulator has no real microphone input).
-7c. **UI localization.** Every string in the iOS app is hardcoded English while
-   the founder and customers are Spanish-speaking (`Cliente.idioma` defaults to
-   `es`); the backend already localizes catalogue labels and suggestions.
+   **Still true after PR #31**: #31 fixes the day-zero *plumbing* (a new customer's
+   first episode now actually gets generated, and an honest `empty` day retries once
+   from shared inventory) — but it cannot invent content that isn't there. Somebody
+   has to run the command above against production, or a brand-new customer still
+   opens an app with nothing to listen to.
+7b. ~~Guided, voice-led onboarding in the iOS app~~ — **built** (2026-09-21) and
+   **now run end to end** (2026-09-23), in the Simulator and on a real iPhone; the
+   permanent-spinner dead-end it shipped with is fixed in PR #32. Still untested
+   anywhere: **the mic/dictation path**, since the Simulator has no microphone — see
+   item B above.
+7c. **UI localization.** Still the gap it was: the Login screen is Spanish as of
+   PR #34, and everything behind it is hardcoded English while the founder and
+   customers are Spanish-speaking (`Cliente.idioma` defaults to `es`). The backend
+   already localizes catalogue labels and suggestions, so this is app-side only.
 8. **Google/Apple OAuth for real** — the login screen's Google Sign-In button is
-   currently a visual stub. Needs the founder to create an OAuth client ID in
+   still a stub, though as of PR #34 it says so out loud when tapped ("Continuar con
+   Google estará disponible pronto") instead of failing silently. Needs the founder to create an OAuth client ID in
    Google Cloud Console, and separately enroll in the Apple Developer Program
    ($99/yr — also required for push notifications and real-device testing, not
    just Sign in with Apple). Neither can be done by an agent; both need the
@@ -894,6 +1185,32 @@ is the intended behaviour for all customers.
     highlight disappears when playback is paused mid-block (cosmetic only), and
     `Features/Home/PlayerListView.swift` is now dead code since the Player tab no
     longer exists (safe to delete).
+
+Done as of 2026-09-24: found why there is no audio — the ElevenLabs free-tier quota is
+spent, and has been since shortly after 2026-09-18. Confirmed by triggering a real
+generation against production, which also proved the research half works well ($0.35,
+39 seconds, real Spanish script with cited sources). Found three of our own defects
+alongside it: the job is never marked failed when voicing dies, the episode is published
+anyway with no audio, and the DB pool is exhausted by generation running inline in the
+request handler. Corrected this README's earlier claim that the 14-second hangs were
+Railway sleeping — they are pool starvation. Measured the real per-episode cost and wrote
+down the cost model ($144/month per daily 10-minute listener; research is 73% of it).
+Split research from writing (#36) so findings can be cached and shared across customers
+without sharing episodes. Full detail in "Session of 2026-09-23" above.
+
+Done as of 2026-09-23: the onboarding flow was run end to end for the first time —
+Simulator and a real iPhone — which is what turned up the permanent-spinner dead-end
+(#32), the `confirm()` endpoint promising an episode nothing was generating (#31), the
+~14s cold start, the sign-out trap, and a suggested interest the backend itself always
+rejects. The forced-dark-mode conflict was resolved into a per-device Appearance
+setting rather than either side winning. Brand identity landed (#33) and went into the
+app (#34): real app icon, Spanish branded Login, and a muted cover palette replacing
+the saturated one. Full write-up in "Session of 2026-09-23" above.
+
+Open pull requests as of this writing: **#31** (backend first-run fixes), **#32**
+(confirm dead-end), **#33** (brand files), **#34** (brand in app), **#35** (this
+README), **#36** (research/writing split). **#12** is an older Login composition pass
+and is superseded by #34 — close it rather than merging.
 
 Done as of 2026-09-21: guided, voice-led Onboarding built for iOS — the app had no
 onboarding at all before this (signup dropped straight into the tab bar), which was
