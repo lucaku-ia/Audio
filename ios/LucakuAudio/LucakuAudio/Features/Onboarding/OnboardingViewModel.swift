@@ -18,6 +18,14 @@ enum OnboardingStep: String {
     case done
 }
 
+/// A topic followed during this onboarding session, shown in the chat's
+/// "What I understood" card with its category.
+struct AddedTopic: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let category: String
+}
+
 /// Drives the whole Onboarding flow (Features/Onboarding/OnboardingView.swift)
 /// against the real backend state machine (`backend/app/api/routes/
 /// onboarding.py`) — resumable server-side per the PRD, so relaunching mid-flow
@@ -40,6 +48,8 @@ final class OnboardingViewModel: ObservableObject {
     @Published private(set) var loadState: LoadState = .idle
     @Published private(set) var step: OnboardingStep = .consent
     @Published private(set) var idioma: String = "es"
+    /// The customer's full name from `/auth/me`; the chat greets by first name.
+    @Published private(set) var nombre: String = ""
 
     // Interests
     @Published private(set) var interestOptions: [InterestOption] = []
@@ -49,7 +59,7 @@ final class OnboardingViewModel: ObservableObject {
     @Published private(set) var activeRequestCount = 0
     /// AI-derived topics for requests added so far this session — shown as a
     /// running "what you've added" list.
-    @Published private(set) var addedTopics: [String] = []
+    @Published private(set) var addedTopics: [AddedTopic] = []
     @Published private(set) var suggestionsByInterest: [String: [String]] = [:]
     @Published private(set) var loadingSuggestionsFor: Set<String> = []
     @Published var freeText: String = ""
@@ -102,6 +112,7 @@ final class OnboardingViewModel: ObservableObject {
             interestOptions = try await optionsResult
 
             idioma = me.idioma
+            nombre = me.nombre
             selectedInterests = Set(state.selectedInterests)
             activeRequestCount = state.activeRequestCount
             notificationsEnabled = state.notificationsEnabled ?? false
@@ -182,7 +193,7 @@ final class OnboardingViewModel: ObservableObject {
     /// distinguish them. Returns true on success so the caller can clear its
     /// input field only when the save actually happened.
     @discardableResult
-    func addRequest(text: String, token: String) async -> Bool {
+    func addRequest(text: String, label: String? = nil, category: String? = nil, token: String) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 5, !isSubmittingRequest else { return false }
         isSubmittingRequest = true
@@ -193,11 +204,31 @@ final class OnboardingViewModel: ObservableObject {
                 rawText: trimmed, kind: "standing", createdFrom: "onboarding", token: token
             )
             activeRequestCount += 1
-            addedTopics.append(request.structured.topic)
+            let shown = (label ?? request.structured.topic).trimmingCharacters(in: .whitespacesAndNewlines)
+            let topicLabel = shown.isEmpty ? trimmed : shown
+            addedTopics.append(AddedTopic(
+                id: request.id,
+                label: topicLabel,
+                category: category ?? OnboardingCategories.guess(for: topicLabel)
+            ))
             return true
         } catch {
             errorMessage = error.localizedDescription
             return false
+        }
+    }
+
+    /// Unfollows a topic added during this session (the chat's X) by
+    /// archiving its standing request.
+    func removeTopic(id: String, token: String) async {
+        do {
+            try await APIClient.shared.archiveRequest(id: id, token: token)
+            if addedTopics.contains(where: { $0.id == id }) {
+                addedTopics.removeAll { $0.id == id }
+                activeRequestCount = max(0, activeRequestCount - 1)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
