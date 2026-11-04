@@ -162,6 +162,12 @@ public enum LucakuColor {
         dark: rgb(0x63, 0x63, 0x66)
     )
 
+    /// glow — login top-centre radial glow; rgba(14,116,144,.32) dark / rgba(30,100,126,.16) light
+    public static let glow = dynamic(
+        light: rgb(30, 100, 126, 0.16),
+        dark: rgb(14, 116, 144, 0.32)
+    )
+
     /// ico — icon glyph colour (white-on-gray in dark, never light blue on black)
     public static let icon = dynamic(
         light: rgb(30, 100, 126),
