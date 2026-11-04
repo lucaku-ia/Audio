@@ -1,24 +1,11 @@
 import SwiftUI
 
-/// Login / sign up. Signing in stores the token and the rest of the app takes
-/// over; `ContentView` routes to onboarding or the tab bar from there.
+/// Sign in / Create account (screens spec 1.1–1.5).
 ///
-/// The layout follows the brand showcase (`design/brand/brand_showcase.html`):
-/// wordmark, a promise line, a short preview of what a morning actually sounds
-/// like, then the form. Two deliberate choices carried over from that design,
-/// both answering earlier founder feedback:
-///
-/// - **One mode switch, at the bottom.** An earlier version had a segmented
-///   control at the top *and* a submit button repeating the same word, which
-///   read as two competing controls. There is now a single text link under the
-///   actions, and sign up is the same screen with a Name row added.
-/// - **The screen shows the product.** The app was described as not feeling
-///   "live". The preview card speaks a sample line with the words lighting up
-///   as they're read, which is the one thing this product actually does.
-///
-/// Copy is Spanish: `Cliente.idioma` defaults to `es` and the customer base is
-/// Spanish-speaking. The rest of the app is still hardcoded English — that's a
-/// known gap, tracked in the README's next-steps as UI localization.
+/// One screen, two modes behind a segmented control. Signing in stores the
+/// token and `ContentView` routes to onboarding or the tab bar from there.
+/// Google and Apple are visual only until OAuth client IDs exist; "Forgot
+/// password?" has no backend endpoint yet, so it confirms locally.
 struct LoginView: View {
     @EnvironmentObject private var session: SessionStore
 
@@ -26,245 +13,296 @@ struct LoginView: View {
     @State private var email = ""
     @State private var password = ""
     @State private var nombre = ""
+    @State private var showPassword = false
     @State private var isLoading = false
+    @State private var credentialsError = false
     @State private var errorMessage: String?
-    @State private var spokenWordCount = 0
+    @State private var notice: String?
 
     @FocusState private var focusedField: Field?
 
-    private enum Field { case email, password, name }
+    private enum Field { case name, email, password }
 
-    enum Mode: String {
-        case login = "Entrar"
-        case signup = "Crear cuenta"
+    enum Mode: String, CaseIterable {
+        case login = "Sign in"
+        case signup = "Create account"
     }
 
-    /// The sample line in the preview card. Split on spaces so each word can
-    /// light up in turn — the same "read along" idea the Player uses for real
-    /// transcripts.
-    private static let sampleWords = "Buenos días. Lo más importante sobre el café hoy, y por qué te afecta."
-        .split(separator: " ").map(String.init)
+    private var canSubmit: Bool {
+        !email.isEmpty && !password.isEmpty && (mode == .login || !nombre.isEmpty) && !isLoading
+    }
 
     var body: some View {
         ScrollView {
+            StatusBarFadeAnchor()
             VStack(alignment: .leading, spacing: 0) {
-                Image("Wordmark")
-                    .renderingMode(.template)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 104)
-                    .foregroundStyle(LucakuColor.textPrimary)
+                Wordmark()
                     .padding(.top, LucakuSpacing.sp12)
 
-                Text("Lo que quieres saber, en punto.")
-                    .font(LucakuTypography.title1.weight(.semibold))
+                Text("Your news, told your way.")
+                    .font(.system(size: 30, weight: .heavy))
+                    .tracking(-0.5)
                     .foregroundStyle(LucakuColor.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, LucakuSpacing.sp6)
+                    .padding(.top, LucakuSpacing.sp5)
 
-                Text("Dinos qué te interesa. Cada mañana lo investigamos y te lo leemos, a la hora que elijas.")
-                    .font(LucakuTypography.body)
-                    .foregroundStyle(LucakuColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, LucakuSpacing.sp3)
+                promisesCard
+                    .padding(.top, LucakuSpacing.sp5)
 
-                previewCard
-                    .padding(.top, LucakuSpacing.sp6)
+                Picker("Mode", selection: $mode) {
+                    ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.top, LucakuSpacing.sp5)
+                .onChange(of: mode) { _, _ in
+                    credentialsError = false
+                    errorMessage = nil
+                    notice = nil
+                }
 
                 fields
-                    .padding(.top, LucakuSpacing.sp6)
+                    .padding(.top, LucakuSpacing.sp4)
 
-                if let errorMessage {
-                    Text(errorMessage)
+                if let message = errorMessage {
+                    Text(message)
                         .font(LucakuTypography.footnote)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(LucakuColor.destructive)
+                        .padding(.top, LucakuSpacing.sp3)
+                } else if let notice {
+                    Text(notice)
+                        .font(LucakuTypography.footnote)
+                        .foregroundStyle(LucakuColor.textSecondary)
                         .padding(.top, LucakuSpacing.sp3)
                 }
 
+                if mode == .login {
+                    Button("Forgot password?") { forgotPassword() }
+                        .font(LucakuTypography.subhead)
+                        .foregroundStyle(LucakuColor.textSecondary)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .trailing)
+                }
+
                 primaryButton
-                    .padding(.top, LucakuSpacing.sp4)
+                    .padding(.top, mode == .login ? LucakuSpacing.sp1 : LucakuSpacing.sp4)
 
-                googleButton
-                    .padding(.top, LucakuSpacing.sp2)
+                orDivider
+                    .padding(.vertical, LucakuSpacing.sp4)
 
-                switchLink
+                VStack(spacing: LucakuSpacing.sp2) {
+                    providerButton(title: "Continue with Google", message: "Sign in with Google is coming soon") {
+                        Image("GoogleGLogo").resizable().renderingMode(.original).scaledToFit()
+                            .frame(width: 18, height: 18)
+                    }
+                    providerButton(title: "Continue with Apple", message: "Sign in with Apple is coming soon") {
+                        Image(systemName: "apple.logo").font(.system(size: 18))
+                            .foregroundStyle(LucakuColor.textPrimary)
+                    }
+                }
+
+                Text(mode == .signup
+                     ? "By creating an account you agree to the Terms and Privacy Policy. Your topics are never sold or shared."
+                     : "New here? Switch to Create account above.")
+                    .font(LucakuTypography.footnote)
+                    .foregroundStyle(LucakuColor.textTertiary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
                     .padding(.top, LucakuSpacing.sp4)
                     .padding(.bottom, LucakuSpacing.sp12)
             }
             .padding(.horizontal, LucakuSpacing.sp6)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(alignment: .top) {
+            RadialGradient(colors: [LucakuColor.accentTint, .clear],
+                           center: .top, startRadius: 0, endRadius: 320)
+                .frame(height: 320)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+        }
         .background(LucakuColor.bg.ignoresSafeArea())
         .scrollDismissesKeyboard(.interactively)
-        .task { await animateSampleLine() }
+        .statusBarFade()
     }
 
-    // MARK: - "Así suena tu mañana"
+    // MARK: - Promises card
 
-    /// Answers the "it doesn't feel live" note: rather than describing the
-    /// product, the login screen performs a few seconds of it.
-    private var previewCard: some View {
-        VStack(alignment: .leading, spacing: LucakuSpacing.sp3) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(LucakuColor.accent)
-                    .frame(width: 10, height: 10)
-                    .scaleEffect(spokenWordCount > 0 && spokenWordCount < Self.sampleWords.count ? 1.0 : 0.72)
-                    .animation(.easeInOut(duration: 0.45).repeatForever(autoreverses: true), value: spokenWordCount)
-                Text("Así suena tu mañana · 7:00")
-                    .font(LucakuTypography.footnote)
-                    .foregroundStyle(LucakuColor.textSecondary)
-            }
-
-            Text(spokenAttributedLine)
-                .font(LucakuTypography.body)
-                .fixedSize(horizontal: false, vertical: true)
+    private var promisesCard: some View {
+        VStack(alignment: .leading, spacing: LucakuSpacing.sp4) {
+            promiseRow(icon: "heart.text.square",
+                       title: "Only the things you follow",
+                       detail: "World Cup · Champions League · Amazon stock · AI startups")
+            promiseRow(icon: "slider.horizontal.3",
+                       title: "Short or in depth, you decide",
+                       detail: "Plain or with the numbers, calm or upbeat. It learns from what you rate.")
+            promiseRow(icon: "sunrise",
+                       title: "Ready every day, when you want it",
+                       detail: "Morning or evening, an audio episode made for you, plus the stories to read.")
         }
         .padding(LucakuSpacing.sp4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: LucakuRadius.card, style: .continuous)
-                .fill(LucakuColor.surface)
-        )
+        .background(RoundedRectangle(cornerRadius: LucakuRadius.card, style: .continuous).fill(LucakuColor.surface))
     }
 
-    /// Words already "read" take primary colour; the rest stay tertiary.
-    private var spokenAttributedLine: AttributedString {
-        var line = AttributedString()
-        for (index, word) in Self.sampleWords.enumerated() {
-            var piece = AttributedString(index == 0 ? word : " " + word)
-            piece.foregroundColor = index < spokenWordCount ? LucakuColor.textPrimary : LucakuColor.textTertiary
-            line.append(piece)
-        }
-        return line
-    }
-
-    private func animateSampleLine() async {
-        // Runs once on appear, then holds. Deliberately not a loop: a
-        // permanently animating login screen is noise, not life.
-        for index in 0...Self.sampleWords.count {
-            try? await Task.sleep(for: .milliseconds(index == 0 ? 600 : 130))
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.18)) { spokenWordCount = index }
+    private func promiseRow(icon: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: LucakuSpacing.sp3) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(LucakuColor.icon)
+                .frame(width: 34, height: 34)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(LucakuColor.iconTile))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(LucakuTypography.subhead.weight(.semibold))
+                    .foregroundStyle(LucakuColor.textPrimary)
+                Text(detail)
+                    .font(LucakuTypography.footnote)
+                    .foregroundStyle(LucakuColor.textSecondary)
+                    .lineLimit(2)
+            }
         }
     }
 
-    // MARK: - Form
+    // MARK: - Fields
 
     private var fields: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: LucakuSpacing.sp2) {
             if mode == .signup {
-                fieldRow(label: "Nombre") {
-                    TextField("Cómo te llamamos", text: $nombre)
+                field(icon: "person", invalid: false) {
+                    TextField("Your name", text: $nombre)
                         .textContentType(.name)
                         .focused($focusedField, equals: .name)
                 }
-                Divider().overlay(LucakuColor.borderSoft)
             }
-            fieldRow(label: "Correo") {
-                TextField("tu@correo.com", text: $email)
+            field(icon: "envelope", invalid: credentialsError) {
+                TextField("Email", text: $email)
                     .keyboardType(.emailAddress)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .textContentType(.username)
                     .focused($focusedField, equals: .email)
             }
-            Divider().overlay(LucakuColor.borderSoft)
-            fieldRow(label: "Contraseña") {
-                SecureField("Obligatoria", text: $password)
+            field(icon: "lock", invalid: credentialsError) {
+                HStack {
+                    Group {
+                        if showPassword {
+                            TextField(passwordPlaceholder, text: $password)
+                        } else {
+                            SecureField(passwordPlaceholder, text: $password)
+                        }
+                    }
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                     .textContentType(mode == .signup ? .newPassword : .password)
                     .focused($focusedField, equals: .password)
+                    Button { showPassword.toggle() } label: {
+                        Image(systemName: showPassword ? "eye.slash" : "eye")
+                            .foregroundStyle(LucakuColor.textTertiary)
+                    }
+                    .accessibilityLabel(showPassword ? "Hide password" : "Show password")
+                }
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: LucakuRadius.card, style: .continuous)
-                .fill(LucakuColor.surface)
-        )
     }
 
-    private func fieldRow<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {
+    private var passwordPlaceholder: String {
+        mode == .signup ? "Password (8+ characters)" : "Password"
+    }
+
+    private func field<Content: View>(icon: String, invalid: Bool, @ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: LucakuSpacing.sp3) {
-            Text(label)
-                .font(LucakuTypography.body)
-                .foregroundStyle(LucakuColor.textSecondary)
-                .frame(width: 96, alignment: .leading)
+            Image(systemName: icon)
+                .foregroundStyle(LucakuColor.textTertiary)
+                .frame(width: 20)
             content()
                 .font(LucakuTypography.body)
                 .foregroundStyle(LucakuColor.textPrimary)
         }
         .padding(.horizontal, LucakuSpacing.sp4)
         .frame(minHeight: 52)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(LucakuColor.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(invalid ? LucakuColor.destructive : .clear, lineWidth: 1.5)
+                )
+        )
     }
 
+    // MARK: - Actions
+
+    /// Primary action: solid text colour on background (white on black in
+    /// dark, black on white in light) per the brand rule.
     private var primaryButton: some View {
         Button {
             Task { await submit() }
         } label: {
             Group {
                 if isLoading {
-                    ProgressView().tint(LucakuColor.accentOn)
+                    ProgressView().tint(LucakuColor.bg)
                 } else {
-                    Text(mode.rawValue)
-                        .font(LucakuTypography.body.weight(.semibold))
+                    Text(mode.rawValue).font(LucakuTypography.headline)
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 52)
-            .foregroundStyle(LucakuColor.accentOn)
-            .background(Capsule().fill(LucakuColor.accent))
+            .frame(maxWidth: .infinity, minHeight: 54)
+            .foregroundStyle(LucakuColor.bg)
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(LucakuColor.textPrimary))
         }
         .buttonStyle(.plain)
-        .disabled(isLoading || email.isEmpty || password.isEmpty)
-        .opacity(isLoading || email.isEmpty || password.isEmpty ? 0.5 : 1)
+        .disabled(!canSubmit)
+        .opacity(canSubmit ? 1 : 0.35)
     }
 
-    /// Visual only for now — no OAuth client ID exists yet, so this states that
-    /// plainly rather than failing silently. See the README's blockers.
-    private var googleButton: some View {
+    private var orDivider: some View {
+        HStack(spacing: LucakuSpacing.sp3) {
+            Rectangle().fill(LucakuColor.borderSoft).frame(height: 1)
+            Text("or").font(LucakuTypography.footnote).foregroundStyle(LucakuColor.textTertiary)
+            Rectangle().fill(LucakuColor.borderSoft).frame(height: 1)
+        }
+    }
+
+    private func providerButton<Icon: View>(title: String, message: String, @ViewBuilder icon: () -> Icon) -> some View {
         Button {
-            errorMessage = "Continuar con Google estará disponible pronto."
+            credentialsError = false
+            errorMessage = nil
+            notice = message
         } label: {
             HStack(spacing: 10) {
-                Image("GoogleGLogo")
-                    .resizable()
-                    .renderingMode(.original)
-                    .scaledToFit()
-                    .frame(width: 18, height: 18)
-                Text("Continuar con Google")
+                icon()
+                Text(title)
                     .font(LucakuTypography.body.weight(.medium))
                     .foregroundStyle(LucakuColor.textPrimary)
             }
-            .frame(maxWidth: .infinity, minHeight: 52)
+            .frame(maxWidth: .infinity, minHeight: 54)
             .background(
-                Capsule()
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(LucakuColor.surface)
-                    .overlay(Capsule().strokeBorder(LucakuColor.borderSoft, lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(LucakuColor.borderSoft, lineWidth: 1))
             )
         }
         .buttonStyle(.plain)
     }
 
-    private var switchLink: some View {
-        HStack(spacing: 4) {
-            Text(mode == .login ? "¿Primera vez?" : "¿Ya tienes cuenta?")
-                .foregroundStyle(LucakuColor.textSecondary)
-            Button(mode == .login ? "Crea tu cuenta" : "Entrar") {
-                withAnimation(LucakuMotion.house) {
-                    mode = mode == .login ? .signup : .login
-                    errorMessage = nil
-                }
-            }
-            .foregroundStyle(LucakuColor.accent)
-            .fontWeight(.semibold)
+    private func forgotPassword() {
+        credentialsError = false
+        if email.trimmingCharacters(in: .whitespaces).isEmpty {
+            errorMessage = nil
+            notice = "Enter your email first, then tap Forgot password?"
+            focusedField = .email
+        } else {
+            errorMessage = nil
+            notice = "Reset link sent to \(email)"
         }
-        .font(LucakuTypography.subhead)
-        .frame(maxWidth: .infinity, minHeight: 44)
     }
 
-    // MARK: - Auth (unchanged)
+    // MARK: - Auth
 
     private func submit() async {
         isLoading = true
         errorMessage = nil
+        notice = nil
+        credentialsError = false
         defer { isLoading = false }
 
         do {
@@ -273,18 +311,44 @@ struct LoginView: View {
             case .login:
                 token = try await APIClient.shared.login(email: email, password: password)
             case .signup:
-                // Device locale, not hardcoded — Cliente.idioma is captured
-                // once here and inherited everywhere else (onboarding
-                // labels/suggestions, the Generator's script language).
+                // Device locale, not hardcoded: Cliente.idioma is captured
+                // once here and inherited by onboarding and the generator.
                 let idioma = Locale.current.language.languageCode?.identifier == "es" ? "es" : "en"
                 token = try await APIClient.shared.signup(
-                    SignupRequest(email: email, password: password, nombre: nombre.isEmpty ? email : nombre, idioma: idioma)
+                    SignupRequest(email: email, password: password, nombre: nombre, idioma: idioma)
                 )
             }
             session.store(token: token.accessToken, onboardingComplete: token.onboardingComplete)
         } catch {
-            errorMessage = error.localizedDescription
+            if mode == .login, Self.isCredentialsMismatch(error) {
+                credentialsError = true
+                errorMessage = "That email or password doesn't match. Try again."
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
+    }
+
+    private static func isCredentialsMismatch(_ error: Error) -> Bool {
+        guard let apiError = error as? APIError else { return false }
+        switch apiError {
+        case .notAuthenticated:
+            return true
+        case .server(let status, _):
+            return status == 400 || status == 401 || status == 403 || status == 422
+        default:
+            return false
+        }
+    }
+}
+
+/// `lucaku.` with the dot in the accent colour (the only decorative use of it).
+private struct Wordmark: View {
+    var body: some View {
+        (Text("lucaku").foregroundStyle(LucakuColor.textPrimary)
+         + Text(".").foregroundStyle(LucakuColor.accent))
+            .font(.system(size: 28, weight: .heavy))
+            .tracking(-0.5)
     }
 }
 
