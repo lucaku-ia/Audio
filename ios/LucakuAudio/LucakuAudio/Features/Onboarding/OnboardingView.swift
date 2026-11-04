@@ -714,9 +714,23 @@ private struct ConfirmStepView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 200)
             } else {
-                Color.clear.frame(height: 1)
-                    .task { await attemptConfirm() }
+                ProgressView().tint(LucakuColor.accent).frame(maxWidth: .infinity, minHeight: 200)
             }
+        }
+        // The task lives on the whole step, not on a branch of the if/else.
+        //
+        // It used to sit on a `Color.clear` inside the not-yet-confirming
+        // branch. `confirm()` sets `isConfirming = true` synchronously, which
+        // swapped that branch out for the spinner — destroying the view that
+        // owned the task, which cancelled the network call mid-flight. The
+        // `defer` then cleared `isConfirming`, the branch came back, the task
+        // fired again, and it looped forever. The error alert never showed
+        // either, because each new attempt clears `errorMessage` before the
+        // alert can render. Net effect: onboarding dead-ended on a permanent
+        // spinner right after the customer finished setting everything up.
+        .task {
+            guard viewModel.confirmationMessage == nil, !viewModel.isConfirming else { return }
+            await attemptConfirm()
         }
     }
 

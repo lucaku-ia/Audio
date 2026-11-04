@@ -69,14 +69,21 @@ struct MiniPlayerView: View {
             .padding(.horizontal, 8)
             .padding(.bottom, 4)
         }
+        // Solid surface with a hairline, not a tinted wash. It used to lay the
+        // cover's colour over the surface at 55% — which worked against the
+        // old saturated cover palette on a dark-only app, but now reads as
+        // muddy grey-green on a light background. The cover art itself is
+        // right there in the bar, so the bar doesn't need to repeat its colour.
         .background(
-            ZStack {
-                LucakuColor.surface
-                LucakuCover.tint(for: viewModel.coverSeed).opacity(0.55)
-            }
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(LucakuColor.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(LucakuColor.borderSoft, lineWidth: 1)
+                )
         )
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 6)
+        .shadow(color: .black.opacity(0.14), radius: 12, x: 0, y: 4)
         .padding(.horizontal, LucakuSpacing.sp2)
     }
 

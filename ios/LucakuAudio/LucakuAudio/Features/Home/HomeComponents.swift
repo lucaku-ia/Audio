@@ -76,19 +76,29 @@ enum HomeFormat {
 /// gets the same gradient and glyph, so a topic looks the same everywhere it
 /// appears — its tile, its shelf card, the mini player.
 enum LucakuCover {
-    /// (dark corner, bright corner) pairs. Saturated on purpose: the app is
-    /// dark-first, and these are the only strong colour on screen.
+    /// (dark corner, bright corner) pairs, all drawn from one muted family
+    /// around the brand accent (#1E647E).
+    ///
+    /// This replaced a ten-hue saturated set (red/orange/amber/green/teal/
+    /// blue/indigo/purple/pink/slate) that was justified as "the app is
+    /// dark-first, and these are the only strong colour on screen". The app
+    /// follows the device's light/dark setting now, and the founder's
+    /// reaction to landing on the purple was unambiguous. It also contradicted
+    /// the approved design spec on two counts: the accent is meant to be the
+    /// only strong colour, and generated art is meant to read "muted,
+    /// desaturated... ambient, not celebratory".
+    ///
+    /// Covers still differ per topic — enough to tell two episodes apart at a
+    /// glance — but they now read as one product rather than a paint box.
     private static let palette: [(UInt32, UInt32)] = [
-        (0x7F1D1D, 0xEF4444), // red
-        (0x7C2D12, 0xF97316), // orange
-        (0x713F12, 0xEAB308), // amber
-        (0x14532D, 0x22C55E), // green
-        (0x134E4A, 0x14B8A6), // teal
-        (0x1E3A8A, 0x3B82F6), // blue
-        (0x312E81, 0x818CF8), // indigo
-        (0x581C87, 0xC084FC), // purple
-        (0x831843, 0xEC4899), // pink
-        (0x1F2937, 0x6B7280), // slate
+        (0x0E3B4C, 0x1E647E), // brand teal
+        (0x123E45, 0x2C7A85), // deep cyan
+        (0x14352F, 0x2E6B5C), // pine
+        (0x1E2F3D, 0x3E6076), // slate blue
+        (0x25333B, 0x4C6A78), // blue grey
+        (0x1F2A3C, 0x415A7A), // deep navy
+        (0x2B2A26, 0x6B6558), // stone
+        (0x1F2124, 0x4A4F55), // graphite
     ]
 
     private static func color(_ hex: UInt32) -> Color {

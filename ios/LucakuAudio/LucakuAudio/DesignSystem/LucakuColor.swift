@@ -148,6 +148,58 @@ public enum LucakuColor {
         dark: rgb(0x1F, 0x33, 0x39)
     )
 
+    // MARK: - Spec v2 tokens (screens spec, section 0)
+
+    /// fill — segmented track, chips
+    public static let fill = dynamic(
+        light: rgb(118, 118, 128, 0.12),
+        dark: rgb(118, 118, 128, 0.24)
+    )
+
+    /// seg — the *selected* segment; must stay visible against `fill`
+    public static let segSelected = dynamic(
+        light: rgb(255, 255, 255),
+        dark: rgb(0x63, 0x63, 0x66)
+    )
+
+    /// glow — login top-centre radial glow; rgba(14,116,144,.32) dark / rgba(30,100,126,.16) light
+    public static let glow = dynamic(
+        light: rgb(30, 100, 126, 0.16),
+        dark: rgb(14, 116, 144, 0.32)
+    )
+
+    /// ico — icon glyph colour (white-on-gray in dark, never light blue on black)
+    public static let icon = dynamic(
+        light: rgb(30, 100, 126),
+        dark: rgb(242, 242, 242)
+    )
+
+    /// icobg — icon tile background
+    public static let iconTile = dynamic(
+        light: rgb(30, 100, 126, 0.09),
+        dark: rgb(118, 118, 128, 0.24)
+    )
+
+    /// swon — switch on
+    public static let switchOn = dynamic(
+        light: rgb(30, 100, 126),
+        dark: rgb(0x3E, 0x8E, 0xA8)
+    )
+
+    /// red — destructive actions and errors
+    public static let destructive = dynamic(
+        light: rgb(255, 59, 48),
+        dark: rgb(255, 69, 58)
+    )
+
+    /// Episode art gradient: #1E3A8A → #0E7490 at 150°.
+    public static let episodeArt = LinearGradient(
+        colors: [Color(red: 0x1E / 255, green: 0x3A / 255, blue: 0x8A / 255),
+                 Color(red: 0x0E / 255, green: 0x74 / 255, blue: 0x90 / 255)],
+        startPoint: UnitPoint(x: 0.25, y: 0.0),
+        endPoint: UnitPoint(x: 0.75, y: 1.0)
+    )
+
     /// --page-bg — #E4E4E9 light / #0b0b0d dark
     /// (Backdrop behind the phone-frame mockup itself; the outermost page background.)
     public static let pageBg = dynamic(
