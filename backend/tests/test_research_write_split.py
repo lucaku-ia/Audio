@@ -10,6 +10,7 @@ the thing that fails instead.
 """
 import json
 import types
+import uuid
 
 import pytest
 
@@ -210,3 +211,60 @@ def test_unparseable_research_is_an_empty_day_not_a_crash():
     embedded = _parse_findings(f"here you go: {_FINDINGS_PAYLOAD} hope that helps")
     assert embedded.no_news is False
     assert embedded.findings[0].headline.startswith("Anthropic")
+
+
+# ---------------------------------------------------------------------------
+# Continuity (told-log) — personal memory belongs to WRITING only.
+# ---------------------------------------------------------------------------
+
+_BLOCK_PAYLOAD = json.dumps({
+    "summary": "A summary.", "script": "A spoken segment.", "sources": [], "no_news": False,
+})
+
+@pytest.mark.asyncio
+async def test_previously_told_reaches_the_writing_prompt(captured):
+    calls, fake_create = captured
+    fake_create.payload = _BLOCK_PAYLOAD
+
+    await write_block(
+        None, findings=Findings(findings=[], sources=[], no_news=False),
+        raw_text="x", topic="t", depth="standard", style="news", language="en",
+        customer_id=uuid.uuid4(), request_id=uuid.uuid4(),
+        previously_told=["Yesterday the central bank held rates"],
+    )
+
+    sent = str(calls[-1]["messages"])
+    assert "Yesterday the central bank held rates" in sent
+    assert "Already told this listener" in sent
+
+
+@pytest.mark.asyncio
+async def test_no_history_means_no_history_section(captured):
+    """Absent or empty must read as 'first time', not as an empty heading the
+    model has to interpret."""
+    calls, fake_create = captured
+    fake_create.payload = _BLOCK_PAYLOAD
+
+    await write_block(
+        None, findings=Findings(findings=[], sources=[], no_news=False),
+        raw_text="x", topic="t", depth="standard", style="news", language="en",
+        customer_id=uuid.uuid4(), request_id=uuid.uuid4(), previously_told=[],
+    )
+
+    assert "Already told this listener" not in str(calls[-1]["messages"])
+
+
+@pytest.mark.asyncio
+async def test_research_can_never_be_given_a_listeners_history(captured):
+    """The load-bearing invariant of the whole split.
+
+    Findings are cached and served to other customers. If one listener's
+    history could shape them, every later customer would receive research
+    coloured by a stranger's past episodes — and the cache would be unsafe.
+    research_topic must not even accept the argument."""
+    import inspect
+
+    assert "previously_told" not in inspect.signature(research_topic).parameters, (
+        "research_topic accepts a per-listener history; shared findings would "
+        "stop being shareable"
+    )

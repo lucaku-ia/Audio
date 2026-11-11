@@ -215,7 +215,7 @@ from app.models.episode import Block, Episode, EpisodePath
 from app.models.generation_job import GenerationJob, InventoryItem, JobStatus
 from app.models.profile import Profile
 from app.models.request import CreatedFrom, Request, RequestKind, RequestStatus, RequestVersion, VersionStatus
-from app.services import ai_platform
+from app.services import ai_platform, told_log
 from app.services.events import emitir
 
 _WORDS_PER_MINUTE = 150  # rough narration rate, used only to estimate duration/offsets pre-TTS
@@ -808,6 +808,14 @@ async def run_generation(
             if item["findings"].no_news:
                 continue
             req, structured = item["request"], item["structured"]
+            # Continuity: what this listener already heard on THIS request.
+            # Read before the episode row for today exists, so there is
+            # nothing of today's to exclude yet. Only published episodes
+            # count — see told_log's module docstring for why that is a
+            # correctness property and not a detail.
+            previously_told = await told_log.recent_for_request(
+                db, customer_id=cliente.id, request_id=req.id,
+            )
             block_result = await ai_platform.write_block(
                 db,
                 findings=item["findings"],
@@ -818,6 +826,7 @@ async def run_generation(
                 language=language,
                 customer_id=cliente.id,
                 request_id=req.id,
+                previously_told=previously_told,
             )
             blocks.append({"request": req, "result": block_result})
             writing_cost += block_result.cost
