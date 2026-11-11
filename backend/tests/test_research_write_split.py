@@ -51,9 +51,22 @@ def captured(monkeypatch):
     async def fake_attach_licenses(db, sources):
         return [{**s, "license": None} for s in sources]
 
+    # These are prompt tests: they pass db=None and assert on what was sent
+    # to the model, nothing else. The findings store is a real DB round-trip,
+    # so it's stubbed out here rather than given a session — and stubbed
+    # rather than bypassed by a production flag, because "skip the cache"
+    # must not become an argument real callers can pass.
+    async def fake_cache_lookup(db, **kwargs):
+        return None
+
+    async def fake_cache_store(db, **kwargs):
+        return None
+
     monkeypatch.setattr(ai_platform, "_log_call", fake_log_call)
     monkeypatch.setattr(ai_platform, "get_active_prompt", fake_get_active_prompt)
     monkeypatch.setattr(ai_platform, "attach_licenses", fake_attach_licenses)
+    monkeypatch.setattr(ai_platform.findings_store, "lookup", fake_cache_lookup)
+    monkeypatch.setattr(ai_platform.findings_store, "store", fake_cache_store)
     return calls, fake_create
 
 
