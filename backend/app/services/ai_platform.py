@@ -55,6 +55,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.instrumentation import AICall
+from app.services import findings_store
 from app.services.events import emitir
 from app.services.prompt_registry import get_active_prompt
 from app.services.source_catalogue import attach_licenses
@@ -427,6 +428,21 @@ async def research_topic(
             tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
         )
 
+    # Shared findings store — the cache the split was built for. Checked
+    # BEFORE the model call, so a hit costs nothing at all rather than being
+    # a cheaper call. See app/services/findings_store.py for the freshness
+    # rules and for why an empty result expires much sooner than a full one.
+    cached = await findings_store.lookup(db, topic=topic, scope=scope, geography=geography)
+    if cached is not None:
+        await findings_store.record_hit(db, cached)
+        await emitir(
+            db, "findings_cache_hit", customer_id=customer_id, source="ai_platform",
+            request_id=str(request_id), topic=topic, saved=cached.original_cost,
+        )
+        hit = Findings(**cached.payload)
+        hit.cost = 0.0  # the whole point: a hit is free, not merely cheaper
+        return hit
+
     findings, cost = await _run_with_escalation(
         db, purpose="research_topic", version=version, call=call, parse=_parse_findings,
         customer_id=customer_id,
@@ -434,6 +450,17 @@ async def research_topic(
     )
     findings.cost = cost
     findings.sources = await attach_licenses(db, findings.sources)
+
+    # Write through — but never cache a parse failure. That is a lost block,
+    # not a finding, and storing it would turn one malformed response into
+    # every later customer's malformed response for the rest of the window.
+    if not findings.parse_failed:
+        await findings_store.store(
+            db, topic=topic, scope=scope, geography=geography,
+            payload=findings.model_dump(exclude={"cost", "parse_failed"}),
+            no_news=findings.no_news, researched_from=raw_text, cost=cost,
+        )
+
     return findings
 
 
