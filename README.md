@@ -985,6 +985,20 @@ History is capped at three segments, and the prompt forbids recap: no
 re-explaining, no opening summary, and no padding to reach the word target —
 if today adds little, today is short.
 
+### Verified by actually booting it
+
+The whole stack was booted against an empty database and exercised, not just
+unit-tested:
+
+- `create_all` builds `findings_cache` with its unique constraint and both
+  indexes
+- the process-level UTC pin applies at import without breaking startup
+- `POST /api/auth/signup` → token → `GET /api/auth/me` → `GET /api/home`, all 200
+
+`/api/home` on a fresh account returns `shared_inventory: []` and
+`explore: []` — the empty-shelves problem is still exactly as described in
+next steps, and still waiting on `INTERNAL_DASHBOARD_KEY` in Railway.
+
 ## Suggested next steps
 
 1. ~~Finish the free-text-interests worktree~~ — **done**, rebuilt directly against
