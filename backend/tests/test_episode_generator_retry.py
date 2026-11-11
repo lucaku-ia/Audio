@@ -8,10 +8,10 @@ app/services/episode_generator.py's run_generation/_empty_job_can_retry
 docstrings for the mechanism.
 
 No ANTHROPIC_API_KEY is available in this worktree, so
-app.services.ai_platform.research_and_write_block (the only real AI call in
-this path) is monkeypatched everywhere below — never mocked at the HTTP/SDK
-level, just swapped for a fake coroutine that returns a scripted
-ai_platform.BlockResult. ElevenLabs voicing needs no mocking: it's already
+the AI calls in this path (ai_platform.research_topic and write_block) are
+monkeypatched everywhere below via tests.fakes.patch_ai_pipeline — never
+mocked at the HTTP/SDK level, just swapped for fake coroutines returning
+scripted Findings/BlockResult values. ElevenLabs voicing needs no mocking: it's already
 skipped since ELEVENLABS_API_KEY isn't set (see episode_generator.py's own
 "Built: voicing" scope note).
 
@@ -31,6 +31,7 @@ from app.models.profile import Profile
 from app.models.request import CreatedFrom, Request, RequestKind, RequestStatus
 from app.services import ai_platform
 from app.services.episode_generator import _MAX_EMPTY_RETRIES_PER_DAY, run_generation
+from tests.fakes import patch_ai_pipeline
 
 
 async def _make_customer_with_standing_request(db) -> Cliente:
@@ -71,10 +72,7 @@ async def test_empty_job_locked_out_before_the_fix_scenario(full_db_session, mon
     request, then a re-run — before the fix this returned the same stale
     empty job forever; after the fix it re-researches and can come back
     `ready` once there's something new to say."""
-    async def fake_empty(*a, **kw):
-        return _empty_result()
-
-    monkeypatch.setattr(ai_platform, "research_and_write_block", fake_empty)
+    patch_ai_pipeline(monkeypatch, no_news=True)
     cliente = await _make_customer_with_standing_request(full_db_session)
 
     job1 = await run_generation(full_db_session, cliente)
@@ -93,10 +91,7 @@ async def test_empty_job_locked_out_before_the_fix_scenario(full_db_session, mon
     # Now the customer adds a new standing request — the fix's trigger condition.
     await _add_standing_request(full_db_session, cliente, "Also tell me about interest rates")
 
-    async def fake_news(*a, **kw):
-        return _news_result()
-
-    monkeypatch.setattr(ai_platform, "research_and_write_block", fake_news)
+    patch_ai_pipeline(monkeypatch, no_news=False)
 
     job3 = await run_generation(full_db_session, cliente)
     assert job3.id == job1.id  # same row — (customer, fecha, path) is still unique
@@ -116,10 +111,7 @@ async def test_ready_job_is_never_retried_even_with_a_new_standing_request(full_
     """Narrow fix, per the task: only `empty` gets a second chance. A `ready`
     job must stay exactly as final as it always was — new requests just wait
     for the next day's/on_demand's own fresh job."""
-    async def fake_news(*a, **kw):
-        return _news_result()
-
-    monkeypatch.setattr(ai_platform, "research_and_write_block", fake_news)
+    patch_ai_pipeline(monkeypatch, no_news=False)
     cliente = await _make_customer_with_standing_request(full_db_session)
 
     job1 = await run_generation(full_db_session, cliente)
@@ -139,10 +131,7 @@ async def test_empty_retry_cap_is_enforced(full_db_session, monkeypatch):
     request added before every attempt, no more than
     _MAX_EMPTY_RETRIES_PER_DAY re-runs happen — the customer cannot turn an
     empty day into unbounded research spend."""
-    async def fake_empty(*a, **kw):
-        return _empty_result()
-
-    monkeypatch.setattr(ai_platform, "research_and_write_block", fake_empty)
+    patch_ai_pipeline(monkeypatch, no_news=True)
     cliente = await _make_customer_with_standing_request(full_db_session)
 
     job = await run_generation(full_db_session, cliente)
@@ -175,10 +164,7 @@ async def test_run_endpoint_exposes_run_started_distinction(full_db_session, mon
     """Response-shape half of Defect 2: POST /generation/run's JobOut must
     let the client tell 'returned existing job unchanged' apart from
     'started a new run' — see app/api/routes/generation.py's JobOut.run_started."""
-    async def fake_news(*a, **kw):
-        return _news_result()
-
-    monkeypatch.setattr(ai_platform, "research_and_write_block", fake_news)
+    patch_ai_pipeline(monkeypatch, no_news=False)
     cliente = await _make_customer_with_standing_request(full_db_session)
 
     first = await run_endpoint(cliente, full_db_session)
@@ -197,10 +183,7 @@ async def test_get_job_endpoint_leaves_run_started_null(full_db_session, monkeyp
     would misleadingly look like a real answer)."""
     from app.api.routes.generation import get_job
 
-    async def fake_news(*a, **kw):
-        return _news_result()
-
-    monkeypatch.setattr(ai_platform, "research_and_write_block", fake_news)
+    patch_ai_pipeline(monkeypatch, no_news=False)
     cliente = await _make_customer_with_standing_request(full_db_session)
     job = await run_generation(full_db_session, cliente)
 
