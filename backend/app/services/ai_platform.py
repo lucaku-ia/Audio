@@ -291,7 +291,7 @@ class BlockResult(BaseModel):
 
 
 RESEARCH_TOPIC_VERSION = "v1"
-WRITE_BLOCK_VERSION = "v1"
+WRITE_BLOCK_VERSION = "v2"  # v2 adds the "Already told this listener" continuity section
 
 _DEPTH_WORDS = {"brief": "about 50-70 words", "standard": "about 100-140 words", "deep": "about 180-240 words"}
 _STYLE_DESCRIPTIONS = {
@@ -316,6 +316,8 @@ WRITE_BLOCK_SYSTEM = """You write one spoken segment of a daily audio briefing f
 You have no web access and you do not need it. Work only from the findings given. Never add a fact that is not in them, and never soften or inflate what they say. If the findings are thin, the segment is short — that is correct.
 
 Write in {style_description}, in {language}, targeting {word_target}. It will be read aloud by a synthetic voice, so write for the ear: no headers, no bullet points, no markdown, no parenthetical asides, and spell out figures the way a person would say them.
+
+You may be given "Already told this listener": one-line summaries of the most recent segments this same person heard on this same topic, newest first. When it is present, write today's segment as the next instalment for someone who heard those. Say what has changed or happened since, and refer back only when it genuinely helps them follow the story. Do not re-explain what they already heard, do not open by summarizing it, and never pad the segment with recap to reach the word target — if today adds little, today is short. When that section is absent or empty, write as if this is the first time they have heard about it, with no implied history.
 
 Respond with ONLY a single JSON object (no other text, no markdown fences) with these fields:
 - "summary": one sentence, plain text, summarizing the segment (for internal indexing, not read aloud).
@@ -474,6 +476,7 @@ async def write_block(
     language: str,
     customer_id: uuid.UUID,
     request_id: uuid.UUID,
+    previously_told: list[str] | None = None,
 ) -> BlockResult:
     """
     write_block — turns already-gathered Findings into this listener's spoken
@@ -491,6 +494,12 @@ async def write_block(
     than taken from the model's own output, so a writer that hallucinates a
     url contributes nothing: it can only select from what research actually
     found, and the license labels attached at research time survive intact.
+
+    `previously_told` is what this listener already heard on this topic (see
+    app/services/told_log.py). It belongs HERE, in the per-listener half, and
+    must never move into research: the moment one customer's history shapes
+    the findings, those findings stop being shareable and the whole split
+    collapses. Findings are common; memory is personal.
     """
     depth = depth if depth in _DEPTH_WORDS else "standard"
     style = style if style in _STYLE_DESCRIPTIONS else "news"
@@ -514,6 +523,12 @@ async def write_block(
         f"What the person asked for, in their words: {raw_text}\n\n"
         f"Findings:\n{findings_json}"
     )
+    if previously_told:
+        # Newest first, matching told_log's own ordering, and labelled by
+        # recency rather than by date: the model needs to know what came last,
+        # not to recite calendar dates at the listener.
+        history = "\n".join(f"- {summary}" for summary in previously_told)
+        user_content += f"\n\nAlready told this listener (most recent first):\n{history}"
 
     def call(model: str):
         return _client.messages.create(
