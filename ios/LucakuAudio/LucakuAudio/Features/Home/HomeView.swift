@@ -24,6 +24,10 @@ struct HomeView: View {
     var onSeeInterests: () -> Void = {}
 
     @State private var generatingSince: Date?
+    /// The episode the listener has actually started. Home's "currently
+    /// playing" strip is about where the playhead is sitting, not about
+    /// whether audio is moving, so pausing must not clear this.
+    @State private var startedEpisodeId: String?
     /// Stories push onto this path, so one story can open another.
     @State private var storyPath = NavigationPath()
     /// DEBUG only: forces a top-card state so every 3.x state is reproducible.
@@ -68,6 +72,12 @@ struct HomeView: View {
             }
             .task(id: pollingKey) { await pollWhileMaking() }
             .refreshable { await refresh() }
+            // Playback can be started from the mini player, the Now Playing
+            // screen or the lock screen, so record the episode the moment it
+            // starts rather than only in `playToday`.
+            .onChange(of: playerViewModel.isPlaying) { _, playing in
+                if playing { startedEpisodeId = playerViewModel.loadedEpisodeIdentifier }
+            }
             .animation(LucakuMotion.house, value: playerViewModel.hasEpisode)
         }
     }
@@ -206,8 +216,7 @@ struct HomeView: View {
         guard let banner = home?.banner else { return .notStarted }
         switch banner.state {
         case "ready":
-            let started = playerViewModel.isPlaying || playerViewModel.currentTime > 0.5
-            return isTodayLoaded(banner) && started ? .playing : .ready
+            return isTodayLoaded(banner) && playbackHasStarted ? .playing : .ready
         case "late":
             return .late
         case "making":
@@ -247,6 +256,27 @@ struct HomeView: View {
         return "\(prefix) · Story \(playerViewModel.currentBlockIndex + 1) of \(count) · \(HomeFormat.clock(left)) left"
     }
 
+    /// Whether the listener is somewhere inside the loaded episode, as
+    /// opposed to standing at its start having never played it. Home loads
+    /// an episode paused at 0:00 just so the mini player exists, so "loaded"
+    /// alone is not enough — but once playback has begun, pausing and
+    /// seeking are both just ways of moving the playhead, and neither means
+    /// the listener has left the episode.
+    ///
+    /// This used to be `isPlaying || currentTime > 0.5`, which read the
+    /// transport instead of the playhead. Pausing in the opening seconds, or
+    /// skipping back to the first block, put the playhead at or near 0:00
+    /// with nothing playing, and Home concluded the episode had never been
+    /// started: the progress strip vanished and "Resume" turned back into
+    /// "Play". The `currentTime` test survives as a fallback for playback
+    /// that began while this screen was not around to see it.
+    private var playbackHasStarted: Bool {
+        guard playerViewModel.hasEpisode else { return false }
+        if playerViewModel.isPlaying { return true }
+        if let loaded = playerViewModel.loadedEpisodeIdentifier, loaded == startedEpisodeId { return true }
+        return playerViewModel.currentTime > 0.5
+    }
+
     /// Whether the shared player currently holds TODAY's episode (as opposed
     /// to a sample or a past day).
     private func isTodayLoaded(_ banner: BannerOut?) -> Bool {
@@ -274,13 +304,17 @@ struct HomeView: View {
         guard let token = session.accessToken, let id = banner.episodeId else { return }
         Task {
             if playerViewModel.loadedEpisodeIdentifier == id, playerViewModel.hasEpisode {
-                if playerViewModel.isPlaying || playerViewModel.currentTime > 0.5 {
+                if playbackHasStarted {
                     playerViewModel.togglePlay()
                 } else {
                     playerViewModel.selectBlock(0, autoplay: true)
                 }
+                startedEpisodeId = id
                 return
             }
+            // Nothing to record here: if the load succeeds and audio starts,
+            // the `isPlaying` observer above records it; if it fails, the
+            // card should keep saying "Play".
             await playerViewModel.loadEpisode(id: id, token: token, autoplay: true, coverSeed: banner.headline ?? "today")
         }
     }
