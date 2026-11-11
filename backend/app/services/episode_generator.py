@@ -462,6 +462,147 @@ async def _empty_job_can_retry(db: AsyncSession, customer_id: uuid.UUID, job: Ge
     return result.scalar_one_or_none() is not None
 
 
+async def _synthesize_episode(
+    db: AsyncSession,
+    *,
+    cliente: Cliente,
+    episode: Episode,
+    block_rows: list[Block],
+    voice_id: str | None,
+) -> float:
+    """
+    Voice every block, assemble one file, and publish the episode. Returns the
+    cost actually spent. Raises on any synthesis failure — the caller decides
+    what a failure means.
+
+    Extracted from run_generation so the re-voice path (revoice_job) runs the
+    SAME code rather than a second copy that drifts. A second implementation of
+    "turn scripts into the published episode" is exactly the kind of duplicate
+    that ends up publishing an episode one way and re-publishing it another.
+
+    Cost is accumulated in a loop rather than a comprehension on purpose: if a
+    later block raises, whatever was already spent on earlier blocks is real,
+    was billed, and has AICall rows — losing it would understate the cost of a
+    failed run.
+    """
+    spent = 0.0
+    audio_parts: list[bytes] = []
+    try:
+        for block in block_rows:
+            audio_bytes_part, call_cost, word_timestamps = await ai_platform.synthesize(
+                db, block.script, voice_id, customer_id=cliente.id,
+                request_id=block.request_id, episode_id=episode.id,
+            )
+            audio_parts.append(audio_bytes_part)
+            spent += call_cost
+            # Timestamps are relative to this block's OWN synthesized audio
+            # (0.0 = the first word of block.script), not to the assembled
+            # episode timeline — the Player must add block.start_s itself when
+            # mapping episode playhead position -> word to highlight, the same
+            # way it already uses block.start_s/end_s today.
+            block.word_timestamps = word_timestamps
+    except Exception as exc:
+        # Carry the partial spend out with the exception so the caller can
+        # record what a failed attempt actually cost.
+        exc.voicing_cost = spent  # type: ignore[attr-defined]
+        raise
+
+    settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    (settings.MEDIA_DIR / f"{episode.id}.mp3").write_bytes(b"".join(audio_parts))
+    episode.audio_url = f"{settings.PUBLIC_BASE_URL}/media/{episode.id}.mp3"
+    episode.published_at = datetime.utcnow()  # audio exists — only now is it a real episode
+    return spent
+
+
+async def _revoice_failed_job(db: AsyncSession, cliente: Cliente, job: GenerationJob) -> bool:
+    """
+    Recover a job that died in voicing, WITHOUT paying for research again.
+
+    When synthesis fails, run_generation deliberately keeps the episode and its
+    finished block scripts and leaves the episode unpublished (see the voicing
+    stage's own comment). That state exists precisely so a failed run can be
+    completed later for the price of the audio alone — research and writing are
+    the larger share of a run's cost and are already paid for. Until this
+    function existed, nothing consumed that, so the saved scripts were just
+    rows nobody read.
+
+    Returns True if it re-voiced (successfully or not), False if this job isn't
+    a re-voice candidate and the caller should fall through to its normal path.
+
+    Narrow by design. A job qualifies only when ALL of these hold:
+      - it is terminal `failed`
+      - its last recorded failure was in the VOICING stage, not research or
+        writing — a job that failed earlier has no scripts to re-voice, and
+        pretending otherwise would publish an empty episode
+      - an unpublished episode exists for it with at least one block that has
+        a non-empty script
+      - TTS is actually configured now
+
+    The most common real cause is a quota the founder has since topped up, or
+    a provider 5xx. Both are worth exactly one cheap retry; neither is worth
+    re-researching the day from scratch.
+    """
+    if job.status != JobStatus.failed or not ai_platform.elevenlabs_configured():
+        return False
+
+    voicing_stages = [st for st in (job.stages or []) if st.get("stage") == "voicing" and st.get("error")]
+    if not voicing_stages:
+        # Failed somewhere else — there are no scripts to re-voice, and
+        # treating this as a re-voice candidate would publish an empty episode.
+        return False
+
+    episode = (await db.execute(
+        select(Episode).where(
+            Episode.customer_id == cliente.id,
+            Episode.fecha == job.fecha,
+            Episode.path == job.path,
+            Episode.published_at.is_(None),
+        ).order_by(Episode.creado_en.desc()).limit(1)
+    )).scalar_one_or_none()
+    if episode is None:
+        return False
+
+    block_rows = list((await db.execute(
+        select(Block).where(Block.episode_id == episode.id).order_by(Block.start_s)
+    )).scalars().all())
+    if not block_rows or not any((b.script or "").strip() for b in block_rows):
+        return False
+
+    perfil = await db.get(Profile, cliente.id)
+    voice_id = perfil.voice_id if perfil else None
+
+    job.retry_count += 1
+    await _advance_status_unless_late(db, job, JobStatus.voicing)
+    start = time.monotonic()
+    await emitir(db, "stage_started", customer_id=cliente.id, source="episode_generator",
+                 job_id=str(job.id), stage="revoicing")
+
+    try:
+        cost = await _synthesize_episode(
+            db, cliente=cliente, episode=episode, block_rows=block_rows, voice_id=voice_id,
+        )
+        job.status = JobStatus.ready
+        job.stages = [*job.stages, {
+            "stage": "revoicing", "latency_ms": int((time.monotonic() - start) * 1000), "cost": cost,
+        }]
+        await emitir(db, "episode_published", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), episode_id=str(episode.id), had_more_any=episode.had_more_any)
+    except Exception as exc:
+        cost = getattr(exc, "voicing_cost", 0.0)
+        job.status = JobStatus.failed  # still terminal — never back to a non-terminal status
+        job.stages = [*job.stages, {
+            "stage": "revoicing", "error": str(exc), "cost": cost,
+            "latency_ms": int((time.monotonic() - start) * 1000),
+        }]
+        await emitir(db, "job_failed", customer_id=cliente.id, source="episode_generator",
+                     job_id=str(job.id), stage="revoicing", episode_id=str(episode.id))
+
+    await db.commit()
+    await db.refresh(job)
+    job.started_new_run = True
+    return True
+
+
 async def run_generation(
     db: AsyncSession,
     cliente: Cliente,
@@ -545,6 +686,11 @@ async def run_generation(
 
     existing_job = await _find_existing()
     if existing_job is not None:
+        # A job that died in voicing already has its research and writing paid
+        # for. Finish it for the price of the audio instead of sending the
+        # customer down the full pipeline again — see _revoice_failed_job.
+        if await _revoice_failed_job(db, cliente, existing_job):
+            return existing_job
         if not await _empty_job_can_retry(db, cliente.id, existing_job):
             existing_job.started_new_run = False
             return existing_job
@@ -809,25 +955,9 @@ async def run_generation(
                 # was already spent on earlier blocks if a later one raises mid-loop —
                 # accumulating in a for loop keeps voicing_cost accurate to the calls
                 # that actually happened (and got AICall rows written) even on failure.
-                audio_parts: list[bytes] = []
-                for block in block_rows:
-                    audio_bytes_part, call_cost, word_timestamps = await ai_platform.synthesize(
-                        db, block.script, voice_id, customer_id=cliente.id,
-                        request_id=block.request_id, episode_id=episode.id,
-                    )
-                    audio_parts.append(audio_bytes_part)
-                    voicing_cost += call_cost
-                    # Timestamps are relative to this block's OWN synthesized audio
-                    # (0.0 = the first word of block.script), not to the assembled
-                    # episode timeline — the Player must add block.start_s itself
-                    # when mapping episode playhead position -> word to highlight,
-                    # the same way it already uses block.start_s/end_s today.
-                    block.word_timestamps = word_timestamps
-                audio_bytes = b"".join(audio_parts)
-                settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-                (settings.MEDIA_DIR / f"{episode.id}.mp3").write_bytes(audio_bytes)
-                episode.audio_url = f"{settings.PUBLIC_BASE_URL}/media/{episode.id}.mp3"
-                episode.published_at = datetime.utcnow()  # audio exists — only now is it a real episode
+                voicing_cost = await _synthesize_episode(
+                    db, cliente=cliente, episode=episode, block_rows=block_rows, voice_id=voice_id,
+                )
                 job.status = JobStatus.ready
             except Exception as exc:
                 # A TTS failure is a FAILED job, not a published silent episode.
@@ -861,6 +991,7 @@ async def run_generation(
                 # to recover from what is usually a transient voice-provider
                 # problem (quota, 5xx, timeout). An unpublished episode with
                 # finished scripts is exactly the right state to re-voice from.
+                voicing_cost = getattr(exc, "voicing_cost", voicing_cost)
                 job.stages = [*job.stages, {"stage": "voicing", "error": str(exc), "cost": voicing_cost}]
                 job.status = JobStatus.failed
                 voicing_failed = True
