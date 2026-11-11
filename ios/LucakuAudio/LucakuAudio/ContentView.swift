@@ -83,7 +83,7 @@ struct MainTabView: View {
 
                 // Profile, option A (screens spec 7-8): the existing settings
                 // content under the "Profile" title for now.
-                SettingsView()
+                SettingsView(onSeeInterests: { selection = .interests })
                     .tabItem { Label("Profile", systemImage: selection == .profile ? "person.fill" : "person") }
                     .tag(Tab.profile)
             }
