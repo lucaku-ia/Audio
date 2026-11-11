@@ -305,7 +305,7 @@ final class InterestsViewModel: ObservableObject {
             topics.append(topic)
             freeTextQuery = ""
             if let cat = topic.categoryId {
-                confirmation = "Added \u{201C}\(topic.label)\u{201D}. Lucaku will track it daily under \(label(forCategory: cat))."
+                confirmation = "Added \u{201C}\(topic.label)\{201D} {2014} Lucaku will track it daily under \(label(forCategory: cat))."
             } else {
                 confirmation = "Added \u{201C}\(topic.label)\u{201D}. You'll hear about it from your next episode."
             }

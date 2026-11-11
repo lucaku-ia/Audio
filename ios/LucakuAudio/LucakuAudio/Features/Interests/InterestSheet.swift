@@ -92,7 +92,7 @@ struct InterestSheet: View {
                 Text(caption)
                     .font(.system(size: 14))
                     .foregroundStyle(LucakuColor.textSecondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
             Spacer(minLength: 0)
             Button { dismiss() } label: {
@@ -139,7 +139,7 @@ struct InterestSheet: View {
                 VStack(alignment: .leading, spacing: 8) {
                     sectionLabel("Lucaku researches")
                     let list = questions.isEmpty
-                        ? ["The most important \(viewModel.label(forCategory: id).lowercased()) news of the day."]
+                        ? ["The most important \(viewModel.label(forCategory: id)) news of the day."]
                         : questions
                     ForEach(list, id: \.self) { questionRow($0) }
                 }
