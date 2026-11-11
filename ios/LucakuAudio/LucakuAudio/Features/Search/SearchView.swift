@@ -350,52 +350,6 @@ private struct RecentSearchChipRow: View {
     }
 }
 
-/// Minimal wrapping flow layout (SwiftUI's `Layout` protocol) — the mockup's
-/// `.chip-row { display:flex; flex-wrap:wrap; }` has no single built-in
-/// SwiftUI equivalent pre-iOS 16 `Layout`, so this reproduces it exactly:
-/// left-to-right, wrapping to a new line when a chip doesn't fit.
-private struct FlowLayout: Layout {
-    var spacing: CGFloat
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        var rowWidth: CGFloat = 0
-        var totalHeight: CGFloat = 0
-        var rowHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if rowWidth + size.width > maxWidth, rowWidth > 0 {
-                totalHeight += rowHeight + spacing
-                rowWidth = 0
-                rowHeight = 0
-            }
-            rowWidth += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
-        totalHeight += rowHeight
-        return CGSize(width: maxWidth.isFinite ? maxWidth : rowWidth, height: totalHeight)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX
-        var y = bounds.minY
-        var rowHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x + size.width > bounds.maxX, x > bounds.minX {
-                x = bounds.minX
-                y += rowHeight + spacing
-                rowHeight = 0
-            }
-            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
-    }
-}
-
 // MARK: - Suggested topic row (pre-search)
 
 private struct SuggestedTopicRow: View {

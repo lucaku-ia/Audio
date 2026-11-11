@@ -22,6 +22,13 @@ enum PlaybackSpeed: Double, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Now Playing tabs
+
+enum NowPlayingTab: Hashable {
+    case episode
+    case transcript
+}
+
 // MARK: - Answer rating (thumbs up/down)
 
 /// Local-only UI state for the "Was this answer useful?" control in the

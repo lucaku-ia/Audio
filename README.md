@@ -933,3 +933,192 @@ idempotency built (see "Episode Generator scope" above); real audio engine + rea
 transcript timestamps wired into the Player screen (#22); tab-bar architecture fixed
 and real Home/Search/Interests wired end-to-end, live-verified, with a re-entrancy
 bug caught and fixed (#27).
+
+## iOS redesign — status after the first Simulator run (2026-11-11)
+
+The app was rebuilt to the design on branch `feat/redesign` (PR #40), which
+integrated #37–#39. **PR #40 states plainly: "Nothing has been run on a device
+or simulator."** It has now been run, against production, and this section is
+what that turned up plus the work done since.
+
+**The source of truth is the clickable prototype** — `Main.dc.html` in the
+Design canvas, 66 scenes behind `startScreen` / `homeState` / `profileStyle`
+props. The deck slides and the per-screen review frames in the same canvas are
+older and were not used. The frames are thin wrappers that import `Main` with a
+`scene` name, so they render the prototype but their annotations can lag it.
+
+Tabs are **Home, Interests, Profile**; Settings lives inside Profile. Profile
+ships as **option A** (the canvas offers A/B/C; B and C were never built).
+
+### What running it found, that reading it did not
+
+**The tab bar was the system accent — blue.** Nothing ever set a tint, so the
+one control always on screen was not the brand colour.
+
+**Tab switching often needed two taps.** The mini player was a `ZStack` overlay
+with `.padding(.bottom, 50)` commented "clears the system tab bar". It does
+not: an overlay floats over the bar's *hit area*, so taps near its top edge were
+swallowed. This was the "transitions don't feel native" complaint, and it was a
+hit-testing bug rather than an animation one.
+
+**Every screen guessed the bar's height separately** — ContentView 50, HomeView
+96, PlayerListView 110, SettingsView and ProfileComponents 140, NewsDetailView
+96. Six guesses at one layout, so content clipped behind the bar on every tab.
+
+Both are the platform's job now. On iOS 26+ the mini player sits in
+**`tabViewBottomAccessory`**, the API Music and Podcasts use: it supplies the
+glass, places the player above the bar, morphs it with the bar, leaves the bar's
+hit area alone, and removes its height from every tab's safe area so no screen
+needs to know it exists. Before iOS 26 there is no accessory slot, so a bottom
+`safeAreaInset` gives the same layout against the classic opaque bar
+(`MiniPlayerHost` in `ContentView.swift`). Every magic number is gone, and
+`MiniPlayerView` grew a `drawsOwnChrome` flag because the system draws the
+surface in the accessory and our card on top of it was a panel inside a panel.
+
+**This is a deliberate deviation from the prototype**, and the one place the two
+disagree: the prototype draws a classic full-width 83pt bar, because it is a web
+page. On iOS 26 the floating Liquid Glass bar *is* the native control, and the
+brief was not to lose the native feel. The prototype's bar is an approximation
+of a native tab bar; the native one is the better realisation of the same intent.
+
+### Screens brought to the prototype
+
+**Login.** The three-row promises card is gone. The prototype has one line — "A
+short daily audio episode about only what you follow." — and an episode drawn in
+the accent colour: a filled play circle, "Your episode" against "7:00 AM · 8
+min", and a 32-bar waveform at the prototype's exact heights, the first 11 solid
+and the rest at 35%. It is an episode part-way through, not a live meter, so it
+does not animate, and it is hidden from VoiceOver because the line above says the
+same thing. The card had pushed the sign-in form below the fold; it fits on one
+screen now. "Continue with Apple" removed — the prototype offers Google only.
+
+**Home** is the greeting, one state card, and the news by day. Two sections were
+removed because the prototype does not have them: "Your Lucaku" (delivery time
+and topics — Interests is a tab now, so this was a second, lesser copy of it on
+the screen you see most) and "Previous episodes" (history is in Profile, as a
+list rather than a shelf you scroll sideways past the news).
+
+**Interests** was the furthest off. Its own file comment admitted "the overall
+direction is still under review, spec alternatives A-D"; the prototype settled
+it. It was a library browser — search field, "Your topics" gradient tiles,
+"Suggested for you", "Browse all", "Recently removed". It is now an extension of
+the onboarding chat:
+
+1. **Your episode as four tiles** — ready at, length, style, voice. These four
+   decide what arrives tomorrow, so they sit above what you follow. Time opens a
+   wheel; the rest are inline menus, one tap each.
+2. **You follow, grouped by category**, as chips in one card. Edit makes them
+   removable; removing offers Undo. A category followed wholesale shows one muted
+   "Top stories" chip rather than repeating its own name underneath itself, and
+   only counts when it has no questions of its own.
+3. **Lucaku docked above the tab bar** — the composer with mic, in the screen's
+   own bottom safe area so it sits above the mini player without either knowing
+   about the other.
+
+Browsing a catalogue was the old model; telling Lucaku what you want in words
+replaced it. `voiceId` is new on `InterestsViewModel` (the backend already had
+the field) and reports the first catalogue voice when nothing is stored, which is
+what the generator actually uses — "Default" named a voice nobody could identify.
+
+**Profile** (option A) already matched: identity, history, Downloads, three drill
+rows with the prototype's own subtitle formats, centred sign out.
+
+**Notifications** was a settings page with a short list under it. The prototype
+inverts that — the screen *is* the inbox, and what you get notified about sits
+behind one row at the bottom (`ProfileNotificationSettingsPage`). Filter pills
+All / Episodes / Your topics / Updates; "You're all caught up" when nothing is
+unread; "Nothing here yet" when a *filter* hides everything, which is a different
+sentence for a different situation and was previously collapsed into one empty
+state; "Mark all as read" only when the current filter has unread in it.
+
+**Now Playing** gained the prototype's "Episode options" panel: the speed row
+with its "Tap to reset to 1×" hint, five speed pills, download, share, and the
+line that sends rating back to Useful / Not quite so there is one place for
+feedback instead of two.
+
+**Article** gained the share button its top bar was missing and "More from
+today" at the foot, so finishing a story offers the next instead of a dead end.
+That needed the navigation fixed first: Home used
+`.navigationDestination(item:)`, a single slot, so a story opened from inside
+another would have replaced the one you were reading. It is value-based on a
+`NavigationPath` now.
+
+**Share sheet** gained Save to Files.
+
+### Onboarding: the country is a variable now
+
+The `local` category was named **"Colombia & your city"** — a label nobody
+outside Colombia can use — and the lists under it carried Ecopetrol, CDTs,
+Millonarios, Karol G and "Colombian president". The same label was in Interests'
+fallback map and Home's category names.
+
+The fix is **not** to make it generic. The backend's own clarity screen rejects
+vague requests — "How did my favourite team do?" comes back asking which team —
+so generic suggestions produce requests that fail a step later. Instead:
+
+- Category names are place-neutral: **"Local news"**, **"World"**.
+- Only the four categories that genuinely depend on where you are read from
+  `OnboardingPlace`: local, politics, markets, sports. Technology, science,
+  health, climate, culture and lifestyle are the same everywhere and were never
+  the problem.
+- Tables for Colombia, Mexico, Spain, the United States and Argentina. Anywhere
+  else still works: `generic` templates the same shapes off the country's own
+  name, so the app is not broken in a market nobody has thought about yet.
+- **"World" leaves out the country you are in.** Where you live is Local news.
+- The place comes from **the device region, not a new question.** Onboarding has
+  enough steps, the region is right for almost everyone, and Interests changes any
+  of it afterwards in a sentence.
+- Free-text guessing matches the listener's own country and cities first, so
+  "Medellín" lands in Local news for a Colombian and "Guadalajara" does for
+  someone in Mexico.
+
+Colombia stays the fallback when the region is unknown — first market, and a
+better default than a template for an app shipping in Spanish.
+
+### Still open on the front end
+
+- **The onboarding chat script** still differs from the prototype's wording. The
+  category and suggestion *data* is fixed; the dialogue is not.
+- **Profile options B and C** (Netflix- and Spotify-style) were never built.
+- **The flat Settings screen** in the prototype (`Plan`, `Downloads & playback`,
+  `Audio quality`, `Data & Privacy`, `Help & about`, `Save Changes`) is not
+  built, because option A reaches those through its three grouped pages instead.
+  If Profile ever moves to option B, that screen becomes real work.
+- **Episode options has no trigger in the prototype.** It defines `openTuning`
+  and never references it in markup, so the panel is only reachable there via the
+  `np-tuning` scene. The ellipsis in the player's top bar is this app's choice —
+  the conventional iOS spot for per-item options. **Worth confirming the
+  placement.**
+- Nothing has been run on a **real device** this round; the Simulator has no
+  microphone, so the mic paths in onboarding and Interests remain untested
+  anywhere.
+
+### Still true from before
+
+- **Design tokens:** `DesignSystem/LucakuColor.swift`, `StatusBarFade.swift`
+  (`StatusBarFadeAnchor` + `.statusBarFade()`), `FlowLayout.swift`. Shared
+  feedback UI in `Features/Feedback/`.
+- **Brand rule:** the accent is for the wordmark dot, the primary action and the
+  spoken word. Everything else is neutral (`textPrimary` / `fill`).
+- **TODO(backend):** Home news uses a sample repository (no news endpoint);
+  share links, feedback, downloads and ratings are local stubs; Google/Apple
+  sign-in are visual only; forgot password confirms locally; the chosen voice is
+  not sent.
+- **CI:** `.github/workflows/ios-sideload-build.yml` runs on `macos-15` and
+  produces the unsigned `.ipa` for Sideloadly.
+- **Onboarding** ends straight at Home and submits notifications as off; push
+  permission is requested from the Profile toggle.
+
+### How to work against the prototype cheaply
+
+The prototype is one 304KB file and the app is ~8,000 lines of Swift, so reading
+both into a model's context is the expensive way to do this. What worked:
+extract the prototype's markup to disk, split it by its own section comments,
+strip inline styles, and diff the *literal UI strings* against the Swift source
+by script. That finds divergence in seconds and costs almost nothing. Screenshots
+at 26–32% scale are enough to judge layout. Scripts are disposable; the method
+is what to keep.
+
+Two traps when reading a string diff: Material Symbols icon names
+(`ios_share`, `fast_forward`, `content_copy`) never match because the app uses SF
+Symbols, and Swift escapes (`\u{00D7}` for ×) hide literals that are really there.

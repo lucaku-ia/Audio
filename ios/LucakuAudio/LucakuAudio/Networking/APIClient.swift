@@ -230,6 +230,28 @@ actor APIClient {
         )
     }
 
+    /// PATCH /requests/{id}/archive: stops following a standing request (the
+    /// onboarding chat's X on a topic it just added).
+    func archiveRequest(id: String, token: String) async throws {
+        try await sendRaw(path: "/requests/\(id)/archive", method: "PATCH", token: token)
+    }
+
+    /// PATCH /requests/{id}/resume: re-activates an archived (or paused)
+    /// request. Used by Interests' Undo and "Recently removed" restore.
+    func resumeRequest(id: String, token: String) async throws {
+        try await sendRaw(path: "/requests/\(id)/resume", method: "PATCH", token: token)
+    }
+
+    /// PATCH /requests/{id}: direct edit of a request's text; applies
+    /// immediately and is re-structured server-side.
+    func editRequest(id: String, rawText: String, token: String) async throws -> RequestOut {
+        try await send(
+            path: "/requests/\(id)", method: "PATCH",
+            jsonBody: EditRequestBody(rawText: rawText),
+            token: token
+        )
+    }
+
     // MARK: - Request building / sending
 
     private func makeRequest(

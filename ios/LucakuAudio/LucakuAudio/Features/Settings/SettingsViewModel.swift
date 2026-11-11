@@ -132,6 +132,9 @@ final class SettingsViewModel: ObservableObject {
         return changed ? body : nil
     }
 
+    /// True when the editable fields differ from what is saved server-side.
+    var hasPendingChanges: Bool { pendingChanges() != nil }
+
     func save(token: String) async {
         guard let body = pendingChanges() else { return }
         isSaving = true

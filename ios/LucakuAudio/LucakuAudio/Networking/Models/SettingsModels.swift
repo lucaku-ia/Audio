@@ -22,6 +22,25 @@ enum NarrationStyle: String, Codable, CaseIterable, Identifiable {
         case .casual: return "Casual"
         }
     }
+
+    /// The clickable prototype's own wording for the style picker. Longer and
+    /// plainer than `displayName`, which is still what compact rows use.
+    var shortLabel: String {
+        switch self {
+        case .news: return "Straight news"
+        case .story: return "Story"
+        case .casual: return "Conversational"
+        }
+    }
+
+    /// The one-line description shown under `shortLabel` in a menu.
+    var menuDetail: String {
+        switch self {
+        case .news: return "Neutral and concise, just the facts"
+        case .story: return "Narrative, with context and a bit of an arc"
+        case .casual: return "Like a friend catching you up"
+        }
+    }
 }
 
 /// Mirrors `app.models.profile.Language`. Distinct from `SignupRequest`'s

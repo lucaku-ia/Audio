@@ -1,24 +1,19 @@
 import SwiftUI
 
-/// The persistent mini player bar — player_v3.html's `.miniplayer`. Per
-/// DESIGN_SPEC_V3.md's "Mini-player / persistent playback" section this is a
-/// SINGLE global overlay mounted once above the tab bar (in
-/// ContentView.swift's `MainTabView`), surviving navigation across every tab,
-/// never re-instantiated per screen.
+/// The persistent mini player (screens spec 4, "Mini player"). A SINGLE global
+/// overlay mounted once above the tab bar in `MainTabView`, backed by the one
+/// shared `PlayerViewModel`.
 ///
-/// This is the ONE shared mini-player instance every tab renders against,
-/// backed by the single `PlayerViewModel` owned at the app root
-/// (`LucakuAudioApp`) and injected via `.environmentObject()`. Home has no
-/// player of its own — it reads this same `viewModel` for its "currently
-/// playing" highlight.
-///
-/// Look: a floating rounded card tinted with the same colour as the cover of
-/// whatever's loaded (generated cover art, see `LucakuCover`), a cover
-/// thumbnail, the episode title over the current topic, and play/pause +
-/// next. It's shown whenever an episode is loaded — paused or playing — the
-/// way music apps keep the last-played item docked, not only mid-playback.
+/// Rules: cover, episode title, current story summary, play and next.
+/// Tapping anywhere on the card, cover included, opens the full player; the
+/// play and next buttons do not. It stays docked whenever an episode is
+/// loaded, paused or playing.
 struct MiniPlayerView: View {
     @ObservedObject var viewModel: PlayerViewModel
+
+    /// False when the mini player is hosted by something that already draws a
+    /// background for it (iOS 26's `tabViewBottomAccessory`).
+    var drawsOwnChrome: Bool = true
 
     var body: some View {
         if let block = viewModel.currentBlock {
@@ -26,27 +21,26 @@ struct MiniPlayerView: View {
         }
     }
 
+    private func open() {
+        withAnimation(LucakuMotion.house) { viewModel.expandNowPlaying() }
+    }
+
     private func card(_ block: BlockOut) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                CoverArt(seed: viewModel.coverSeed, cornerRadius: 6)
+                PlayerArt(seed: block.summary, cornerRadius: 6)
                     .frame(width: 44, height: 44)
 
-                Button {
-                    withAnimation(LucakuMotion.house) { viewModel.expandNowPlaying() }
-                } label: {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(viewModel.episode?.headline ?? "Lucaku Audio")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(LucakuColor.textPrimary)
-                            .lineLimit(1)
-                        Text(block.summary)
-                            .font(.system(size: 12))
-                            .foregroundStyle(LucakuColor.textSecondary)
-                            .lineLimit(1)
-                    }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(viewModel.episode?.headline ?? "Lucaku Audio")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(LucakuColor.textPrimary)
+                        .lineLimit(1)
+                    Text(block.summary)
+                        .font(.system(size: 12))
+                        .foregroundStyle(LucakuColor.textSecondary)
+                        .lineLimit(1)
                 }
-                .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 controls
@@ -57,7 +51,7 @@ struct MiniPlayerView: View {
 
             GeometryReader { proxy in
                 Rectangle()
-                    .fill(Color.white.opacity(0.18))
+                    .fill(LucakuColor.fill)
                     .frame(height: 2)
                     .overlay(alignment: .leading) {
                         Rectangle()
@@ -69,15 +63,27 @@ struct MiniPlayerView: View {
             .padding(.horizontal, 8)
             .padding(.bottom, 4)
         }
-        .background(
-            ZStack {
-                LucakuColor.surface
-                LucakuCover.tint(for: viewModel.coverSeed).opacity(0.55)
+        // `drawsOwnChrome == false` when the system is already providing a
+        // background — as a `tabViewBottomAccessory` the platform draws the
+        // glass surface and positions the bar, and painting our own card on
+        // top of it gives a panel inside a panel.
+        .background {
+            if drawsOwnChrome {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(LucakuColor.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(LucakuColor.borderSoft, lineWidth: 1)
+                    )
             }
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 6)
-        .padding(.horizontal, LucakuSpacing.sp2)
+        }
+        .modifier(MiniPlayerCardChrome(enabled: drawsOwnChrome))
+        // Whole card opens the player; the control buttons below take their
+        // own taps first and never open it.
+        .contentShape(Rectangle())
+        .onTapGesture(perform: open)
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(named: "Open player", open)
     }
 
     private var controls: some View {
@@ -105,21 +111,43 @@ struct MiniPlayerView: View {
                         .frame(width: 44, height: 44)
                 } else {
                     Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 20))
+                        .font(.system(size: 24))
                         .foregroundStyle(LucakuColor.textPrimary)
                         .frame(width: 44, height: 44)
                 }
             }
+            .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
 
             Button {
                 viewModel.skipToNextBlock()
             } label: {
                 Image(systemName: "forward.fill")
-                    .font(.system(size: 16))
+                    .font(.system(size: 20))
                     .foregroundStyle(LucakuColor.textPrimary)
                     .frame(width: 44, height: 44)
             }
             .disabled(viewModel.currentBlockIndex >= viewModel.blocks.count - 1)
+            .opacity(viewModel.currentBlockIndex >= viewModel.blocks.count - 1 ? 0.4 : 1)
+            .accessibilityLabel("Next story")
+        }
+    }
+}
+
+
+/// The floating-card treatment the mini player wears only when it is NOT
+/// hosted inside a system-provided bar.
+private struct MiniPlayerCardChrome: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .shadow(color: .black.opacity(0.14), radius: 12, x: 0, y: 4)
+                .padding(.horizontal, LucakuSpacing.sp2)
+                .padding(.bottom, 8)
+        } else {
+            content
         }
     }
 }

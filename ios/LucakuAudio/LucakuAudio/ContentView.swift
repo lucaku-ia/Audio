@@ -34,8 +34,8 @@ struct ContentView: View {
     }
 }
 
-/// The main app shell once authenticated: Home / Search / Interests /
-/// Settings, matching the approved design (see /tmp/lucaku_design/home_v3.html,
+/// The main app shell once authenticated: Home / Interests / Profile,
+/// matching the approved design (see /tmp/lucaku_design/home_v3.html,
 /// player_v3.html, search_interests_v3.html and DESIGN_SPEC_V3.md).
 ///
 /// Per the design spec, the Player screen is NEVER its own tab. Instead a
@@ -57,7 +57,7 @@ struct ContentView: View {
 /// per-block list and its "currently playing" highlight) reads from it.
 struct MainTabView: View {
     private enum Tab: Hashable {
-        case home, search, interests, settings
+        case home, interests, profile
     }
 
     @EnvironmentObject private var session: SessionStore
@@ -65,30 +65,14 @@ struct MainTabView: View {
     @State private var selection: Tab = .home
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            TabView(selection: $selection) {
+        TabView(selection: $selection) {
                 // Home reads the shared `playerViewModel` via
-                // `@EnvironmentObject` (inherited automatically from this
-                // view's own environment — no explicit `.environmentObject()`
-                // needed here) for its per-block "currently playing"
-                // highlight, and hands tapped blocks back up to
-                // `openInPlayer` below so tapping a row opens that exact
-                // block in the shared player, mirroring the mini player's
-                // own tap-to-open behavior. There's no Player tab to switch
-                // to any more (see the type doc above), so this expands the
-                // Now Playing overlay instead.
-                HomeView(
-                    onOpenBlock: { block in openInPlayer(block) },
-                    onSeeInterests: { selection = .interests }
-                )
+                // `@EnvironmentObject` (inherited from this view's own
+                // environment). "Edit" on its "Your Lucaku" card switches to
+                // the Interests tab.
+                HomeView(onSeeInterests: { selection = .interests })
                     .tabItem { Label("Home", systemImage: selection == .home ? "house.fill" : "house") }
                     .tag(Tab.home)
-
-                SearchView()
-                    .tabItem {
-                        Label("Search", systemImage: selection == .search ? "magnifyingglass.circle.fill" : "magnifyingglass")
-                    }
-                    .tag(Tab.search)
 
                 InterestsView()
                     .tabItem {
@@ -96,21 +80,29 @@ struct MainTabView: View {
                     }
                     .tag(Tab.interests)
 
-                SettingsView()
-                    .tabItem { Label("Settings", systemImage: selection == .settings ? "gearshape.fill" : "gearshape") }
-                    .tag(Tab.settings)
-            }
-
-            // Persistent mini player — mounted ONCE here, above the tab bar,
-            // visible on every tab (Home, Search, Interests, Settings). Not
-            // re-created per screen.
-            if playerViewModel.hasEpisode && !playerViewModel.isNowPlayingExpanded {
-                MiniPlayerView(viewModel: playerViewModel)
-                    .padding(.bottom, 50) // clears the system tab bar
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+                // Profile, option A (screens spec 7-8): the existing settings
+                // content under the "Profile" title for now.
+                SettingsView(onSeeInterests: { selection = .interests })
+                    .tabItem { Label("Profile", systemImage: selection == .profile ? "person.fill" : "person") }
+                    .tag(Tab.profile)
         }
+        // The brand accent, not the system blue. Without this the selected
+        // tab, and every other control that inherits the tint, renders in
+        // iOS's default accent and the app stops looking like itself.
+        .tint(LucakuColor.accent)
+        // Persistent mini player — mounted ONCE here, above the tab bar,
+        // visible on every tab (Home, Interests, Profile), never re-created
+        // per screen.
+        //
+        // It used to be a ZStack overlay with `.padding(.bottom, 50)`. An
+        // overlay floats over the content *and* over the tab bar's own hit
+        // area, so the bar's top edge stopped responding to taps, and every
+        // screen had to guess the bar's height to keep its last rows clear —
+        // ContentView 50, HomeView 96, PlayerListView 110, SettingsView 140:
+        // four different guesses at one layout, none of them right.
+        .modifier(MiniPlayerHost(viewModel: playerViewModel))
         .animation(LucakuMotion.house, value: playerViewModel.isNowPlayingExpanded)
+        .animation(LucakuMotion.house, value: playerViewModel.hasEpisode)
         .overlay {
             // Tapping the mini player expands into the full "Now Playing"
             // view — presented as an expansion of the mini player from the
@@ -131,26 +123,44 @@ struct MainTabView: View {
         }
     }
 
-    /// Home tapped a real block row — load the shared `PlayerViewModel`'s
-    /// episode if it isn't already, select the matching block (matched by
-    /// start/end offset; see HomeView.swift's doc on why not `id`), and
-    /// expand the Now Playing overlay so the tap actually lands on that
-    /// block. There's no separate Player tab any more (see this type's file
-    /// doc) — the mini player / Now Playing overlay mounted here is the one
-    /// place playback is ever shown, so "open Player at this block" means
-    /// "expand the overlay", not "switch tabs".
-    private func openInPlayer(_ block: BlockSummaryOut) {
-        Task {
-            if !playerViewModel.hasEpisode, let token = session.accessToken {
-                await playerViewModel.load(token: token)
+}
+
+/// Mounts the persistent mini player above the tab bar.
+///
+/// On iOS 26 and later the system owns this slot: `tabViewBottomAccessory`
+/// is the platform's own mini-player API (it is what Music and Podcasts sit
+/// in), so the accessory gets the floating bar's glass material, the correct
+/// placement above the bar, the morph into and out of the bar as it shows and
+/// hides, and — the part we cannot reproduce by hand — the tab bar's hit area
+/// stays the tab bar's. The content it inserts is also removed from each
+/// tab's safe area automatically, so no screen has to know the bar's height.
+///
+/// Before iOS 26 the tab bar is the classic opaque strip and there is no
+/// accessory slot, so a bottom `safeAreaInset` gives the same result: laid
+/// out above the bar rather than over it, and propagated into every tab's
+/// scroll view as an inset.
+struct MiniPlayerHost: ViewModifier {
+    @ObservedObject var viewModel: PlayerViewModel
+
+    private var isVisible: Bool {
+        viewModel.hasEpisode && !viewModel.isNowPlayingExpanded
+    }
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.tabViewBottomAccessory {
+                if isVisible {
+                    // The system draws the glass behind it, so the card's own
+                    // surface and shadow are switched off.
+                    MiniPlayerView(viewModel: viewModel, drawsOwnChrome: false)
+                }
             }
-            if let index = playerViewModel.blocks.firstIndex(where: {
-                $0.startS == block.startS && $0.endS == block.endS
-            }) {
-                playerViewModel.selectBlock(index)
-            }
-            withAnimation(LucakuMotion.house) {
-                playerViewModel.isNowPlayingExpanded = true
+        } else {
+            content.safeAreaInset(edge: .bottom, spacing: 0) {
+                if isVisible {
+                    MiniPlayerView(viewModel: viewModel)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
         }
     }
