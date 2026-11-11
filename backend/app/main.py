@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
@@ -12,6 +13,7 @@ from app.models import (
     source_catalogue, findings_cache,
 )  # noqa: F401
 from app.services.ai_platform import (
+    ModelUnavailable,
     STRUCTURE_REQUEST_SYSTEM, STRUCTURE_REQUEST_VERSION,
     RESEARCH_TOPIC_SYSTEM, RESEARCH_TOPIC_VERSION,
     WRITE_BLOCK_SYSTEM, WRITE_BLOCK_VERSION,
@@ -83,6 +85,26 @@ app.include_router(search_routes.router, prefix="/api")
 app.include_router(account_routes.router, prefix="/api")
 app.include_router(home_routes.router, prefix="/api")
 app.include_router(instrumentation_routes.router, prefix="/api")
+
+
+@app.exception_handler(ModelUnavailable)
+async def model_unavailable(request: Request, exc: ModelUnavailable):
+    """
+    Turns "the model provider is having a moment" into a 503 the app can say
+    out loud, instead of a 500.
+
+    Registered here rather than caught per-route on purpose. Every route that
+    reaches the AI Platform has the same answer for this — ask again shortly —
+    and a route added tomorrow gets it without remembering to. The detail of
+    what actually failed is already logged by ai_platform._invoke; it is
+    deliberately not in the response, because it is a provider's internal
+    error string and means nothing to the person reading it.
+    """
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "I could not reach the model just now. Try that again in a moment."},
+    )
+
 
 settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)  # StaticFiles needs the dir to exist at mount time
 app.mount("/media", StaticFiles(directory=settings.MEDIA_DIR), name="media")
