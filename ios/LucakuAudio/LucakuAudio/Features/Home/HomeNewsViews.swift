@@ -334,7 +334,8 @@ struct NewsDetailView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(LucakuColor.textPrimary)
                     FeedbackChips(
-                        rating: store.rating(for: story),
+                        isUseful: store.rating(for: story) == .up,
+                        isNotQuite: store.rating(for: story) == .down,
                         onUseful: { store.setRating(store.rating(for: story) == .up ? nil : .up, for: story) },
                         onNotQuite: {
                             if store.rating(for: story) == .down {

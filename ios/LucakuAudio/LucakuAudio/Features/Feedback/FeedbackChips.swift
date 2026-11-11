@@ -5,7 +5,8 @@ import SwiftUI
 /// neutral: `selectedFill` background with `selectedText` content. The player
 /// overrides the colours with its artwork-derived theme.
 struct FeedbackChips: View {
-    let rating: StoryRating?
+    let isUseful: Bool
+    let isNotQuite: Bool
     var onUseful: () -> Void
     var onNotQuite: () -> Void
     var text: Color = LucakuColor.textPrimary
@@ -15,9 +16,9 @@ struct FeedbackChips: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            chip("Useful", icon: "hand.thumbsup", on: rating == .up, action: onUseful)
+            chip("Useful", icon: "hand.thumbsup", on: isUseful, action: onUseful)
                 .accessibilityLabel("Mark story as useful")
-            chip("Not quite", icon: "hand.thumbsdown", on: rating == .down, action: onNotQuite)
+            chip("Not quite", icon: "hand.thumbsdown", on: isNotQuite, action: onNotQuite)
                 .accessibilityLabel("Not quite right: tell us what to change")
         }
     }
