@@ -166,7 +166,10 @@ async def latest_episode(
 ):
     """The customer's own most recent episode."""
     result = await db.execute(
-        select(Episode).where(Episode.customer_id == cliente.id).order_by(Episode.published_at.desc()).limit(1)
+        select(Episode)
+        .where(Episode.customer_id == cliente.id, Episode.published_at.is_not(None))
+        .order_by(Episode.published_at.desc())
+        .limit(1)
     )
     episode = result.scalar_one_or_none()
     if not episode:

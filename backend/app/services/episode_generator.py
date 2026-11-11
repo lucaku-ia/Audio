@@ -673,9 +673,17 @@ async def run_generation(
             language=language,
             style=style,
             voice_id=voice_id,
-            audio_url=None,  # TTS not wired yet — see module docstring
+            audio_url=None,  # set below, only if synthesis actually succeeds
             had_more_any=trim_factor < 1.0,
-            published_at=datetime.utcnow(),
+            # NOT published yet. This used to be datetime.utcnow() here, which
+            # marked the episode published before anyone knew whether it had
+            # audio — so a TTS failure still produced a "published", silent
+            # episode. published_at is now stamped in the voicing stage below,
+            # on success or on the explicit no-TTS-configured path, and stays
+            # NULL when synthesis fails. Every customer-facing query filters on
+            # published_at IS NOT NULL; see this stage's comment for why that
+            # filter is required rather than cosmetic.
+            published_at=None,
             cost={},
         )
         db.add(episode)
@@ -757,6 +765,7 @@ async def run_generation(
         await _advance_status_unless_late(db, job, JobStatus.voicing)
         voicing_skipped = not ai_platform.elevenlabs_configured()
         voicing_cost = 0.0
+        voicing_failed = False
         if not voicing_skipped:
             try:
                 # A plain list-comprehension over synthesize() would lose whatever cost
@@ -781,11 +790,51 @@ async def run_generation(
                 settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
                 (settings.MEDIA_DIR / f"{episode.id}.mp3").write_bytes(audio_bytes)
                 episode.audio_url = f"{settings.PUBLIC_BASE_URL}/media/{episode.id}.mp3"
+                episode.published_at = datetime.utcnow()  # audio exists — only now is it a real episode
                 job.status = JobStatus.ready
             except Exception as exc:
-                # Don't fail the whole job over a TTS problem — the text episode is
-                # still good and published; audio_url just stays null this time.
+                # A TTS failure is a FAILED job, not a published silent episode.
+                #
+                # This used to swallow the exception with the note "the text
+                # episode is still good and published; audio_url just stays null
+                # this time." That was wrong in three separate ways, and the
+                # three compounded into the founder-visible "no audio at all":
+                #
+                #   1. `job.status = JobStatus.ready` is set inside the `try`,
+                #      after synthesis. Swallowing the error left the status on
+                #      `voicing` — a NON-TERMINAL status, forever. Nothing ever
+                #      marked the job finished or failed, so no retry, no error
+                #      surface, no alert.
+                #   2. The episode was published anyway, with audio_url NULL,
+                #      and `episode_published` was emitted for it.
+                #   3. The clients then misreport it permanently: search.py
+                #      computes `state = "ready" if ep.audio_url else "voicing"`,
+                #      so a silent episode reads as "still generating" for the
+                #      rest of time. The customer sees a spinner that can never
+                #      resolve.
+                #
+                # What we do instead: mark the job failed (terminal, retryable,
+                # visible), and leave the episode unpublished so no customer
+                # query returns it.
+                #
+                # We deliberately KEEP the episode and block rows rather than
+                # rolling them back. Research and writing are already paid for —
+                # by far the larger share of the cost of a run — so discarding
+                # the scripts would burn that money and force a full re-research
+                # to recover from what is usually a transient voice-provider
+                # problem (quota, 5xx, timeout). An unpublished episode with
+                # finished scripts is exactly the right state to re-voice from.
                 job.stages = [*job.stages, {"stage": "voicing", "error": str(exc), "cost": voicing_cost}]
+                job.status = JobStatus.failed
+                voicing_failed = True
+
+        if voicing_skipped:
+            # No TTS configured at all (local dev, tests, a deployment without an
+            # ElevenLabs key). This is an explicit, documented mode — see the
+            # module docstring's pre-TTS note — not a failure, so it keeps the
+            # pre-existing behaviour: publish the script-only episode. Only a
+            # real synthesis *error* is treated as a failed job above.
+            episode.published_at = datetime.utcnow()
 
         voicing_latency_ms = int((time.monotonic() - voicing_start) * 1000)
         job.stages = [*job.stages, {
@@ -795,8 +844,16 @@ async def run_generation(
                      job_id=str(job.id), stage="voicing", latency_ms=voicing_latency_ms,
                      skipped=voicing_skipped, cost=voicing_cost)
 
-        await emitir(db, "episode_published", customer_id=cliente.id, source="episode_generator",
-                     job_id=str(job.id), episode_id=str(episode.id), had_more_any=episode.had_more_any)
+        if voicing_failed:
+            # Nothing was published, so don't claim it was. Emitting
+            # `episode_published` here was what made the funnel and the
+            # dashboards count silent episodes as successful deliveries, which
+            # is why "no audio at all" never showed up as a metric.
+            await emitir(db, "job_failed", customer_id=cliente.id, source="episode_generator",
+                         job_id=str(job.id), stage="voicing", episode_id=str(episode.id))
+        else:
+            await emitir(db, "episode_published", customer_id=cliente.id, source="episode_generator",
+                         job_id=str(job.id), episode_id=str(episode.id), had_more_any=episode.had_more_any)
         await db.commit()
         await db.refresh(job)
         return job

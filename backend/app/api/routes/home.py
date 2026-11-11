@@ -203,7 +203,8 @@ async def _derive_banner(db: AsyncSession, cliente: Cliente) -> BannerOut:
 
     if job.status == JobStatus.ready:
         episode_result = await db.execute(
-            select(Episode).where(Episode.customer_id == cliente.id, Episode.fecha == today)
+            select(Episode).where(Episode.customer_id == cliente.id, Episode.fecha == today,
+                                  Episode.published_at.is_not(None))
             .order_by(Episode.published_at.desc())
             .limit(1)
         )
@@ -245,7 +246,7 @@ async def _derive_banner(db: AsyncSession, cliente: Cliente) -> BannerOut:
 async def _derive_recent(db: AsyncSession, cliente: Cliente) -> list[RecentEpisodeOut]:
     episodes_result = await db.execute(
         select(Episode)
-        .where(Episode.customer_id == cliente.id)
+        .where(Episode.customer_id == cliente.id, Episode.published_at.is_not(None))
         .order_by(Episode.fecha.desc(), Episode.published_at.desc())
         .limit(3)
     )
@@ -322,7 +323,7 @@ async def _latest_shared_by_tag(db: AsyncSession) -> dict[str, tuple[Episode, In
     rows_result = await db.execute(
         select(Episode, InventoryItem)
         .join(InventoryItem, InventoryItem.episode_id == Episode.id)
-        .where(Episode.shared.is_(True))
+        .where(Episode.shared.is_(True), Episode.published_at.is_not(None))
         .order_by(Episode.fecha.desc(), Episode.published_at.desc())
     )
     latest_by_tag: dict[str, tuple[Episode, InventoryItem]] = {}
