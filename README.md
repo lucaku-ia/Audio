@@ -920,7 +920,183 @@ Structure, wiring, parsing, routing and the invariants are covered by 24 tests;
 **prompt quality on Haiku and Sonnet is not.** Compare a Haiku-written block
 against an Opus one before trusting the saving.
 
+## The findings store, and the two bugs found building it (2026-11-11)
+
+### What it is
+
+Research is now shared between customers. Episodes never are.
+
+The founder's requirement, verbatim: *"if 2 people are researching for same
+thing, then the info is there and no need to research again"* — alongside the
+constraint stated just as plainly: *"I don't want the same podcast for
+everyone. never."*
+
+Both hold, because the two halves of block production were separated first
+(PR #36): `research_topic` produces customer-neutral **facts**, `write_block`
+turns those facts into **one listener's segment**. Only the first is cached.
+A script is never shared. Audio is never shared.
+
+Two customers following the same topic now pay for that research once between
+them, and still receive two different episodes.
+
+A cache hit costs **zero**, not less — `research_topic` consults the store
+before the model call rather than routing to something cheaper.
+
+| | |
+|---|---|
+| Key | `(topic, scope, geography)`, normalized |
+| Normalization | casefold + accent-fold + whitespace-collapse |
+| Fresh TTL | hours (findings with news) |
+| Empty TTL | well under an hour (`no_news`) |
+| Never cached | parse failures; anything customer-specific |
+
+Normalization is deliberately conservative — no stemming, no synonyms, no
+translation. A false miss costs one research call. A false hit serves a
+customer findings about something they did not ask about.
+
+Accent folding exists because customers write in Spanish: *Elecciones Bogotá*
+and *elecciones bogota* must be one entry.
+
+### Why the two TTLs differ so much
+
+`no_news` is the most time-sensitive answer in the system. A quiet topic at
+7am can be the day's story by 10am. Caching an empty result for hours would
+reintroduce the empty-day lockout that PR #31 fixed — by the back door, and
+for every customer at once rather than one at a time.
+
+### The honest caveat about the cache key
+
+`research_topic`'s prompt also includes the customer's own `raw_text`, because
+the structured fields lose intent (*"how did Arsenal do"* wants results, not
+transfers). So a cached entry was researched from **somebody's** phrasing.
+
+This is accepted deliberately: `topic/scope/geography` **is** this system's own
+normalization of `raw_text` — producing a canonical form is precisely what the
+structure step exists for. Two requests that normalize alike were judged
+equivalent by our own classifier; if that judgement is wrong, the bug is there,
+not in the cache. `researched_from` stores the originating text so a bad hit
+can be diagnosed rather than guessed at.
+
+### Bug 1 — the cache would never have expired anything
+
+`datetime.utcnow()` returns a **naive** datetime. asyncpg encodes a naive
+datetime for a `timestamptz` parameter by assuming it is in the **process's
+local timezone**. On a machine running UTC-8, a row stamped "now" was stored
+eight hours **in the future**:
+
+```
+sent naive : 2026-11-11 17:20:48
+echoed     : 2026-11-12 01:20:48+00:00    (TZ unset, machine on Pacific)
+echoed     : 2026-11-11 17:20:48+00:00    (TZ=UTC)
+```
+
+Every age computed negative. Every entry looked fresh forever. The cache would
+have served yesterday's news indefinitely **while appearing to work
+perfectly** — no error, no warning, no failing test.
+
+**What does not fix it:** pinning the DB session's timezone. That was the first
+attempt and it looks obviously right; the conversion happens client-side inside
+asyncpg, before Postgres is involved. It failed the round-trip test, which is
+the only reason the real cause was found instead of a one-line non-fix shipping
+on top of the bug. (The session setting is kept for a different, real reason —
+server-side `func.date()` day-bucketing in instrumentation.)
+
+**Why production never showed it:** Railway's containers already run UTC, so
+naive-local happens to equal UTC there. The convention has been correct **by
+luck, not by construction** — and wrong in local development the whole time,
+meaning every time-dependent behaviour has been untestable locally.
+
+Two comments already in this repo warned the hazard existed
+(`check_late_jobs`, instrumentation's day-bucketing note). Both were right.
+
+What depends on it: the late-job watchdog, token expiry, the login rate
+limiter, cost day-bucketing, findings freshness.
+
+The real fix is aware UTC at all 31 `utcnow()` call sites — a larger sweep,
+listed in next steps. The process-level pin makes the existing convention
+correct everywhere meanwhile.
+
+### Bug 2 — how close it came to shipping
+
+The first expiry test **passed in isolation and failed through the real
+fixture**. The difference was whether the row was re-read from Postgres or
+served from SQLAlchemy's **identity map**, which returned the value just
+assigned in Python and hid the conversion completely.
+
+Worth remembering generally: an ORM identity map can conceal a storage-layer
+bug entirely until something forces a reload. Tests that assert on an object
+they just wrote, in the same session, are not testing persistence.
+
+### Why `main` went red on 2026-11-11, and what it says about merging
+
+After nine PRs merged in one sitting, 12 of 38 tests failed on `main` with
+no new code involved:
+
+```
+AttributeError: module 'app.services.ai_platform' has no attribute
+'research_and_write_block'
+```
+
+PRs #31 and #36 were **each individually reported MERGEABLE**, git merged the
+text with **zero conflicts**, and the breakage was purely semantic: #36 deleted
+a function #31's tests patched by name. Neither PR's suite was ever run against
+the other's merged result.
+
+No tooling in this repo would have caught it. Only running the combined result
+would — which nobody did, including the agent that flagged the collision in
+advance and then failed to verify the outcome.
+
+The runtime was never affected (only comments referenced the old name), but a
+red suite that everyone knows is red stops being a signal at all.
+
+Fixed in PR #42 by moving the pipeline fakes into one module,
+`backend/tests/fakes.py`, so the next change to the pipeline's shape updates one
+file instead of four.
+
 ## Suggested next steps
+
+**Status as of 2026-11-11, after the autonomous backend session.** Open PRs,
+in merge order: #42 (test suite repair — `main` is red without it), #43
+(voicing failures + pool), #45 (findings store), #46 (timestamp correctness),
+#44 (signup error messages, independent of the chain). #41 is superseded by
+#43 and should be closed.
+
+Blocked on the founder, not on code:
+
+- **ElevenLabs credits.** Nothing produces audio until the plan is topped up.
+  Every code path around voicing is now correct and tested, and not one real
+  episode has been verified end to end, because none can be.
+- **An Anthropic key usable locally.** The 64% routing saving is measured on
+  price, not on quality: no Haiku-written block has ever been compared against
+  an Opus one. That number should not be trusted until someone checks the
+  writing did not get worse.
+- **`INTERNAL_DASHBOARD_KEY` in Railway Variables.** Until it is set, Home's
+  "For you" and "Explore" shelves render nothing in production — the pipeline
+  and the seeds exist, the content does not.
+- **A Voyage AI key**, for the semantic index (item 6 below).
+
+Code work, highest value first:
+
+- **Aware UTC at all 31 `utcnow()` call sites.** PR #46 makes the naive
+  convention correct from one place; this removes the hazard rather than
+  containing it. See "The findings store, and the two bugs found building it".
+- **Get generation off the request path.** `POST /generation/run` still awaits
+  the whole pipeline inline, holding a DB connection for ~40s; the iOS client
+  carries a 300s timeout and a spinner to match. PR #43's pool sizing is a
+  stopgap for the symptom. The real fix is a job queue plus client polling, and
+  it changes an API contract the shipped app depends on, so it needs the app
+  rebuilt in the same change. Onboarding already does this correctly (PR #31's
+  `_trigger_first_episode_in_background`) and is the pattern to copy.
+- **A re-voice path.** PR #43 deliberately keeps the episode and finished
+  scripts when TTS fails, precisely so a failed job can be re-voiced without
+  paying for research again. Nothing consumes that yet.
+- **Continuity between episodes.** The founder asked for the cache partly as a
+  product feature — *"this is also good for the customer no? like having a
+  connection from the previous episode?"* The shared findings store is the
+  cost half. The other half is a per-customer told-log: what this listener has
+  already been told, so today's episode can say "yesterday we said X, today…"
+  and avoid repeating itself. Not built.
+
 
 1. ~~Finish the free-text-interests worktree~~ — **done**, rebuilt directly against
    `main` and verified against production. See "Free-text AI-categorized interests"
