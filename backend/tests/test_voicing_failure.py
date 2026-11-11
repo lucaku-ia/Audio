@@ -21,8 +21,8 @@ re-researching.
 ElevenLabs is unconfigured in this worktree, so `elevenlabs_configured` is
 monkeypatched True to reach the synthesis path at all, and `synthesize` is
 swapped for a coroutine that raises — never mocked at the HTTP level.
-Anthropic is unavailable too, so `research_and_write_block` is faked exactly
-as test_episode_generator_retry.py does.
+Anthropic is unavailable too, so the research/write pipeline is faked through
+tests.fakes.patch_ai_pipeline, exactly as the other suites do.
 
 Run with (from backend/):
 TEST_DATABASE_URL=postgresql+asyncpg://lucaku:lucaku@localhost:5432/lucaku_audio_test pytest tests/test_voicing_failure.py
@@ -41,6 +41,7 @@ from app.models.profile import Profile
 from app.models.request import CreatedFrom, Request, RequestKind, RequestStatus
 from app.services import ai_platform
 from app.services.episode_generator import run_generation
+from tests.fakes import patch_ai_pipeline
 
 
 async def _make_customer(db) -> Cliente:
@@ -56,18 +57,8 @@ async def _make_customer(db) -> Cliente:
     return cliente
 
 
-def _news_result() -> ai_platform.BlockResult:
-    return ai_platform.BlockResult(
-        summary="Something happened", script="Here is today's real news. " * 10,
-        sources=[], no_news=False, cost=0.43,
-    )
-
-
 def _arrange_tts(monkeypatch, *, raises: bool):
-    async def fake_news(*a, **kw):
-        return _news_result()
-
-    monkeypatch.setattr(ai_platform, "research_and_write_block", fake_news)
+    patch_ai_pipeline(monkeypatch)
     monkeypatch.setattr(ai_platform, "elevenlabs_configured", lambda: True)
 
     if raises:
