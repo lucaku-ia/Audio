@@ -63,7 +63,8 @@ DATABASE_URL = _normalizar_database_url(
 # meanwhile. app/services/findings_store.py already uses aware UTC of its own
 # and stays correct regardless of this setting.
 os.environ["TZ"] = "UTC"
-time.tzset()
+if hasattr(time, "tzset"):  # Unix only; absent on Windows, where this would
+    time.tzset()            # raise AttributeError at import and kill the app
 
 # The DB session's timezone still matters for SERVER-side date arithmetic —
 # func.date() on a timestamptz column buckets per this setting, which is what

@@ -1053,6 +1053,85 @@ Fixed in PR #42 by moving the pipeline fakes into one module,
 `backend/tests/fakes.py`, so the next change to the pipeline's shape updates one
 file instead of four.
 
+## Recovery and continuity (2026-11-11)
+
+### Re-voicing instead of re-researching
+
+A job that dies in voicing keeps its episode and its finished block scripts,
+unpublished (PR #43). When the customer generates again, the pipeline now
+**re-voices those scripts** rather than running the whole day again.
+
+Research and writing are the larger share of a run's cost and are already
+spent. The usual cause of a voicing failure is a quota since topped up or a
+provider 5xx — neither is worth paying for the day twice. This is the path
+that matters the moment ElevenLabs is topped up: every job that failed for
+lack of credits becomes recoverable for the price of the audio alone.
+
+The synthesis stage is shared (`_synthesize_episode`), not duplicated — two
+implementations of "turn scripts into the published episode" is how an
+episode ends up published one way and re-published another.
+
+It refuses in four cases, and the first is the one that matters:
+
+| Refuses when | Because |
+|---|---|
+| the job failed **before** voicing | there are no scripts; it would publish an empty episode |
+| the job is `ready` | re-billing the most expensive half for no benefit |
+| TTS is still unconfigured | nothing to retry with |
+| no unpublished episode with a script | nothing to recover |
+
+A failed re-voice stays `failed` — dropping back to a non-terminal status
+would recreate the "stuck on voicing forever" bug this chain began by fixing.
+
+### Continuity: each episode as the next instalment
+
+`write_block` now receives what this listener already heard on **this**
+request (`app/services/told_log.py`), so a segment can move a story forward
+instead of restarting it.
+
+The asymmetry with the findings cache is deliberate and load-bearing:
+
+| | Findings cache | Told-log |
+|---|---|---|
+| Scope | shared across customers | per customer |
+| Key | topic | that customer's own request |
+| Lives in | `research_topic` | `write_block` only |
+| Buys | cost | continuity |
+
+`research_topic` does not accept a listener history, and a test asserts it
+never will. If one listener's history reached research, cached findings would
+be coloured by a stranger's past episodes and the split would collapse.
+**Findings are common; memory is personal.**
+
+No new table — every `Block` already carries a `request_id` and a one-line
+summary, so this is a read rather than a second source of truth that could
+drift from what was actually said.
+
+**Only published episodes count.** An episode that died in voicing has
+finished scripts in the database and reached nobody; treating it as told
+would open tomorrow with "yesterday we covered the rate decision" to someone
+who heard silence. `published_at` is the only honest record of what was
+delivered — which is why PR #43 stopping it being stamped before the audio
+exists is what makes this correct.
+
+History is capped at three segments, and the prompt forbids recap: no
+re-explaining, no opening summary, and no padding to reach the word target —
+if today adds little, today is short.
+
+### Verified by actually booting it
+
+The whole stack was booted against an empty database and exercised, not just
+unit-tested:
+
+- `create_all` builds `findings_cache` with its unique constraint and both
+  indexes
+- the process-level UTC pin applies at import without breaking startup
+- `POST /api/auth/signup` → token → `GET /api/auth/me` → `GET /api/home`, all 200
+
+`/api/home` on a fresh account returns `shared_inventory: []` and
+`explore: []` — the empty-shelves problem is still exactly as described in
+next steps, and still waiting on `INTERNAL_DASHBOARD_KEY` in Railway.
+
 ## Suggested next steps
 
 **Status as of 2026-11-11, after the autonomous backend session.** Open PRs,
