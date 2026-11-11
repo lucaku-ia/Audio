@@ -828,6 +828,98 @@ news"`, `"Resumen diario de IA..."`). That follows the backend's default languag
 setting and is not a bug, but nobody has explicitly decided whether Spanish-by-default
 is the intended behaviour for all customers.
 
+## What an episode costs, and the model routing that changed it
+
+Measured against production on 2026-09-24, then re-costed after routing.
+
+**The two inputs, measured not estimated:** 782 ElevenLabs credits for 66
+seconds of speech (11.8 credits/second), and $0.348 of Claude for one
+researched block on `claude-opus-5`.
+
+### The routing
+
+Every call in `ai_platform.py` used to run on one Opus model regardless of the
+job. The four jobs have very different shapes, and paying one rate for all of
+them was the largest avoidable cost in the product:
+
+| Purpose | Shape | Model now |
+|---|---|---|
+| `research_topic` | ~50K input tokens of search results, real judgment | Sonnet 5.5 |
+| `write_block` | small input, no web access, facts into a paragraph | Haiku 5.5 |
+| `structure_request` | one sentence in, a few fields out | Haiku 5.5 |
+| `refine_request` | a block plus an intent | Haiku 5.5 |
+
+| | Before (all Opus 5) | Routed | |
+|---|---|---|---|
+| One researched + written block | $0.3050 | **$0.1106** | −64% |
+| 10-min daily listener, Claude only | $92/mo | **$33/mo** | |
+| 5-min daily listener, Claude only | $46/mo | **$17/mo** | |
+| One classify | $0.0125 | $0.00025 | |
+
+The default model also moved `claude-opus-5` → `claude-opus-5-5` — same tier,
+$4/$20 instead of $5/$25.
+
+**Research is deliberately not on Haiku.** The `web_search_20260209` tool this
+module declares is not available there, so routing research to Haiku would
+silently fall back to a weaker search variant — a quality change disguised as
+a cost change. There is a test asserting research never lands there.
+
+### This flips the earlier finding
+
+Before routing, research was ~73% of what an episode cost and voice was the
+smaller half. **After routing, ElevenLabs is the larger half.** For a 10-minute
+daily listener: ~$33/month of Claude against ~$38/month of voice.
+
+That matters for what to work on next. The findings cache attacks what is left
+of the Claude side and gets better as customers share topics. Voice does not
+amortise the same way — every listener's audio is their own — and ElevenLabs
+barely gets cheaper with scale ($0.142/audio-minute on Starter, $0.117 on the
+$299 Scale tier). **Voice is now the thing to look at**, not research.
+
+### Escalation, and what it deliberately does not do
+
+A cheap model whose output cannot be parsed is retried once on a stronger one.
+The trigger is narrow on purpose: **not** "the cheap answer looks weak" —
+nobody can judge that in this code, and a model reporting an honestly quiet day
+is giving the *correct* answer, which must not be second-guessed into a
+fabricated one. Only `parse_failed`.
+
+That needed a new flag. Until now an unparseable response and a genuinely quiet
+day both produced `no_news=True` and were **indistinguishable**, so a malformed
+response silently became an empty episode. Both attempts log their own `AICall`
+row with their own model, so the dashboard shows what escalation costs instead
+of hiding the retry inside one row.
+
+### Why the research/writing split had to come first
+
+`research_and_write_block` did both jobs in one call and took `customer_id`,
+`style` and `language`. Fused, neither half could be cached *or* routed — you
+cannot send "the expensive customer-neutral half" to one model and "the cheap
+per-listener half" to another when they are the same request. The split
+(`research_topic` / `write_block`) is the prerequisite for both.
+
+**The facts are shared, the episode never is.** Two customers on one topic share
+a research pass and still get their own script, in their own style and language,
+voiced into their own audio file.
+
+### What the $5/customer/month target needs
+
+With routing, Claude for a 10-minute daily listener is ~$33/month. Voice is
+~$38. $5 therefore still needs the episode to be short — roughly a minute of
+*bespoke* audio a day — or shared audio for shared blocks, which is a product
+decision about whether anyone hears the same recording as anyone else.
+
+Both figures are cost of goods only: no Railway, storage or bandwidth, and they
+assume every customer is daily.
+
+### Still unverified
+
+The prompts have never faced a real model on the cheaper tiers — there is no
+Anthropic key in the local environment and Railway deploys only `main`.
+Structure, wiring, parsing, routing and the invariants are covered by 24 tests;
+**prompt quality on Haiku and Sonnet is not.** Compare a Haiku-written block
+against an Opus one before trusting the saving.
+
 ## Suggested next steps
 
 1. ~~Finish the free-text-interests worktree~~ — **done**, rebuilt directly against
