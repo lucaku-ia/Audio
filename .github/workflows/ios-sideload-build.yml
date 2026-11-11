@@ -15,11 +15,11 @@ on:
 
 jobs:
   build-unsigned-ipa:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
-      # Uses whatever Xcode macos-14 runners default to (currently Xcode 15.x,
+      # Uses whatever Xcode macos-15 runners default to (currently Xcode 15.x,
       # iOS 17 SDK) rather than pinning a specific version here — GitHub
       # periodically changes which exact sub-versions are preinstalled, and a
       # hardcoded path (e.g. /Applications/Xcode_15.4.app) silently breaks the
