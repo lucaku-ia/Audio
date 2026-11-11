@@ -55,7 +55,7 @@ struct NowPlayingView: View {
                 }
             }
             .scrollIndicators(.hidden)
-            .statusBarFade(background: theme.base)
+            .statusBarFade(background: theme.topFade)
         }
         .foregroundStyle(theme.fg)
         .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 28, bottomTrailingRadius: 28, style: .continuous))

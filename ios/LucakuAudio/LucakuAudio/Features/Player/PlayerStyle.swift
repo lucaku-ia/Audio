@@ -58,6 +58,8 @@ struct PlayerTheme {
     let playedLine: Color
     let upcomingLine: Color
     let wash: LinearGradient
+    /// Solid colour of the visible background at the very top (base + wash top stop), for the status-bar fade.
+    let topFade: Color
 
     init(colorScheme: ColorScheme, story seed: String) {
         let c = StoryPalette.colors(for: seed)
@@ -116,6 +118,7 @@ struct PlayerTheme {
                 startPoint: .top, endPoint: .bottom
             )
         }
+        topFade = Self.blend(c.bright, alpha: dark ? 0.55 : 0.2, over: base)
         // Transcript card: tinted with the story colour in dark, a faint wash in light.
         transcriptCard = dark
             ? AnyShapeStyle(LinearGradient(colors: [c.bright.opacity(0.95), c.deep.opacity(0.98)],
@@ -124,6 +127,17 @@ struct PlayerTheme {
     }
 
     let transcriptCard: AnyShapeStyle
+
+    private static func blend(_ top: Color, alpha: Double, over bottom: Color) -> Color {
+        var t: (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
+        var b: (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
+        UIColor(top).getRed(&t.0, green: &t.1, blue: &t.2, alpha: &t.3)
+        UIColor(bottom).getRed(&b.0, green: &b.1, blue: &b.2, alpha: &b.3)
+        let a = CGFloat(alpha)
+        return Color(red: Double(t.0 * a + b.0 * (1 - a)),
+                     green: Double(t.1 * a + b.1 * (1 - a)),
+                     blue: Double(t.2 * a + b.2 * (1 - a)))
+    }
 }
 
 // MARK: - Story copy
