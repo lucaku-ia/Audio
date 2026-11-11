@@ -52,6 +52,8 @@
 		A7B44C3FD34840806F4392D1 /* OnboardingModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51CA43878CF2C5863DBB7EA4 /* OnboardingModels.swift */; };
 		23A05794EAAC1C9CABBE2ECC /* InterestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC361A1FEAC920AD3A9F1206 /* InterestsView.swift */; };
 		7B29F2B22B5FDDECAF312A11 /* InterestsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EA55CB2C7850CF74DD91464 /* InterestsViewModel.swift */; };
+		A1C0DE0100000000000000A1 /* InterestsComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0200000000000000A1 /* InterestsComponents.swift */; };
+		A1C0DE0100000000000000A2 /* InterestSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0200000000000000A2 /* InterestSheet.swift */; };
 		8CF6D96B6D16E99187886683 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EDFAA2BF229CEE6F1AD4029 /* SpeechService.swift */; };
 		D1E7FF5E6F885CC2B1D86190 /* OnboardingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4FA3DAA5B636A8580EAF7AE /* OnboardingViewModel.swift */; };
 		2E36D12221ABA2EB5B9BA806 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9E26F9D6CDA135FA4A1E38 /* OnboardingView.swift */; };
@@ -105,6 +107,8 @@
 		51CA43878CF2C5863DBB7EA4 /* OnboardingModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingModels.swift; sourceTree = "<group>"; };
 		FC361A1FEAC920AD3A9F1206 /* InterestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterestsView.swift; sourceTree = "<group>"; };
 		8EA55CB2C7850CF74DD91464 /* InterestsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterestsViewModel.swift; sourceTree = "<group>"; };
+		A1C0DE0200000000000000A1 /* InterestsComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterestsComponents.swift; sourceTree = "<group>"; };
+		A1C0DE0200000000000000A2 /* InterestSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterestSheet.swift; sourceTree = "<group>"; };
 		2EDFAA2BF229CEE6F1AD4029 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
 		A4FA3DAA5B636A8580EAF7AE /* OnboardingViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViewModel.swift; sourceTree = "<group>"; };
 		2A9E26F9D6CDA135FA4A1E38 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
@@ -193,6 +197,8 @@
 			children = (
 				FC361A1FEAC920AD3A9F1206 /* InterestsView.swift */,
 				8EA55CB2C7850CF74DD91464 /* InterestsViewModel.swift */,
+				A1C0DE0200000000000000A1 /* InterestsComponents.swift */,
+				A1C0DE0200000000000000A2 /* InterestSheet.swift */,
 			);
 			path = Interests;
 			sourceTree = "<group>";
@@ -450,6 +456,8 @@
 				A7B44C3FD34840806F4392D1 /* OnboardingModels.swift in Sources */,
 				23A05794EAAC1C9CABBE2ECC /* InterestsView.swift in Sources */,
 				7B29F2B22B5FDDECAF312A11 /* InterestsViewModel.swift in Sources */,
+				A1C0DE0100000000000000A1 /* InterestsComponents.swift in Sources */,
+				A1C0DE0100000000000000A2 /* InterestSheet.swift in Sources */,
 				8CF6D96B6D16E99187886683 /* SpeechService.swift in Sources */,
 				D1E7FF5E6F885CC2B1D86190 /* OnboardingViewModel.swift in Sources */,
 				2E36D12221ABA2EB5B9BA806 /* OnboardingView.swift in Sources */,

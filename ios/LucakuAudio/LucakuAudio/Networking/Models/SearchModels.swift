@@ -141,3 +141,12 @@ struct CreateRequestBody: Encodable {
         case createdFrom = "created_from"
     }
 }
+
+/// PATCH /requests/{id} body (`EditarRequestBody` in requests.py).
+struct EditRequestBody: Encodable {
+    let rawText: String
+
+    enum CodingKeys: String, CodingKey {
+        case rawText = "raw_text"
+    }
+}
