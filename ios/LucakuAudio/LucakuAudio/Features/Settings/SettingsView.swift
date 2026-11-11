@@ -43,7 +43,7 @@ struct SettingsView: View {
                     signOutButton
                 }
                 .padding(.horizontal, 16)
-                .padding(.bottom, 140) // clears the mini player + tab bar
+                .padding(.bottom, 24) // mini player + tab bar come from the safe area
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .background(LucakuColor.bg.ignoresSafeArea())

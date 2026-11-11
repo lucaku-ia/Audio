@@ -65,8 +65,7 @@ struct MainTabView: View {
     @State private var selection: Tab = .home
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            TabView(selection: $selection) {
+        TabView(selection: $selection) {
                 // Home reads the shared `playerViewModel` via
                 // `@EnvironmentObject` (inherited from this view's own
                 // environment). "Edit" on its "Your Lucaku" card switches to
@@ -86,18 +85,24 @@ struct MainTabView: View {
                 SettingsView(onSeeInterests: { selection = .interests })
                     .tabItem { Label("Profile", systemImage: selection == .profile ? "person.fill" : "person") }
                     .tag(Tab.profile)
-            }
-
-            // Persistent mini player — mounted ONCE here, above the tab bar,
-            // visible on every tab (Home, Interests, Profile). Not
-            // re-created per screen.
-            if playerViewModel.hasEpisode && !playerViewModel.isNowPlayingExpanded {
-                MiniPlayerView(viewModel: playerViewModel)
-                    .padding(.bottom, 50) // clears the system tab bar
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
         }
+        // The brand accent, not the system blue. Without this the selected
+        // tab, and every other control that inherits the tint, renders in
+        // iOS's default accent and the app stops looking like itself.
+        .tint(LucakuColor.accent)
+        // Persistent mini player — mounted ONCE here, above the tab bar,
+        // visible on every tab (Home, Interests, Profile), never re-created
+        // per screen.
+        //
+        // It used to be a ZStack overlay with `.padding(.bottom, 50)`. An
+        // overlay floats over the content *and* over the tab bar's own hit
+        // area, so the bar's top edge stopped responding to taps, and every
+        // screen had to guess the bar's height to keep its last rows clear —
+        // ContentView 50, HomeView 96, PlayerListView 110, SettingsView 140:
+        // four different guesses at one layout, none of them right.
+        .modifier(MiniPlayerHost(viewModel: playerViewModel))
         .animation(LucakuMotion.house, value: playerViewModel.isNowPlayingExpanded)
+        .animation(LucakuMotion.house, value: playerViewModel.hasEpisode)
         .overlay {
             // Tapping the mini player expands into the full "Now Playing"
             // view — presented as an expansion of the mini player from the
@@ -118,6 +123,47 @@ struct MainTabView: View {
         }
     }
 
+}
+
+/// Mounts the persistent mini player above the tab bar.
+///
+/// On iOS 26 and later the system owns this slot: `tabViewBottomAccessory`
+/// is the platform's own mini-player API (it is what Music and Podcasts sit
+/// in), so the accessory gets the floating bar's glass material, the correct
+/// placement above the bar, the morph into and out of the bar as it shows and
+/// hides, and — the part we cannot reproduce by hand — the tab bar's hit area
+/// stays the tab bar's. The content it inserts is also removed from each
+/// tab's safe area automatically, so no screen has to know the bar's height.
+///
+/// Before iOS 26 the tab bar is the classic opaque strip and there is no
+/// accessory slot, so a bottom `safeAreaInset` gives the same result: laid
+/// out above the bar rather than over it, and propagated into every tab's
+/// scroll view as an inset.
+struct MiniPlayerHost: ViewModifier {
+    @ObservedObject var viewModel: PlayerViewModel
+
+    private var isVisible: Bool {
+        viewModel.hasEpisode && !viewModel.isNowPlayingExpanded
+    }
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.tabViewBottomAccessory {
+                if isVisible {
+                    // The system draws the glass behind it, so the card's own
+                    // surface and shadow are switched off.
+                    MiniPlayerView(viewModel: viewModel, drawsOwnChrome: false)
+                }
+            }
+        } else {
+            content.safeAreaInset(edge: .bottom, spacing: 0) {
+                if isVisible {
+                    MiniPlayerView(viewModel: viewModel)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+        }
+    }
 }
 
 #Preview {

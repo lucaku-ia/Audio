@@ -27,7 +27,7 @@ struct PlayerListView: View {
                         loadedContent
                     }
                 }
-                .padding(.bottom, 110) // clears the mini player, matching player_v3.html's .list-scroll
+                .padding(.bottom, 16) // mini player comes from the safe-area inset
             }
             .background(LucakuColor.bg)
             .navigationBarHidden(true)

@@ -11,6 +11,10 @@ import SwiftUI
 struct MiniPlayerView: View {
     @ObservedObject var viewModel: PlayerViewModel
 
+    /// False when the mini player is hosted by something that already draws a
+    /// background for it (iOS 26's `tabViewBottomAccessory`).
+    var drawsOwnChrome: Bool = true
+
     var body: some View {
         if let block = viewModel.currentBlock {
             card(block)
@@ -59,17 +63,21 @@ struct MiniPlayerView: View {
             .padding(.horizontal, 8)
             .padding(.bottom, 4)
         }
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(LucakuColor.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(LucakuColor.borderSoft, lineWidth: 1)
-                )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .shadow(color: .black.opacity(0.14), radius: 12, x: 0, y: 4)
-        .padding(.horizontal, LucakuSpacing.sp2)
+        // `drawsOwnChrome == false` when the system is already providing a
+        // background — as a `tabViewBottomAccessory` the platform draws the
+        // glass surface and positions the bar, and painting our own card on
+        // top of it gives a panel inside a panel.
+        .background {
+            if drawsOwnChrome {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(LucakuColor.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(LucakuColor.borderSoft, lineWidth: 1)
+                    )
+            }
+        }
+        .modifier(MiniPlayerCardChrome(enabled: drawsOwnChrome))
         // Whole card opens the player; the control buttons below take their
         // own taps first and never open it.
         .contentShape(Rectangle())
@@ -121,6 +129,25 @@ struct MiniPlayerView: View {
             .disabled(viewModel.currentBlockIndex >= viewModel.blocks.count - 1)
             .opacity(viewModel.currentBlockIndex >= viewModel.blocks.count - 1 ? 0.4 : 1)
             .accessibilityLabel("Next story")
+        }
+    }
+}
+
+
+/// The floating-card treatment the mini player wears only when it is NOT
+/// hosted inside a system-provided bar.
+private struct MiniPlayerCardChrome: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .shadow(color: .black.opacity(0.14), radius: 12, x: 0, y: 4)
+                .padding(.horizontal, LucakuSpacing.sp2)
+                .padding(.bottom, 8)
+        } else {
+            content
         }
     }
 }

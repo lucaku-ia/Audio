@@ -44,9 +44,10 @@ struct HomeView: View {
                         }
                         .padding(.horizontal, LucakuSpacing.sp4)
                         .padding(.top, LucakuSpacing.sp2)
-                        // Room for the global mini player (mounted once in
-                        // MainTabView) so it never covers the last row.
-                        .padding(.bottom, playerViewModel.hasEpisode ? 96 : LucakuSpacing.sp8)
+                        // No mini-player allowance here: MainTabView mounts
+                        // it as a bottom safe-area inset, so this scroll view
+                        // is already inset by its real height.
+                        .padding(.bottom, LucakuSpacing.sp8)
                     }
                 }
                 .statusBarFade()

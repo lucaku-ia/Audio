@@ -382,7 +382,7 @@ struct NewsDetailView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .background(Capsule().fill(LucakuColor.textPrimary))
-                    .padding(.bottom, 110)
+                    .padding(.bottom, 12)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
