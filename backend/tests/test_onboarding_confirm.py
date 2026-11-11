@@ -11,7 +11,7 @@ FastAPI TestClient/HTTP layer needed since these are plain async functions
 once their Depends() defaults are supplied explicitly.
 
 The only AI call this suite touches is app.services.ai_platform's Anthropic-
-backed research_and_write_block — no ANTHROPIC_API_KEY is available in this
+backed research_topic/write_block — no ANTHROPIC_API_KEY is available in this
 worktree, so it's monkeypatched to a fake coroutine everywhere the pipeline
 would otherwise run (see conftest.py's full_db_session for why real commits
 mean the plain db_session fixture doesn't fit these tests). ElevenLabs voicing
@@ -38,6 +38,7 @@ from app.models.generation_job import GenerationJob
 from app.models.profile import Profile
 from app.models.request import CreatedFrom, Request, RequestKind, RequestStatus
 from app.services import ai_platform
+from tests.fakes import patch_ai_pipeline_forbidden, patch_ai_pipeline_slow
 
 _TZ = "America/Bogota"
 
@@ -77,22 +78,13 @@ def _spy_create_task(monkeypatch, created: list):
     monkeypatch.setattr(onboarding.asyncio, "create_task", _spy)
 
 
-async def _fake_slow_empty_research(*args, **kwargs) -> ai_platform.BlockResult:
-    """Stands in for the real Anthropic-backed call (no ANTHROPIC_API_KEY in
-    this worktree). Sleeps long enough that a test can prove confirm()
-    returned well before this coroutine finished — the exact bug being
-    fixed was confirm() awaiting a chain that bottoms out here."""
-    await asyncio.sleep(0.35)
-    return ai_platform.BlockResult(summary="", script="", sources=[], no_news=True, cost=0.43)
-
-
 @pytest.mark.asyncio
 async def test_confirm_on_demand_returns_before_pipeline_finishes(full_db_session, monkeypatch):
     """The core Defect 1 regression test: with delivery < 60 minutes away
     (the on_demand path), confirm() must return in well under the time the
     (mocked, artificially slowed) pipeline takes — proving the HTTP response
-    isn't waiting on research_and_write_block at all."""
-    monkeypatch.setattr(ai_platform, "research_and_write_block", _fake_slow_empty_research)
+    isn't waiting on the generation pipeline at all."""
+    patch_ai_pipeline_slow(monkeypatch)
     created_tasks: list = []
     _spy_create_task(monkeypatch, created_tasks)
 
@@ -125,14 +117,7 @@ async def test_confirm_scheduled_path_triggers_no_background_generation(full_db_
     own ticker creates that GenerationJob later, at T-60, so confirm() must
     not also kick off a background run itself (that would race the ticker
     and/or double up on the (customer, fecha, path) idempotency key)."""
-    called = False
-
-    async def _fail_if_called(*a, **kw):
-        nonlocal called
-        called = True
-        raise AssertionError("research_and_write_block should not run from the scheduled path")
-
-    monkeypatch.setattr(ai_platform, "research_and_write_block", _fail_if_called)
+    patch_ai_pipeline_forbidden(monkeypatch, "the pipeline must not run from the scheduled path")
     created_tasks: list = []
     _spy_create_task(monkeypatch, created_tasks)
 
@@ -142,9 +127,9 @@ async def test_confirm_scheduled_path_triggers_no_background_generation(full_db_
     assert result.path == "scheduled"
     assert created_tasks == []  # nothing was ever scheduled in the background
 
-    # give any stray task a chance to run before asserting nothing happened
+    # Give any stray task a chance to run. patch_ai_pipeline_forbidden raises
+    # on any pipeline call, so reaching this line at all is the assertion.
     await asyncio.sleep(0)
-    assert called is False
 
     jobs = (await full_db_session.execute(
         select(GenerationJob).where(GenerationJob.customer_id == cliente.id)
@@ -158,7 +143,7 @@ async def test_confirm_called_twice_still_produces_one_job(full_db_session, monk
     double-tap (or a retried client request) on confirm() must not produce a
     second GenerationJob — run_generation's own (customer, fecha, path)
     uniqueness is what the second background trigger falls back on."""
-    monkeypatch.setattr(ai_platform, "research_and_write_block", _fake_slow_empty_research)
+    patch_ai_pipeline_slow(monkeypatch)
     created_tasks: list = []
     _spy_create_task(monkeypatch, created_tasks)
 
@@ -180,7 +165,7 @@ async def test_confirm_response_body_shape_unchanged_by_the_fix(full_db_session,
     path and first_episode_eta must still be exactly what the pre-fix
     endpoint computed — only day_zero_sample (Defect 3, additive) and the
     background side effect are new."""
-    monkeypatch.setattr(ai_platform, "research_and_write_block", _fake_slow_empty_research)
+    patch_ai_pipeline_slow(monkeypatch)
     created_tasks: list = []
     _spy_create_task(monkeypatch, created_tasks)
 

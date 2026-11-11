@@ -85,3 +85,4 @@ async def full_db_session():
     async with engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE TABLE {', '.join(_FULL_SESSION_TABLES)} RESTART IDENTITY CASCADE"))
     await engine.dispose()
+

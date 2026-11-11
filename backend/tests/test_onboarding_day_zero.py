@@ -18,8 +18,9 @@ content exists — and correctly stays null for a customer whose interests
 don't match it.
 
 No ANTHROPIC_API_KEY is available in this worktree, so
-app.services.ai_platform.research_and_write_block is monkeypatched for the
-one shared-episode generation each test needs.
+the AI pipeline (ai_platform.research_topic and write_block) is monkeypatched
+via tests.fakes.patch_ai_pipeline for the one shared-episode generation each
+test needs.
 
 Run with (from backend/):
 TEST_DATABASE_URL=postgresql+asyncpg://lucaku:lucaku@localhost:5432/lucaku_audio_test pytest tests/test_onboarding_day_zero.py
@@ -38,6 +39,7 @@ from app.models.profile import Profile
 from app.models.request import CreatedFrom, Request, RequestKind, RequestStatus
 from app.services import ai_platform
 from app.services.episode_generator import generate_shared_episode
+from tests.fakes import patch_ai_pipeline
 
 
 async def _make_onboarding_customer(db, *, selected_interests: list[str]) -> Cliente:
@@ -56,13 +58,6 @@ async def _make_onboarding_customer(db, *, selected_interests: list[str]) -> Cli
     await db.commit()
     await db.refresh(cliente)
     return cliente
-
-
-async def _fake_news(*args, **kwargs) -> ai_platform.BlockResult:
-    return ai_platform.BlockResult(
-        summary="Tech roundup", script="Big things happened in technology today. " * 10,
-        sources=[], no_news=False, cost=0.43,
-    )
 
 
 @pytest.mark.asyncio
@@ -97,7 +92,7 @@ async def test_day_zero_sample_populated_once_a_matching_shared_episode_exists(f
     tag the customer follows, the SAME fresh database now surfaces it
     through both GET /state and POST /confirm — proving the fallback
     mechanism itself is correct and the only real gap was "no content yet"."""
-    monkeypatch.setattr(ai_platform, "research_and_write_block", _fake_news)
+    patch_ai_pipeline(monkeypatch)
 
     shared_job = await generate_shared_episode(
         full_db_session, tag="technology", seed_request_text="Latest AI and technology developments.",
@@ -120,7 +115,7 @@ async def test_day_zero_sample_populated_once_a_matching_shared_episode_exists(f
 async def test_day_zero_sample_stays_null_when_no_interest_matches(full_db_session, monkeypatch):
     """'If we cannot say why, we do not show it' — a shared episode existing
     for "technology" must not leak into a customer who never selected it."""
-    monkeypatch.setattr(ai_platform, "research_and_write_block", _fake_news)
+    patch_ai_pipeline(monkeypatch)
     await generate_shared_episode(
         full_db_session, tag="technology", seed_request_text="Latest AI and technology developments.",
     )
@@ -136,7 +131,7 @@ async def test_day_zero_sample_null_before_interests_are_selected(full_db_sessio
     """A customer who hasn't reached the interests step yet (no
     OnboardingState.selected_interests) must also get null, never a guessed
     match — same tenet Home's own shared_inventory already follows."""
-    monkeypatch.setattr(ai_platform, "research_and_write_block", _fake_news)
+    patch_ai_pipeline(monkeypatch)
     await generate_shared_episode(
         full_db_session, tag="technology", seed_request_text="Latest AI and technology developments.",
     )
