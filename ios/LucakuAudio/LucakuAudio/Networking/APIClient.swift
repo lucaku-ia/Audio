@@ -230,6 +230,12 @@ actor APIClient {
         )
     }
 
+    /// PATCH /requests/{id}/archive: stops following a standing request (the
+    /// onboarding chat's X on a topic it just added).
+    func archiveRequest(id: String, token: String) async throws {
+        try await sendRaw(path: "/requests/\(id)/archive", method: "PATCH", token: token)
+    }
+
     // MARK: - Request building / sending
 
     private func makeRequest(
