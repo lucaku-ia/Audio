@@ -121,6 +121,27 @@ async def test_a_permanent_failure_is_not_retried():
 
 
 @pytest.mark.asyncio
+async def test_a_failure_that_is_not_an_sdk_error_is_still_not_a_500():
+    """
+    The case that got through the first version of this fix, and was only
+    found by running a server without a key.
+
+    An unconfigured ANTHROPIC_API_KEY does not raise `anthropic.APIError` — it
+    raises a plain `TypeError` from inside the SDK's header builder, long
+    before any request is made. Catching only APIError let that straight back
+    out as the 500 this module exists to prevent.
+    """
+    def missing_api_key():
+        raise TypeError(
+            "Could not resolve authentication method. Expected one of api_key, "
+            "auth_token, or credentials to be set."
+        )
+
+    with pytest.raises(ModelUnavailable):
+        await _invoke(missing_api_key)
+
+
+@pytest.mark.asyncio
 async def test_structure_request_surfaces_model_unavailable(monkeypatch):
     """The path the onboarding chat actually takes: POST /requests ->
     structure_request -> the model."""

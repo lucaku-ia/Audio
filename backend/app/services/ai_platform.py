@@ -137,10 +137,21 @@ async def _invoke(call, *args, **kwargs):
                 type(exc).__name__, attempt + 1, _MAX_ATTEMPTS, delay,
             )
             await asyncio.sleep(delay)
-        except anthropic.APIError as exc:
-            # Not transient: a bad request, a bad key, a model id that does not
-            # exist. Retrying cannot help, and the customer cannot act on it,
-            # so it is logged loudly here and reported to them as unavailable.
+        except Exception as exc:
+            # Everything else: a bad request, a bad model id, a missing API
+            # key. Retrying cannot help, and the customer cannot act on any of
+            # it, so it is logged with its traceback here and reported to them
+            # as unavailable.
+            #
+            # Deliberately `Exception` and not `anthropic.APIError`. An
+            # unconfigured ANTHROPIC_API_KEY raises a plain `TypeError` from
+            # inside the SDK's header builder — not an APIError at all — and
+            # with the narrower clause that went straight back to being the
+            # 500 this function exists to prevent. Found by running the thing
+            # rather than by reading it. The breadth costs nothing in
+            # diagnosis, because the traceback is logged either way, and the
+            # customer's answer is the same whatever the cause: this call did
+            # not reach a model.
             logger.error("ai_platform: model call failed permanently: %s", exc, exc_info=True)
             raise ModelUnavailable(str(exc)) from exc
     logger.error("ai_platform: model unreachable after %d attempts: %s", _MAX_ATTEMPTS, last)
