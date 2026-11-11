@@ -145,10 +145,6 @@ struct OnboardingView: View {
         switch flow.prompt {
         case .none:
             EmptyView()
-        case .consent:
-            ChoiceButtons {
-                PrimaryButton(title: "I understand") { Task { await flow.acceptConsent() } }
-            }
         case .start:
             StartChoices(flow: flow)
         case .understood:
@@ -291,7 +287,6 @@ final class OnboardingChatFlow: ObservableObject {
 
     enum Prompt: Equatable {
         case none
-        case consent
         case start
         case understood
         case suggestions
@@ -372,7 +367,7 @@ final class OnboardingChatFlow: ObservableObject {
     /// 0 Topics, 1 Details, 2 Delivery, 3 Style.
     var progressIndex: Int {
         switch prompt {
-        case .none, .consent, .start, .understood, .categories: return 0
+        case .none, .start, .understood, .categories: return 0
         case .suggestions, .detail: return 1
         case .time, .length: return 2
         case .style, .voice, .summary, .starting: return 3
@@ -485,9 +480,19 @@ final class OnboardingChatFlow: ObservableObject {
 
         switch vm.step {
         case .consent:
+            // No consent message and no "I understand" gate. Consent is
+            // obtained at account creation — the sign-up screen states "By
+            // creating an account you agree to the Terms and Privacy Policy.
+            // Your topics are never sold or shared." Repeating it here as the
+            // first thing a new customer reads opened the product with a legal
+            // disclaimer instead of a reason to use it.
+            //
+            // The server-side record is still written (acceptConsent below),
+            // because the backend gates the step on it — it just happens
+            // without a screen. Nothing about what is stored or disclosed
+            // changes; only where the customer is asked.
             await greet()
-            await say("One quick thing: what you ask me to follow is personal data under Colombian law (Ley 1581 de 2012). I only use it to build your episodes, and never sell or share it.")
-            prompt = .consent
+            await recordConsentSilently()
         case .interests, .requests:
             await greet()
             await askTopics()
@@ -513,12 +518,18 @@ final class OnboardingChatFlow: ObservableObject {
         prompt = .start
     }
 
-    func acceptConsent() async {
-        guard prompt == .consent, let token = tokenProvider() else { return }
-        prompt = .none
-        userSays("I understand")
-        await vm.acceptConsent(token: token)
-        if await flushError() { prompt = .consent; return }
+    /// Record consent without showing anything.
+    ///
+    /// The backend will not advance past `.consent` until this is posted, so
+    /// it still runs — it simply is not a conversation turn any more. If it
+    /// fails we continue to the topics question regardless: a customer must
+    /// never be stranded on a blank screen over a record-keeping call, and
+    /// `vm.load` re-evaluates the step on the next launch anyway.
+    private func recordConsentSilently() async {
+        if let token = tokenProvider() {
+            await vm.acceptConsent(token: token)
+            _ = await flushError()
+        }
         await askTopics()
     }
 
