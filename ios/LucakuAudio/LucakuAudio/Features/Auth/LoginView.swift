@@ -28,7 +28,6 @@ struct LoginView: View {
         case signup = "Create account"
     }
 
-    private static let followChips = ["World Cup", "Champions League", "Amazon stock", "AI startups"]
 
     private var canSubmit: Bool {
         !email.isEmpty && !password.isEmpty && (mode == .login || !nombre.isEmpty) && !isLoading
@@ -49,8 +48,15 @@ struct LoginView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 22)
 
-                promisesCard
-                    .padding(.top, 18)
+                Text("A short daily audio episode about only what you follow.")
+                    .font(.system(size: 17))
+                    .lineSpacing(6)            // 17pt text on a 23pt line
+                    .foregroundStyle(LucakuColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 10)
+
+                episodeTouch
+                    .padding(.top, 20)
 
                 modeControl
                     .padding(.top, LucakuSpacing.sp6)
@@ -95,10 +101,6 @@ struct LoginView: View {
                     providerButton(title: "Continue with Google", message: "Sign in with Google is coming soon.") {
                         Image("GoogleGLogo").resizable().renderingMode(.original).scaledToFit()
                             .frame(width: 18, height: 18)
-                    }
-                    providerButton(title: "Continue with Apple", message: "Sign in with Apple is coming soon.") {
-                        Image(systemName: "apple.logo").font(.system(size: 18))
-                            .foregroundStyle(LucakuColor.textPrimary)
                     }
                 }
 
@@ -177,60 +179,67 @@ struct LoginView: View {
 
     // MARK: - Promises card
 
-    private var promisesCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            promiseRow(icon: "scope",
-                       title: "Only the things you follow",
-                       detail: nil) {
-                FlowLayout(spacing: 6) {
-                    ForEach(Self.followChips, id: \.self) { chip in
-                        Text(chip)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(LucakuColor.textPrimary)
-                            .padding(.vertical, 4)
-                            .padding(.horizontal, 10)
-                            .background(Capsule().fill(LucakuColor.bg))
-                    }
-                }
-                .padding(.top, 6)
+    // MARK: - Brand touch
+
+    /// One episode, drawn in the accent colour, directly under the promise
+    /// line. It replaces the three-row "promises" card: the card restated in
+    /// prose what this picture shows at a glance — a short episode, ready at
+    /// a time you chose — and pushed the actual sign-in form below the fold.
+    ///
+    /// Decorative only, so it is hidden from VoiceOver: the same facts are in
+    /// the line of copy above it.
+    private var episodeTouch: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(LucakuColor.accent)
+                Image(systemName: "play.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(LucakuColor.accentOn)
             }
-            promiseRow(icon: "slider.horizontal.3",
-                       title: "Short or in depth, you decide",
-                       detail: "Plain or with the numbers, calm or upbeat. It learns from what you rate.")
-            promiseRow(icon: "waveform",
-                       title: "Ready every day, when you want it",
-                       detail: "Morning or evening, an audio episode made for you, plus the stories to read.")
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: LucakuRadius.card, style: .continuous).fill(LucakuColor.surface))
-    }
+            .frame(width: 40, height: 40)
 
-    private func promiseRow(icon: String, title: String, detail: String?) -> some View {
-        promiseRow(icon: icon, title: title, detail: detail) { EmptyView() }
-    }
-
-    private func promiseRow<Extra: View>(icon: String, title: String, detail: String?,
-                                         @ViewBuilder extra: () -> Extra) -> some View {
-        HStack(alignment: .top, spacing: LucakuSpacing.sp3) {
-            Image(systemName: icon)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(LucakuColor.icon)
-                .frame(width: 34, height: 34)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(LucakuColor.iconTile))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(LucakuColor.textPrimary)
-                if let detail {
-                    Text(detail)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text("Your episode")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(LucakuColor.textPrimary)
+                    Spacer(minLength: 8)
+                    Text("7:00 AM · 8 min")
                         .font(.system(size: 13))
                         .foregroundStyle(LucakuColor.textSecondary)
-                        .lineLimit(2)
                 }
-                extra()
+                waveform
             }
         }
+        .padding(.leading, 10)
+        .padding(.trailing, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(LucakuColor.surface)
+        )
+        .shadow(color: .black.opacity(0.10), radius: 11, x: 0, y: 6)
+        .accessibilityHidden(true)
+    }
+
+    /// 32 bars at fixed heights. The first 11 are solid and the rest faded —
+    /// an episode part-way through, not a live meter, so it does not animate.
+    private static let waveHeights: [CGFloat] = [
+        5, 9, 14, 8, 17, 12, 20, 10, 6, 15, 19, 11, 7, 13, 18, 9,
+        16, 12, 6, 10, 17, 14, 8, 19, 11, 7, 15, 10, 13, 6, 9, 5,
+    ]
+    private static let wavePlayedCount = 11
+
+    private var waveform: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(Array(Self.waveHeights.enumerated()), id: \.offset) { index, height in
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(LucakuColor.accent)
+                    .frame(height: height)
+                    .opacity(index < Self.wavePlayedCount ? 1 : 0.35)
+            }
+        }
+        .frame(height: 20)
     }
 
     // MARK: - Fields
