@@ -58,12 +58,23 @@ final class PlayerViewModel: ObservableObject {
             audioService.setRate(Float(speed.rawValue))
         }
     }
-    @Published var clearerVoiceEnabled: Bool = true
-    @Published var skipSilenceEnabled: Bool = false
-
     @Published var isNowPlayingExpanded: Bool = false
-    @Published var isTuningSheetOpen: Bool = false
-    @Published var rating: AnswerRating?
+
+    // MARK: Now Playing UI state (screens spec 4.x)
+
+    /// Which tab of Now Playing is showing: "In this episode" (default, 4.5)
+    /// or "Transcript" (4.4).
+    @Published var nowPlayingTab: NowPlayingTab = .episode
+    /// "Not quite" feedback sheet (4.7) — the single feedback entry point.
+    @Published var isFeedbackSheetOpen: Bool = false
+    /// Share a story sheet (4.8-4.9).
+    @Published var isShareSheetOpen: Bool = false
+    /// Local-only: which episodes the customer marked "download to listen
+    /// without data". TODO(backend): no offline-download support exists yet
+    /// (no file cache in AudioPlayerService); this only drives the UI state.
+    @Published private(set) var downloadedEpisodeIds: Set<String> = []
+    /// Local-only per-story rating (Useful / Not quite), keyed by block id.
+    @Published private var ratings: [String: AnswerRating] = [:]
 
     // MARK: Real audio engine
 
@@ -326,7 +337,100 @@ final class PlayerViewModel: ObservableObject {
 
     func collapseNowPlaying() {
         isNowPlayingExpanded = false
-        isTuningSheetOpen = false
+        isFeedbackSheetOpen = false
+        isShareSheetOpen = false
+    }
+
+    // MARK: Episode-wide transport (scrubber, ±15 s, speed)
+
+    /// Whole-episode length in seconds (engine duration once known, else the
+    /// episode's declared length, else the last block's end).
+    var episodeDurationS: Double {
+        if audioService.duration > 0 { return audioService.duration }
+        if let declared = episode?.durationS, declared > 0 { return Double(declared) }
+        return Double(blocks.last?.endS ?? 0)
+    }
+
+    var episodeProgressFraction: Double {
+        let duration = episodeDurationS
+        guard duration > 0 else { return 0 }
+        return min(1, max(0, currentTime / duration))
+    }
+
+    /// Scrubber seek: `fraction` is 0...1 of the whole episode.
+    func seekEpisode(fraction: Double) {
+        guard hasEpisode else { return }
+        ensureAudioLoaded()
+        guard audioService.currentItem != nil else { return }
+        audioService.seek(to: min(1, max(0, fraction)) * episodeDurationS)
+    }
+
+    /// ±15 s skip (negative = back).
+    func skip(by seconds: Double) {
+        guard hasEpisode else { return }
+        ensureAudioLoaded()
+        guard audioService.currentItem != nil else { return }
+        audioService.seek(to: max(0, currentTime + seconds))
+    }
+
+    /// Speed is always visible on the main screen; tapping steps through
+    /// 1× → 1.25× → 1.5× → 1.75× → 2× and wraps.
+    func cycleSpeed() {
+        let all = PlaybackSpeed.allCases
+        guard let index = all.firstIndex(of: speed) else { speed = .oneX; return }
+        speed = all[(index + 1) % all.count]
+    }
+
+    // MARK: Download (UI only)
+
+    var isCurrentEpisodeDownloaded: Bool {
+        episode.map { downloadedEpisodeIds.contains($0.id) } ?? false
+    }
+
+    func toggleDownload() {
+        guard let id = episode?.id else { return }
+        if downloadedEpisodeIds.contains(id) {
+            downloadedEpisodeIds.remove(id)
+        } else {
+            downloadedEpisodeIds.insert(id)
+        }
+    }
+
+    // MARK: Feedback (Useful / Not quite)
+
+    var currentRating: AnswerRating? {
+        currentBlock.flatMap { ratings[$0.id] }
+    }
+
+    /// Useful chip — toggles.
+    func toggleUseful() {
+        guard let id = currentBlock?.id else { return }
+        ratings[id] = ratings[id] == .up ? nil : .up
+        // TODO(backend): POST story rating once a feedback endpoint exists.
+    }
+
+    /// Not quite chip — a second tap clears it; otherwise opens the shared
+    /// feedback sheet (4.7).
+    func tapNotQuite() {
+        guard let id = currentBlock?.id else { return }
+        if ratings[id] == .down {
+            ratings[id] = nil
+        } else {
+            isFeedbackSheetOpen = true
+        }
+    }
+
+    /// Sheet "Send feedback". TODO(backend): no feedback endpoint exists; the
+    /// options and text are dropped after marking the story "Not quite".
+    func submitFeedback(options: [String], text: String) {
+        if let id = currentBlock?.id { ratings[id] = .down }
+        isFeedbackSheetOpen = false
+    }
+
+    /// Sheet "Report a problem". TODO(backend): should open a support ticket.
+    func reportProblem() {
+        if let id = currentBlock?.id { ratings[id] = .down }
+        isFeedbackSheetOpen = false
     }
 
     /// Seeks within the current block — used by the transcript panel's "tap
