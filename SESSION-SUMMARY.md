@@ -42,11 +42,20 @@ Stacked, each on the one before. GitHub retargets as they land.
 | **#48** | Re-voice failed jobs | **matters the moment you top up ElevenLabs** |
 | **#49** | Episode continuity | the product half of the cache |
 | **#50** | Docs | — |
+| **#51** | Cache savings metric | proves whether the cache actually pays |
 
 **#44** (signup error messages) is independent — merge any time.
 **#41** is superseded by #43: **close it.**
 
-80 tests pass on the full stack.
+**85 tests pass on the full stack**, and the stack was verified by *booting*
+it against an empty database — not just unit-tested:
+
+- `create_all` builds `findings_cache` with its unique constraint and indexes
+- the UTC pin applies at import without breaking startup
+- `signup` → token → `/auth/me` → `/home`, all 200
+
+`/home` on a fresh account returns `shared_inventory: []` and `explore: []` —
+the empty-shelves problem, still waiting on `INTERNAL_DASHBOARD_KEY`.
 
 ---
 
@@ -168,3 +177,15 @@ pattern to copy. It needs the iOS client changed in the same step.
 **The aware-UTC sweep across all 31 call sites.** #46 makes the existing
 convention correct from one place; removing the hazard entirely is a larger,
 riskier change that deserves you awake.
+
+---
+
+## One number to watch
+
+`GET /api/internal/cache-savings` → `top_shared_topics` (#51).
+
+That field decides whether the findings cache earns its keep. The saving is a
+design property right now, not a measured one — with one test account there is
+nothing to overlap. **If it stays empty once you have real customers, the cache
+is not paying for itself and I was wrong about the economics.** Worth checking
+before anyone counts on it in a cost model.
