@@ -142,53 +142,131 @@ struct ProfileNotificationsPage: View {
     @AppStorage(ProfilePrefs.readyOn) private var readyOn = true
     @AppStorage(ProfilePrefs.notifRead) private var readRaw = ""
 
+    @State private var filter: NoticeKind?
+
     var body: some View {
         ProfilePage(title: "Notifications") {
-            VStack(spacing: 12) {
-                ProfileToggleRow(
-                    title: "Remind me before research starts",
-                    detail: "Coming soon. Reminders arrive once push is live for the app.",
-                    isOn: .constant(false)
-                )
-                .disabled(true)
-                .opacity(0.5)
-                ProfileSeparator()
-                ProfileToggleRow(
-                    title: "When my episode is ready",
-                    detail: "Coming soon. Reminders arrive once push is live for the app.",
-                    isOn: .constant(false)
-                )
-                .disabled(true)
-                .opacity(0.5)
-                ProfileSeparator()
-                ProfileToggleRow(
-                    title: "Push notifications",
-                    detail: pushDetail,
-                    isOn: Binding(
-                        get: { store.isPushOn },
-                        set: { _ in Task { await store.requestPush() } }
-                    )
-                )
-            }
-            .padding(16)
-            .background(LucakuColor.surface, in: RoundedRectangle(cornerRadius: LucakuRadius.card, style: .continuous))
-            .padding(.top, 12)
+            filterPills
+                .padding(.top, 10)
 
-            ProfileSectionLabel(text: "Recent")
-            VStack(spacing: 0) {
-                ForEach(Array(notices.enumerated()), id: \.element.id) { index, notice in
-                    if index > 0 { ProfileSeparator() }
-                    noticeRow(notice)
+            if isCaughtUp {
+                caughtUp
+            } else if filtered.isEmpty {
+                Text("Nothing here yet.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(LucakuColor.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 24)
+            } else {
+                HStack(alignment: .firstTextBaseline) {
+                    ProfileSectionLabel(text: "Recent")
+                    Spacer()
+                    if hasUnread {
+                        Button("Mark all as read") { markAllRead() }
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(LucakuColor.accent)
+                    }
                 }
-                if notices.isEmpty {
-                    Text("Nothing yet. Notices about your episodes will show up here.")
-                        .font(.system(size: 14))
-                        .foregroundStyle(LucakuColor.textSecondary)
-                        .padding(.vertical, 14)
+                VStack(spacing: 0) {
+                    ForEach(Array(filtered.enumerated()), id: \.element.id) { index, notice in
+                        if index > 0 { ProfileSeparator() }
+                        noticeRow(notice)
+                    }
                 }
             }
+
+            NavigationLink(value: ProfileRoute.notificationSettings) {
+                HStack(spacing: 10) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 17, weight: .semibold))
+                    Text("Choose what you get notified about")
+                        .font(.system(size: 15, weight: .semibold))
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(LucakuColor.textTertiary)
+                }
+                .foregroundStyle(LucakuColor.accent)
+                .padding(16)
+                .frame(maxWidth: .infinity)
+                .background(LucakuColor.surface, in: RoundedRectangle(cornerRadius: LucakuRadius.card, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 20)
         }
         .task { await store.refreshPushStatus() }
+    }
+
+    // MARK: Inbox
+
+    /// All / Episodes / Your topics / Updates. The selected pill inverts —
+    /// ink on the text colour — which is how the prototype marks it.
+    private var filterPills: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                pill(label: "All", selected: filter == nil) { filter = nil }
+                ForEach(NoticeKind.allCases) { kind in
+                    pill(label: kind.pillLabel, selected: filter == kind) { filter = kind }
+                }
+            }
+            .padding(.horizontal, 1)
+        }
+        .scrollClipDisabled()
+    }
+
+    private func pill(label: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(selected ? LucakuColor.bg : LucakuColor.textPrimary)
+                .padding(.horizontal, 14)
+                .frame(height: 34)
+                .background(Capsule().fill(selected ? LucakuColor.textPrimary : LucakuColor.fill))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
+    private var caughtUp: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 26))
+                .foregroundStyle(LucakuColor.accent)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("You're all caught up")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(LucakuColor.textPrimary)
+                Text("New notifications will show up here.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(LucakuColor.textSecondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(LucakuColor.surface, in: RoundedRectangle(cornerRadius: LucakuRadius.card, style: .continuous))
+        .padding(.top, 14)
+    }
+
+    private var filtered: [Notice] {
+        guard let filter else { return notices }
+        return notices.filter { $0.kind == filter }
+    }
+
+    private var hasUnread: Bool {
+        filtered.contains { $0.unreadEligible && !readIds.contains($0.id) }
+    }
+
+    /// Caught up is the *unfiltered* all-read state — a filter that happens to
+    /// hide everything is "nothing here yet", which is a different sentence.
+    private var isCaughtUp: Bool {
+        filter == nil && !notices.isEmpty && !notices.contains { $0.unreadEligible && !readIds.contains($0.id) }
+            || filter == nil && notices.isEmpty
+    }
+
+    private func markAllRead() {
+        let ids = Set(readIds).union(notices.map(\.id))
+        readRaw = ids.sorted().joined(separator: ",")
     }
 
     // MARK: Derived copy
@@ -225,6 +303,32 @@ struct ProfileNotificationsPage: View {
         let time: String
         let body: String
         let unreadEligible: Bool
+        /// Which filter pill this notice belongs under.
+        let kind: NoticeKind
+    }
+
+    /// The prototype's filter pills. "All" is not a kind, it is the absence
+    /// of a filter, so it lives in the pill list rather than here.
+    enum NoticeKind: String, CaseIterable, Identifiable {
+        case episodes, topics, updates
+        var id: String { rawValue }
+
+        var pillLabel: String {
+            switch self {
+            case .episodes: return "Episodes"
+            case .topics: return "Your topics"
+            case .updates: return "Updates"
+            }
+        }
+
+        /// The small uppercase kicker above a row's title.
+        var kicker: String {
+            switch self {
+            case .episodes: return "EPISODE"
+            case .topics: return "YOUR TOPICS"
+            case .updates: return "UPDATE"
+            }
+        }
     }
 
     /// TODO(backend): GET /api/notifications for the real notice feed (quiet days,
@@ -239,7 +343,8 @@ struct ProfileNotificationsPage: View {
                 title: "Research starts at \(ProfileFormat.time12(researchStart))",
                 time: ProfileFormat.time12(remindAt),
                 body: "Your \(ProfileFormat.time12(deliveryHHmm)) episode is about to be researched. Want to change anything?",
-                unreadEligible: true
+                unreadEligible: true,
+                kind: .topics
             ))
         }
         if readyOn, let latest = store.playableHistory.first {
@@ -248,7 +353,8 @@ struct ProfileNotificationsPage: View {
                 title: "Your episode is ready",
                 time: ProfileFormat.time12(deliveryHHmm),
                 body: latest.headline ?? "Your daily episode",
-                unreadEligible: true
+                unreadEligible: true,
+                kind: .episodes
             ))
         }
         return list
@@ -342,6 +448,57 @@ struct ProfileNotificationsPage: View {
 }
 
 // MARK: - 9.1 Appearance & notifications
+
+/// What you get notified about — reached from the notifications inbox, which
+/// is the list itself. Splitting these apart is the prototype's layout: the
+/// inbox answers "what happened", this page answers "what should reach me".
+struct ProfileNotificationSettingsPage: View {
+    @ObservedObject var viewModel: SettingsViewModel
+    @ObservedObject var store: ProfileStore
+
+    var body: some View {
+        ProfilePage(title: "Notifications") {
+            VStack(spacing: 12) {
+                ProfileToggleRow(
+                    title: "Remind me before research starts",
+                    detail: "Coming soon. Reminders arrive once push is live for the app.",
+                    isOn: .constant(false)
+                )
+                .disabled(true)
+                .opacity(0.5)
+                ProfileSeparator()
+                ProfileToggleRow(
+                    title: "When my episode is ready",
+                    detail: "Coming soon. Reminders arrive once push is live for the app.",
+                    isOn: .constant(false)
+                )
+                .disabled(true)
+                .opacity(0.5)
+                ProfileSeparator()
+                ProfileToggleRow(
+                    title: "Push notifications",
+                    detail: pushDetail,
+                    isOn: Binding(
+                        get: { store.isPushOn },
+                        set: { _ in Task { await store.requestPush() } }
+                    )
+                )
+            }
+            .padding(16)
+            .background(LucakuColor.surface, in: RoundedRectangle(cornerRadius: LucakuRadius.card, style: .continuous))
+            .padding(.top, 12)
+        }
+        .task { await store.refreshPushStatus() }
+    }
+
+    private var pushDetail: String {
+        switch store.pushStatus {
+        case .denied: return "Off in iOS Settings. Tap to open them."
+        case .notDetermined: return "Allow Lucaku to send these as push notifications."
+        default: return "On. Manage sounds and banners in iOS Settings."
+        }
+    }
+}
 
 struct ProfileAppearancePage: View {
     @ObservedObject var viewModel: SettingsViewModel

@@ -26,6 +26,7 @@ enum ProfileRoute: Hashable {
     case history
     case downloads
     case notifications
+    case notificationSettings
     case appearance
     case account
     case help

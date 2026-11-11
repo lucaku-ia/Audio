@@ -23,6 +23,7 @@ struct NowPlayingView: View {
     /// Drag-to-dismiss offset, so collapsing reads as sliding back down into
     /// the mini player rather than a hard cut.
     @GestureState private var dragOffset: CGFloat = 0
+    @State private var showEpisodeOptions = false
 
     private var theme: PlayerTheme {
         PlayerTheme(colorScheme: colorScheme, story: viewModel.currentBlock?.summary ?? "lucaku")
@@ -60,6 +61,7 @@ struct NowPlayingView: View {
         .foregroundStyle(theme.fg)
         .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 28, bottomTrailingRadius: 28, style: .continuous))
         .offset(y: max(0, dragOffset))
+        .sheet(isPresented: $showEpisodeOptions) { episodeOptions }
         .sheet(isPresented: $viewModel.isFeedbackSheetOpen) {
             FeedbackSheet(
                 subject: viewModel.currentBlock?.summary ?? "this story",
@@ -92,6 +94,108 @@ struct NowPlayingView: View {
         }
     }
 
+    // MARK: Episode options
+
+    /// The prototype's "Episode options" panel. Note it defines `openTuning`
+    /// but never references it in markup, so the panel has no trigger there —
+    /// the ellipsis in the top bar is this app's choice, which is where iOS
+    /// usually puts per-item options. Worth confirming the placement.
+    private var episodeOptions: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Speed")
+                        .font(.system(size: 13, weight: .semibold))
+                        .tracking(0.3)
+                        .textCase(.uppercase)
+                        .foregroundStyle(LucakuColor.textSecondary)
+                        .padding(.bottom, 8)
+
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Button {
+                            viewModel.resetSpeedToOne()
+                        } label: {
+                            Text(viewModel.speed.label)
+                                .font(.system(size: 22, weight: .bold))
+                                .monospacedDigit()
+                                .foregroundStyle(LucakuColor.textPrimary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(viewModel.speed == .oneX)
+
+                        Text("Tap to reset to 1\u{00D7}")
+                            .font(.system(size: 13))
+                            .foregroundStyle(LucakuColor.textTertiary)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.bottom, 12)
+
+                    HStack(spacing: 8) {
+                        ForEach(PlaybackSpeed.allCases) { option in
+                            Button {
+                                viewModel.speed = option
+                            } label: {
+                                Text(option.label)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(option == viewModel.speed ? LucakuColor.bg : LucakuColor.textPrimary)
+                                    .frame(maxWidth: .infinity, minHeight: 36)
+                                    .background(
+                                        Capsule().fill(option == viewModel.speed ? LucakuColor.textPrimary : LucakuColor.fill)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.bottom, 20)
+
+                    optionRow(icon: viewModel.isCurrentEpisodeDownloaded ? "checkmark.circle.fill" : "arrow.down.circle",
+                              label: viewModel.isCurrentEpisodeDownloaded ? "Downloaded" : "Download episode") {
+                        viewModel.toggleDownload()
+                    }
+                    Rectangle().fill(LucakuColor.borderSoft).frame(height: 0.5)
+                    optionRow(icon: "square.and.arrow.up", label: "Share this story") {
+                        showEpisodeOptions = false
+                        viewModel.isShareSheetOpen = true
+                    }
+
+                    Text("To rate this story, use Useful / Not quite under the controls. That's the one place for feedback.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(LucakuColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 16)
+                }
+                .padding(20)
+            }
+            .background(LucakuColor.bg.ignoresSafeArea())
+            .navigationTitle("Episode options")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showEpisodeOptions = false }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func optionRow(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 18))
+                    .frame(width: 26)
+                Text(label)
+                    .font(.system(size: 16))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(LucakuColor.textPrimary)
+            .frame(minHeight: 48)
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: Top bar
 
     private func topBar(_ theme: PlayerTheme) -> some View {
@@ -118,7 +222,15 @@ struct NowPlayingView: View {
             }
             .frame(maxWidth: .infinity)
 
-            Color.clear.frame(width: 44, height: 44)
+            Button {
+                showEpisodeOptions = true
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(theme.fg)
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("Episode options")
         }
         .padding(.horizontal, 8)
         .padding(.top, 6)

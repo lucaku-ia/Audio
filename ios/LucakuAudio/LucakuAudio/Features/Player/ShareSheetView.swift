@@ -47,6 +47,7 @@ struct ShareSheetView: View {
         case whatsApp = "WhatsApp"
         case mail = "Mail"
         case copyLink = "Copy link"
+        case saveToFiles = "Save to Files"
         case more = "More"
 
         var symbol: String {
@@ -55,6 +56,7 @@ struct ShareSheetView: View {
             case .whatsApp: return "bubble.left.and.bubble.right"
             case .mail: return "envelope"
             case .copyLink: return "link"
+            case .saveToFiles: return "folder"
             case .more: return "ellipsis"
             }
         }
@@ -255,7 +257,10 @@ struct ShareSheetView: View {
         case .copyLink:
             UIPasteboard.general.string = link.url.absoluteString
             phase = .sent("Link copied")
-        case .more:
+        case .saveToFiles, .more:
+            // Save to Files is the system share sheet with a file-ish payload;
+            // until a story has a real document to write, both land on the
+            // same system sheet, which does offer "Save to Files" itself.
             activity = ActivityPayload(items: [fullText])
         case .messages, .whatsApp, .mail:
             let encoded = fullText.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? fullText

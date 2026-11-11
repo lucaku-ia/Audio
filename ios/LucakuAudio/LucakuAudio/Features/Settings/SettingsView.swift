@@ -260,6 +260,8 @@ struct SettingsView: View {
         case .downloads: ProfileDownloadsPage()
         case .notifications:
             ProfileNotificationsPage(viewModel: viewModel, store: store, onSeeInterests: onSeeInterests)
+        case .notificationSettings:
+            ProfileNotificationSettingsPage(viewModel: viewModel, store: store)
         case .appearance: ProfileAppearancePage(viewModel: viewModel)
         case .account: ProfileAccountPage(viewModel: viewModel)
         case .help: ProfileHelpPage()
