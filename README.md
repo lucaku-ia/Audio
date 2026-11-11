@@ -1134,11 +1134,22 @@ next steps, and still waiting on `INTERNAL_DASHBOARD_KEY` in Railway.
 
 ## Suggested next steps
 
-**Status as of 2026-11-11, after the autonomous backend session.** Open PRs,
-in merge order: #42 (test suite repair — `main` is red without it), #43
-(voicing failures + pool), #45 (findings store), #46 (timestamp correctness),
-#44 (signup error messages, independent of the chain). #41 is superseded by
-#43 and should be closed.
+**Status as of 2026-11-11, after the autonomous backend session.** The whole
+stack is merged: #42 (test suite repair), #43 (voicing failures + pool), #44
+(signup error messages), #45 (findings store), #46 (timestamp correctness),
+#47 and #50 (these docs), #48 (re-voice), #49 (continuity), #51 (cache-savings
+metric), #52 (consent prompt removed from onboarding). #41 was superseded by
+#43 and is closed. `main` is green — 85 tests, run against the merged result
+before the merges and again after.
+
+Two things to know about that merge, because both cost time and will recur.
+Deleting a base branch on GitHub **closes** the stacked PR above it rather than
+re-pointing it, and a closed PR cannot be re-based or reopened while its base
+branch is gone — #43 had to be recovered by pushing the deleted branch back.
+Retarget every PR in a stack to `main` *first*, then merge bottom-up. And two
+docs branches that each appended a section at the same point in this README
+merged cleanly against `main` individually and conflicted the moment the first
+one landed; the resolution keeps both, in the order the work happened.
 
 Blocked on the founder, not on code:
 
@@ -1166,15 +1177,12 @@ Code work, highest value first:
   it changes an API contract the shipped app depends on, so it needs the app
   rebuilt in the same change. Onboarding already does this correctly (PR #31's
   `_trigger_first_episode_in_background`) and is the pattern to copy.
-- **A re-voice path.** PR #43 deliberately keeps the episode and finished
-  scripts when TTS fails, precisely so a failed job can be re-voiced without
-  paying for research again. Nothing consumes that yet.
-- **Continuity between episodes.** The founder asked for the cache partly as a
-  product feature — *"this is also good for the customer no? like having a
-  connection from the previous episode?"* The shared findings store is the
-  cost half. The other half is a per-customer told-log: what this listener has
-  already been told, so today's episode can say "yesterday we said X, today…"
-  and avoid repeating itself. Not built.
+- ~~**A re-voice path.**~~ **Done** (PR #48). A failed voicing retries from the
+  stored scripts without paying for research again. See "Recovery and
+  continuity" above.
+- ~~**Continuity between episodes.**~~ **Done** (PR #49). The writer now
+  receives what this listener was already told and writes today's block as the
+  next instalment. See "Recovery and continuity" above.
 
 
 1. ~~Finish the free-text-interests worktree~~ — **done**, rebuilt directly against
