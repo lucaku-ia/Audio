@@ -365,7 +365,7 @@ struct NowPlayingView: View {
     private func feedbackChips(_ theme: PlayerTheme) -> some View {
         HStack(spacing: 0) {
             FeedbackChips(
-                rating: viewModel.currentRating,
+                rating: viewModel.currentRating.map { $0 == .up ? StoryRating.up : StoryRating.down },
                 onUseful: { viewModel.toggleUseful() },
                 onNotQuite: { viewModel.tapNotQuite() },
                 text: theme.fg,
