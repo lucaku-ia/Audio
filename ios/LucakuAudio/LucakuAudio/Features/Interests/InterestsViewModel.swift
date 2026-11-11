@@ -75,6 +75,29 @@ final class InterestsViewModel: ObservableObject {
     @Published private(set) var deliveryTime: String?      // "HH:mm"
     @Published private(set) var maxLengthMinutes: Int?
     @Published private(set) var narrationStyle: NarrationStyle = .news
+    @Published private(set) var voiceId: String?
+
+    /// The two voices the prototype offers. The backend stores a free-form
+    /// ElevenLabs voice id, so an id set elsewhere that is not one of these
+    /// still shows — as itself — rather than being silently relabelled.
+    struct Voice: Equatable {
+        let id: String
+        let name: String
+        let detail: String
+
+        static let catalogue: [Voice] = [
+            Voice(id: "valentina", name: "Valentina", detail: "Warm, calm female voice"),
+            Voice(id: "andres", name: "Andrés", detail: "Clear, steady male voice"),
+        ]
+    }
+
+    /// The effective voice. With nothing stored the generator uses the first
+    /// catalogue entry, so that is what the tile reports — "Default" named a
+    /// voice nobody could identify.
+    var voiceLabel: String {
+        guard let voiceId, !voiceId.isEmpty else { return Voice.catalogue[0].name }
+        return Voice.catalogue.first { $0.id == voiceId }?.name ?? voiceId
+    }
     @Published private(set) var settingsEdited = false
     @Published private(set) var isSavingSettings = false
 
@@ -119,6 +142,7 @@ final class InterestsViewModel: ObservableObject {
         deliveryTime = profile.deliveryTime
         maxLengthMinutes = profile.maxLengthMinutes
         narrationStyle = profile.narrationStyle
+        voiceId = profile.voiceId
     }
 
     private static func topic(from r: RequestOut) -> Topic {
@@ -339,6 +363,11 @@ final class InterestsViewModel: ObservableObject {
     func setNarrationStyle(_ style: NarrationStyle, token: String) async {
         narrationStyle = style
         await save(SettingsBody(narrationStyle: style), token: token)
+    }
+
+    func setVoice(_ id: String, token: String) async {
+        voiceId = id
+        await save(SettingsBody(voiceId: id), token: token)
     }
 
     private func save(_ body: SettingsBody, token: String) async {

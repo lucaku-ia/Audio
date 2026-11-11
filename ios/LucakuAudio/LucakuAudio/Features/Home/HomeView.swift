@@ -174,29 +174,17 @@ struct HomeView: View {
             )
         )
 
-        let labels = topicLabels
-        if state.showsYourLucaku, !labels.isEmpty {
-            let next = viewModel.nextEpisodeLine(todayIsReady: state == .ready || state == .playing)
-            YourLucakuCard(
-                nextLabel: next.label,
-                nextWhen: next.when,
-                topics: labels,
-                onEdit: onSeeInterests,
-                onAdd: onSeeInterests
-            )
-        }
-
-        if let home, home.recent.contains(where: { $0.episodeId != nil }) {
-            VStack(alignment: .leading, spacing: 0) {
-                HomeShelfHeader(title: "Previous episodes", subtitle: "Tap to listen again")
-                RecentShelfView(episodes: home.recent) { episode in
-                    if let id = episode.episodeId {
-                        playEpisode(id, coverSeed: episode.headline ?? episode.date)
-                    }
-                }
-            }
-        }
-
+        // The prototype's Home is exactly three things: the greeting, one
+        // state card, and the news by day. Two sections that used to sit
+        // between the card and the news are gone with it:
+        //
+        // - "Your Lucaku" (delivery time + the topics you follow). Interests
+        //   is a tab of its own now, so this was a second, lesser copy of it
+        //   on the screen you see most.
+        // - "Previous episodes". History moved to Profile, where it is a full
+        //   list rather than a shelf you scroll sideways past the news.
+        //
+        // Both still exist as components; nothing on Home mounts them.
         NewsSectionView(store: news, onOpen: { story in
             news.markRead(story)
             openStory = story
