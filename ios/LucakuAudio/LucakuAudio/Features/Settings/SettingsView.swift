@@ -60,7 +60,7 @@ struct SettingsView: View {
                     settingsList
                 }
             }
-            .navigationTitle("Settings")
+            .navigationTitle("Profile")
             .task { await load() }
             .tint(LucakuColor.accent)
         }

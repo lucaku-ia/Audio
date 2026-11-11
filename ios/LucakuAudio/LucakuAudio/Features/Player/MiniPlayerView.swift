@@ -29,22 +29,27 @@ struct MiniPlayerView: View {
     private func card(_ block: BlockOut) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                CoverArt(seed: viewModel.coverSeed, cornerRadius: 6)
-                    .frame(width: 44, height: 44)
-
+                // Tapping anywhere on the bar, cover included, opens the full
+                // player (screens spec 4, "Mini player"). Play and next don't.
                 Button {
                     withAnimation(LucakuMotion.house) { viewModel.expandNowPlaying() }
                 } label: {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(viewModel.episode?.headline ?? "Lucaku Audio")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(LucakuColor.textPrimary)
-                            .lineLimit(1)
-                        Text(block.summary)
-                            .font(.system(size: 12))
-                            .foregroundStyle(LucakuColor.textSecondary)
-                            .lineLimit(1)
+                    HStack(spacing: 10) {
+                        CoverArt(seed: viewModel.coverSeed, cornerRadius: 6)
+                            .frame(width: 44, height: 44)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(viewModel.episode?.headline ?? "Lucaku Audio")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(LucakuColor.textPrimary)
+                                .lineLimit(1)
+                            Text(block.summary)
+                                .font(.system(size: 12))
+                                .foregroundStyle(LucakuColor.textSecondary)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, alignment: .leading)

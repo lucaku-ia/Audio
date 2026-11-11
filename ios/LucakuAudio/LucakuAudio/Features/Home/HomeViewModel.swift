@@ -24,6 +24,21 @@ final class HomeViewModel: ObservableObject {
     /// can't be fetched, tags fall back to a prettified id.
     @Published private(set) var interestLabels: [String: String] = [:]
 
+    /// "HH:mm" delivery time from the profile (best effort); nil falls back to 7:00 AM.
+    @Published private(set) var deliveryTime: String?
+
+    /// "Tomorrow at 7:00 AM" / "At 7:00 AM" pieces for the "Your Lucaku" card.
+    func nextEpisodeLine(todayIsReady: Bool) -> (label: String, when: String) {
+        let parts = (deliveryTime ?? "07:00").split(separator: ":").compactMap { Int($0) }
+        let hour = parts.first ?? 7
+        let minute = parts.count > 1 ? parts[1] : 0
+        let clock = String(format: "%d:%02d %@", hour % 12 == 0 ? 12 : hour % 12, minute, hour >= 12 ? "PM" : "AM")
+        guard todayIsReady else { return ("Then, every day", "At \(clock)") }
+        let now = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        let later = hour * 60 + minute > (now.hour ?? 0) * 60 + (now.minute ?? 0)
+        return ("Next episode", "\(later ? "Today" : "Tomorrow") at \(clock)")
+    }
+
     func label(forTag tag: String?) -> String {
         guard let tag else { return "Lucaku" }
         return interestLabels[tag] ?? HomeFormat.prettyTag(tag)
@@ -44,8 +59,12 @@ final class HomeViewModel: ObservableObject {
             async let homeTask = APIClient.shared.home(token: token)
             async let topicsTask = try? await APIClient.shared.listRequests(status: "active", kind: "standing", token: token)
             async let optionsTask = try? await APIClient.shared.interestOptions(token: token)
+            async let profileTask = try? await APIClient.shared.getProfile(token: token)
 
             let home = try await homeTask
+            if let profile = await profileTask {
+                deliveryTime = profile.deliveryTime
+            }
             if let fetchedTopics = await topicsTask {
                 topics = fetchedTopics
             }
@@ -57,6 +76,22 @@ final class HomeViewModel: ObservableObject {
             if !alreadyLoaded || showSpinner {
                 state = .failed(error.localizedDescription)
             }
+        }
+    }
+
+    /// 3.16: follow the first topic (POST /requests, standing) from Home.
+    func addFirstTopic(token: String) async {
+        let text = requestTodayText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        isSubmittingRequest = true
+        requestTodayError = nil
+        defer { isSubmittingRequest = false }
+        do {
+            _ = try await APIClient.shared.createRequest(rawText: text, kind: "standing", createdFrom: "interests", token: token)
+            requestTodayText = ""
+            await load(token: token)
+        } catch {
+            requestTodayError = error.localizedDescription
         }
     }
 
