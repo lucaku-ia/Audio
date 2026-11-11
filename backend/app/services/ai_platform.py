@@ -9,8 +9,8 @@ shared semantic index for Home/Search, evals, multi-provider fallback,
 budgets/rate limits) is deliberately deferred — each needs the epic that
 consumes it (Home, Search) to exist first.
 
-Also now backs the Episode Generator's research+writing stage
-(research_and_write_block) and voicing stage (synthesize) — see
+Also now backs the Episode Generator's research stage (research_topic),
+its writing stage (write_block) and its voicing stage (synthesize) — see
 app/services/episode_generator.py for the scope note on what's built
 there. The Generator PRD's own tenet applies here too: this function
 decides *how* to research or voice (a bounded web search call; a TTS
@@ -42,6 +42,7 @@ both seeding and the fallback path, not dead code.
 """
 import base64
 import json
+import logging
 import os
 import re
 import time
@@ -60,40 +61,118 @@ from app.services.source_catalogue import attach_licenses
 
 _client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 
-MODEL = "claude-opus-5"
 PROVIDER = "anthropic"
+
+logger = logging.getLogger(__name__)
 
 # Per-1M-token prices (USD) — PRD §5: "per-provider price tables in config;
 # cost computed at call time." Update here if pricing changes. Note: this
 # does not include the web_search tool's own per-search cost, which isn't
 # broken out by the API response usage object — logged costs are therefore
 # a token-only approximation for any call that uses web_search.
-_PRICE_PER_1M = {"claude-opus-5": {"input": 5.00, "output": 25.00}}
+_PRICE_PER_1M = {
+    "claude-opus-5-5":  {"input": 4.00, "output": 20.00},
+    "claude-opus-5":    {"input": 5.00, "output": 25.00},
+    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00},
+    # Haiku 5.5's listed rate holds for prompts up to 100K tokens; beyond that
+    # it is $0.50 / $2.50. Every call we route to it is far under that, but if
+    # one ever is not, this understates its cost — see _cost.
+    "claude-haiku-5-5": {"input": 0.10, "output": 0.50},
+}
+
+_HAIKU_CHEAP_INPUT_LIMIT = 100_000
+_HAIKU_LONG_PROMPT_PRICE = {"input": 0.50, "output": 2.50}
+
+# Every call still runs on this unless its purpose says otherwise. Kept as a
+# module constant because the rest of the codebase and its tests refer to it.
+MODEL = "claude-opus-5-5"
+
+# ---------------------------------------------------------------------------
+# Model routing
+#
+# Research is ~73% of what an episode costs, and until now every call in this
+# module ran on the same Opus model regardless of what it was doing. The four
+# jobs here have very different shapes, and paying Opus rates for all of them
+# is the single largest avoidable cost in the product:
+#
+#   research_topic     ~50K input tokens of web-search results, real judgment
+#                      about what is new and what is worth reporting.
+#   write_block        small input (findings, not raw search results), no web
+#                      access. Turning facts into a paragraph in a given voice.
+#   structure_request  one short sentence in, a few fields out. Classification.
+#   refine_request     one block plus an intent, a few fields out.
+#
+# So: research stays on a strong model, writing and the two classifiers drop to
+# cheap ones. Writing is the bigger saving of the two because it runs once per
+# block per customer, where research can be shared.
+#
+# Why Sonnet and not Haiku for research: the `web_search_20260209` tool — the
+# one with dynamic filtering, which this module uses — is not available on
+# Haiku 5.5. Routing research there would silently fall back to a weaker search
+# variant, which is a quality change disguised as a cost change.
+#
+# Nothing here is a guess at quality. `_ESCALATE_TO` is the other half: a cheap
+# model that returns something unusable gets retried once on the strong model,
+# so the floor is Opus's answer at Opus's price for the few calls that need it,
+# not a worse episode.
+# ---------------------------------------------------------------------------
+_STRONG = "claude-opus-5-5"
+_MID = "claude-sonnet-5-5"
+_CHEAP = "claude-haiku-5-5"
+
+_MODEL_BY_PURPOSE = {
+    "research_topic": _MID,
+    "write_block": _CHEAP,
+    "structure_request": _CHEAP,
+    "refine_request": _CHEAP,
+}
+
+# Which model a failed cheap call is retried on. One hop only — if the strong
+# model also fails, the caller's own fallback handles it.
+_ESCALATE_TO = {
+    _CHEAP: _MID,
+    _MID: _STRONG,
+}
 
 
-def _cost(usage) -> float:
-    prices = _PRICE_PER_1M.get(MODEL, {"input": 0.0, "output": 0.0})
+def model_for(purpose: str) -> str:
+    """The model a given call runs on. Unknown purposes get the strong model,
+    so a new call site is expensive rather than quietly degraded."""
+    return _MODEL_BY_PURPOSE.get(purpose, _STRONG)
+
+
+def escalation_for(purpose: str) -> str | None:
+    """The model to retry `purpose` on when its first answer is unusable."""
+    return _ESCALATE_TO.get(model_for(purpose))
+
+
+def _cost(usage, model: str) -> float:
+    prices = _PRICE_PER_1M.get(model, {"input": 0.0, "output": 0.0})
+    if model == _CHEAP and usage.input_tokens > _HAIKU_CHEAP_INPUT_LIMIT:
+        prices = _HAIKU_LONG_PROMPT_PRICE
     return (usage.input_tokens / 1_000_000) * prices["input"] + (usage.output_tokens / 1_000_000) * prices["output"]
 
 
 async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, version: str, purpose: str,
-                     usage, latency_ms: int, context: dict, rejected_reason: str | None = None) -> float:
+                     usage, latency_ms: int, context: dict, rejected_reason: str | None = None,
+                     model: str | None = None) -> float:
     """
     Logs the AICall row and returns its `cost` so direct callers (currently
-    research_and_write_block and synthesize) can thread per-call cost up to
+    research_topic, write_block and synthesize) can thread per-call cost up to
     the Generator's stage-cost accounting without either function's public
     signature growing new business-logic parameters — see the "Cost per
-    stage" scope note on research_and_write_block/synthesize below and in
+    stage" scope note on research_topic/write_block/synthesize below and in
     app/services/episode_generator.py's run_generation for why this (not a
     time-window AICall query) was chosen.
     """
-    cost = _cost(usage)
+    model = model or model_for(purpose)
+    cost = _cost(usage, model)
     db.add(AICall(
         call_id=uuid.uuid4(),
         prompt=prompt,
         version=version,
         purpose=purpose,
-        model=MODEL,
+        model=model,
         provider=PROVIDER,
         tokens_in=usage.input_tokens,
         tokens_out=usage.output_tokens,
@@ -166,7 +245,7 @@ async def structure_request(
 
     start = time.monotonic()
     response = _client.messages.parse(
-        model=MODEL,
+        model=model_for("structure_request"),
         max_tokens=1024,
         thinking={"type": "adaptive"},
         output_config={"effort": "low"},
@@ -189,17 +268,29 @@ async def structure_request(
 class BlockResult(BaseModel):
     summary: str
     script: str
-    sources: list[dict]
+    # Deliberately untyped rather than list[dict]: this field holds two things
+    # at two moments. Straight out of the model it is whatever the writer
+    # claimed — the write_block prompt asks for bare url strings — and
+    # list[dict] would fail validation there, sending a perfectly good block
+    # down _parse_block_result's no_news fallback and losing the whole segment
+    # silently. _resolve_sources then replaces it with the real, license-
+    # labeled source records from Findings, so every consumer downstream still
+    # sees list[dict]. Do not narrow this without also changing that prompt.
+    sources: list
     no_news: bool
+    # Not model output — see Findings.parse_failed.
+    parse_failed: bool = False
     # Not part of the model's own JSON output (_parse_block_result never sees
-    # it) — set by research_and_write_block after _log_call returns, so the
-    # Generator's research stage can accumulate real per-call cost across the
+    # it) — set by write_block after _log_call returns, so the Generator's
+    # writing stage can accumulate real per-call cost across the
     # per-active-request loop without querying AICall back out of the DB.
-    # See episode_generator.run_generation's "Cost per stage" note.
+    # Findings.cost carries the research half separately; the two are logged
+    # and reported as distinct stages. See run_generation's "Cost per stage".
     cost: float = 0.0
 
 
-RESEARCH_AND_WRITE_BLOCK_VERSION = "v1"
+RESEARCH_TOPIC_VERSION = "v1"
+WRITE_BLOCK_VERSION = "v1"
 
 _DEPTH_WORDS = {"brief": "about 50-70 words", "standard": "about 100-140 words", "deep": "about 180-240 words"}
 _STYLE_DESCRIPTIONS = {
@@ -208,23 +299,149 @@ _STYLE_DESCRIPTIONS = {
     "casual": "a casual, conversational voice, like a knowledgeable friend catching you up",
 }
 
-RESEARCH_AND_WRITE_BLOCK_SYSTEM = """You research one customer's standing request for a daily audio briefing and write the spoken segment that answers it for today.
+RESEARCH_TOPIC_SYSTEM = """You research one topic for a daily briefing. You do not write the briefing — another step does that. Your only job is to establish what is true and new, as plainly as possible.
 
-Use the web_search tool to find what is genuinely new or notable today (or in the last 1-2 days) about the topic. Never invent facts; only report what your searches actually returned, and cite every source you use.
+Use the web_search tool to find what is genuinely new or notable today (or in the last 1-2 days) about the topic. Never invent facts; only report what your searches actually returned, and attribute every finding to the source it came from.
 
-After researching, respond with ONLY a single JSON object (no other text, no markdown fences) with these fields:
-- "summary": one sentence, plain text, summarizing the block (for internal indexing, not read aloud).
-- "script": the spoken segment itself, written in {style_description}, in {language}, targeting {word_target}. Written to be read aloud — no headers, no bullet points, no markdown.
-- "sources": a list of objects {{"url": ..., "title": ..., "publisher": ...}} for every fact used. Empty list only if no_news is true.
-- "no_news": true if your research found nothing new, notable, or researchable for this request today — in that case "script" and "summary" should be empty strings and "sources" an empty list. Do not pad or speculate to avoid returning no_news; an honestly empty day is correct behavior, not a failure."""
+Write findings as neutral fact, not as narration: no style, no voice, no audience, no language other than English regardless of who asked. A later step renders them for a specific listener.
+
+Respond with ONLY a single JSON object (no other text, no markdown fences) with these fields:
+- "findings": a list of objects {{"headline": ..., "detail": ..., "source_urls": [...]}}, most important first. "headline" is one plain clause naming what happened. "detail" is the substance — figures, names, dates, what changed — in a few plain sentences, enough that someone could write from it without searching again. "source_urls" lists the urls this specific finding rests on.
+- "sources": a list of objects {{"url": ..., "title": ..., "publisher": ...}} for every source cited by any finding.
+- "no_news": true if your research found nothing new, notable, or researchable about this topic today — in that case "findings" and "sources" should be empty. Do not pad or speculate to avoid returning no_news; an honestly empty day is correct behavior, not a failure."""
+
+WRITE_BLOCK_SYSTEM = """You write one spoken segment of a daily audio briefing for one listener, from research findings that have already been gathered for you.
+
+You have no web access and you do not need it. Work only from the findings given. Never add a fact that is not in them, and never soften or inflate what they say. If the findings are thin, the segment is short — that is correct.
+
+Write in {style_description}, in {language}, targeting {word_target}. It will be read aloud by a synthetic voice, so write for the ear: no headers, no bullet points, no markdown, no parenthetical asides, and spell out figures the way a person would say them.
+
+Respond with ONLY a single JSON object (no other text, no markdown fences) with these fields:
+- "summary": one sentence, plain text, summarizing the segment (for internal indexing, not read aloud).
+- "script": the spoken segment itself.
+- "sources": the list of source urls you actually used, copied exactly from the findings. Do not invent urls and do not include sources you did not draw on.
+- "no_news": true only if the findings contain nothing worth saying to this listener — in that case "script" and "summary" are empty strings and "sources" empty."""
 
 
-async def research_and_write_block(
+class Finding(BaseModel):
+    headline: str
+    detail: str
+    source_urls: list[str] = []
+
+
+class Findings(BaseModel):
+    """
+    Customer-neutral research output: what is true about a topic right now,
+    with no listener, style, or language baked in.
+
+    This is the half of block production that is *shareable and cacheable*.
+    Two customers asking about the same topic want the same facts; they do
+    not want the same segment. Keeping this type free of customer_id, style
+    and language is what makes it storable under a (topic, freshness) key and
+    reusable across customers and across days — see write_block for the half
+    that is deliberately per-customer.
+
+    Nothing caches these yet; splitting the call is the prerequisite, and the
+    findings store is the next step (README, "Suggested next steps").
+    """
+    findings: list[Finding]
+    sources: list[dict]
+    no_news: bool
+    # Not model output. True when `no_news` is the parser giving up rather than
+    # the model reporting a quiet day. Those look identical downstream and mean
+    # opposite things: one is the correct answer, the other is a lost block.
+    parse_failed: bool = False
+    # Not model output — set by research_topic after _log_call returns, so the
+    # Generator's research stage can accumulate real cost without reading
+    # AICall back out of the DB. BlockResult.cost carries the writing half.
+    cost: float = 0.0
+
+
+async def research_topic(
     db: AsyncSession,
     raw_text: str,
     topic: str,
     scope: str,
     geography: str | None,
+    customer_id: uuid.UUID,
+    request_id: uuid.UUID,
+) -> Findings:
+    """
+    research_topic — the Episode Generator's research stage, now on its own.
+    Uses Claude's server-side web_search tool (a general open-web, API-driven
+    tool — not scraping — so it satisfies the PRD's "only licensed or API
+    sources, no scraping" tenet at the mechanism level), so the whole research
+    step is one request/response with no client-side tool loop.
+
+    Why this is separate from write_block (it used to be one fused call,
+    research_and_write_block): research is expensive and identical for
+    everyone asking about a topic, while writing is cheap and must differ per
+    listener. Fused, neither could be cached — every customer paid full price
+    to re-research the same news, and the same model call that gathered facts
+    also chose the words, so there was nothing customer-neutral to store.
+    Split, the expensive half is a pure function of (topic, scope, geography,
+    time) and the cheap half carries style, language and depth.
+
+    `customer_id` and `request_id` are passed for cost attribution only — they
+    are NOT part of the prompt and must not become part of it, or the output
+    stops being shareable. That is the whole point of the split.
+
+    Source catalogue / license labeling (PRD §5's "config file: source, API,
+    license, language, topics" and §4's "every block stores its sources
+    (url, title, publisher, license)"): app/models/source_catalogue.py holds
+    that curated catalogue, and every source this function returns is passed
+    through app.services.source_catalogue.attach_licenses, which best-effort
+    matches the source's domain against it and adds an explicit "license" key
+    (the matched license_name, or None if the domain isn't catalogued — never
+    fabricated). Read that module's docstring before assuming more: this is a
+    provenance/labeling layer applied AFTER web_search already ran — it does
+    not and cannot restrict web_search itself to the catalogued domains, since
+    the `web_search_20260209` tool used below is a general open-web tool with
+    no API-level allowlist parameter this codebase uses.
+
+    Attaching licenses here rather than in write_block is deliberate: it
+    happens once per topic, not once per listener, and a cached Findings then
+    carries its provenance with it.
+    """
+    system, version = await get_active_prompt(
+        db, "research_topic",
+        fallback_version=RESEARCH_TOPIC_VERSION, fallback_system_prompt=RESEARCH_TOPIC_SYSTEM,
+    )
+
+    user_content = f"Topic: {topic}\nScope: {scope}"
+    if geography:
+        user_content += f"\nGeography: {geography}"
+    # The customer's own words are included because they carry intent the
+    # structured fields lose ("how did Arsenal do" wants results, not
+    # transfers) — not to personalize the findings, which stay neutral.
+    user_content += f"\nWhat the person asked for, in their words: {raw_text}"
+
+    def call(model: str):
+        return _client.messages.create(
+            model=model,
+            max_tokens=4096,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
+            system=system,
+            messages=[{"role": "user", "content": user_content}],
+            tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
+        )
+
+    findings, cost = await _run_with_escalation(
+        db, purpose="research_topic", version=version, call=call, parse=_parse_findings,
+        customer_id=customer_id,
+        context={"customer_id": str(customer_id), "request_id": str(request_id), "topic": topic},
+    )
+    findings.cost = cost
+    findings.sources = await attach_licenses(db, findings.sources)
+    return findings
+
+
+async def write_block(
+    db: AsyncSession,
+    findings: Findings,
+    raw_text: str,
+    topic: str,
     depth: str,
     style: str,
     language: str,
@@ -232,40 +449,29 @@ async def research_and_write_block(
     request_id: uuid.UUID,
 ) -> BlockResult:
     """
-    research_and_write_block — the Episode Generator's research+judge_novelty
-    +write_block stages, collapsed into one call for this MVP. Uses Claude's
-    server-side web_search tool (a general open-web, API-driven tool — not
-    scraping — so it satisfies the PRD's "only licensed or API sources, no
-    scraping" tenet at the mechanism level) so the whole research+write step
-    happens in a single request/response, no client-side tool loop needed.
+    write_block — turns already-gathered Findings into this listener's spoken
+    segment. No web access, so its input is small (findings, not raw search
+    results) and it is the cheap half of the pair; see research_topic for why
+    they are separate.
 
-    Scope reduction vs. the full PRD: true novelty judgment (§4, "against
-    the customer's previous blocks in the shared index, last 14 days") isn't
-    implemented — there's no shared index yet (AI Platform hasn't built it).
-    This call only judges "is there anything new today", not "new since we
-    last told this customer" — see episode_generator.py for the fuller note.
+    Everything listener-specific lives here: style, language, depth, and the
+    customer's own phrasing. Two customers sharing a topic share the findings
+    and still get different segments, in their own style and language, voiced
+    separately. Nothing about a shared briefing is implied by the split — the
+    facts are shared, the episode never is.
 
-    Source catalogue / license labeling (PRD §5's "config file: source, API,
-    license, language, topics" and §4's "every block stores its sources
-    (url, title, publisher, license)"): app/models/source_catalogue.py now
-    holds that curated catalogue, and every source this function returns is
-    passed through app.services.source_catalogue.attach_licenses before
-    being handed back, which best-effort matches the source's domain against
-    it and adds an explicit "license" key (the matched license_name, or None
-    if the domain isn't catalogued — never fabricated). Read that module's
-    docstring before assuming more: this is a provenance/labeling layer
-    applied AFTER web_search already ran — it does not and cannot restrict
-    web_search itself to the catalogued domains, since the `web_search_20260209`
-    tool used below is a general open-web tool with no API-level allowlist
-    parameter this codebase uses.
+    The returned `sources` are looked up from `findings.sources` by url rather
+    than taken from the model's own output, so a writer that hallucinates a
+    url contributes nothing: it can only select from what research actually
+    found, and the license labels attached at research time survive intact.
     """
     depth = depth if depth in _DEPTH_WORDS else "standard"
     style = style if style in _STYLE_DESCRIPTIONS else "news"
     language_name = "Spanish" if language == "es" else "English"
 
     system_template, version = await get_active_prompt(
-        db, "research_and_write_block",
-        fallback_version=RESEARCH_AND_WRITE_BLOCK_VERSION, fallback_system_prompt=RESEARCH_AND_WRITE_BLOCK_SYSTEM,
+        db, "write_block",
+        fallback_version=WRITE_BLOCK_VERSION, fallback_system_prompt=WRITE_BLOCK_SYSTEM,
     )
     system = system_template.format(
         style_description=_STYLE_DESCRIPTIONS[style],
@@ -273,33 +479,119 @@ async def research_and_write_block(
         word_target=_DEPTH_WORDS[depth],
     )
 
-    user_content = f"Request (customer's own words): {raw_text}\nTopic: {topic}\nScope: {scope}"
-    if geography:
-        user_content += f"\nGeography: {geography}"
-
-    start = time.monotonic()
-    response = _client.messages.create(
-        model=MODEL,
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        output_config={"effort": "medium"},
-        system=system,
-        messages=[{"role": "user", "content": user_content}],
-        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
+    findings_json = json.dumps(
+        [f.model_dump() for f in findings.findings], ensure_ascii=False, indent=2
     )
-    latency_ms = int((time.monotonic() - start) * 1000)
+    user_content = (
+        f"Topic: {topic}\n"
+        f"What the person asked for, in their words: {raw_text}\n\n"
+        f"Findings:\n{findings_json}"
+    )
 
-    cost = await _log_call(
-        db, customer_id=customer_id, prompt="research_and_write_block", version=version,
-        purpose="research_and_write_block", usage=response.usage, latency_ms=latency_ms,
+    def call(model: str):
+        return _client.messages.create(
+            model=model,
+            max_tokens=4096,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
+            system=system,
+            messages=[{"role": "user", "content": user_content}],
+        )
+
+    result, cost = await _run_with_escalation(
+        db, purpose="write_block", version=version, call=call, parse=_parse_block_result,
+        customer_id=customer_id,
         context={"customer_id": str(customer_id), "request_id": str(request_id)},
     )
-
-    text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
-    result = _parse_block_result(text)
     result.cost = cost
-    result.sources = await attach_licenses(db, result.sources)
+    result.sources = _resolve_sources(result.sources, findings.sources)
     return result
+
+
+def _resolve_sources(used: list, available: list[dict]) -> list[dict]:
+    """
+    Maps the writer's claimed source urls back onto the real source records
+    research produced (already license-labeled), dropping anything it did not
+    find there. A hallucinated url resolves to nothing rather than to a
+    fabricated citation — "no source, no block" applied at the citation level.
+
+    Tolerates the writer returning whole objects instead of bare url strings,
+    which the prompt asks against but a model may still do.
+    """
+    by_url = {s.get("url"): s for s in available if s.get("url")}
+    resolved: list[dict] = []
+    for item in used:
+        url = item.get("url") if isinstance(item, dict) else item
+        source = by_url.get(url)
+        if source and source not in resolved:
+            resolved.append(source)
+    return resolved
+
+
+async def _run_with_escalation(db, *, purpose: str, version: str, call, parse,
+                               customer_id: uuid.UUID, context: dict):
+    """
+    Runs `call` on the model `purpose` is routed to, and retries once on a
+    stronger model if the answer could not be parsed.
+
+    The retry trigger is deliberately narrow. It is not "the cheap model's
+    answer looks weak" — nobody can judge that here, and a model that reports
+    an honestly quiet day is giving the *correct* answer, which must not be
+    second-guessed into a fabricated one. It is only `parse_failed`: the model
+    returned something this code cannot read at all. That is unambiguous, it is
+    rare, and before `parse_failed` existed it was silently indistinguishable
+    from a quiet day, so a malformed response became an empty episode.
+
+    Both attempts are logged as their own AICall rows with their own models and
+    costs, so the dashboard shows what escalation actually costs rather than
+    hiding the retry inside one row. The returned cost is the sum.
+    """
+    start = time.monotonic()
+    response = call(model_for(purpose))
+    latency_ms = int((time.monotonic() - start) * 1000)
+    cost = await _log_call(
+        db, customer_id=customer_id, prompt=purpose, version=version, purpose=purpose,
+        usage=response.usage, latency_ms=latency_ms, context=context,
+        model=model_for(purpose),
+    )
+    text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
+    result = parse(text)
+
+    stronger = escalation_for(purpose)
+    if not result.parse_failed or stronger is None:
+        return result, cost
+
+    logger.warning("ai_platform: %s returned unparseable output on %s, retrying on %s",
+                   purpose, model_for(purpose), stronger)
+    start = time.monotonic()
+    retry = call(stronger)
+    retry_latency_ms = int((time.monotonic() - start) * 1000)
+    cost += await _log_call(
+        db, customer_id=customer_id, prompt=purpose, version=version, purpose=purpose,
+        usage=retry.usage, latency_ms=retry_latency_ms,
+        context={**context, "escalated_from": model_for(purpose)},
+        model=stronger,
+    )
+    retry_text = next((b.text for b in reversed(retry.content) if b.type == "text"), "")
+    return parse(retry_text), cost
+
+
+def _parse_findings(text: str) -> Findings:
+    try:
+        return Findings.model_validate_json(text)
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return Findings.model_validate(json.loads(match.group(0)))
+        except Exception:
+            pass
+    # Model didn't return parseable JSON — treat as no_news rather than
+    # writing from nothing (Generator tenet: "no source, no block"), and flag
+    # it so the caller can retry on a stronger model instead of publishing an
+    # empty day that nothing actually went wrong to produce.
+    return Findings(findings=[], sources=[], no_news=True, parse_failed=True)
 
 
 def _parse_block_result(text: str) -> BlockResult:
@@ -314,8 +606,9 @@ def _parse_block_result(text: str) -> BlockResult:
         except Exception:
             pass
     # Model didn't return parseable JSON — treat as no_news rather than
-    # publishing garbage (Generator tenet: "no source, no block").
-    return BlockResult(summary="", script="", sources=[], no_news=True)
+    # publishing garbage (Generator tenet: "no source, no block"), flagged so
+    # the caller can retry on a stronger model.
+    return BlockResult(summary="", script="", sources=[], no_news=True, parse_failed=True)
 
 
 class RefinedStructured(BaseModel):
@@ -370,7 +663,7 @@ async def refine_request(
         f"Most recent block script: {block_script}"
     )
     response = _client.messages.parse(
-        model=MODEL,
+        model=model_for("refine_request"),
         max_tokens=1024,
         thinking={"type": "adaptive"},
         output_config={"effort": "low"},

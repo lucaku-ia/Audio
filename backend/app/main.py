@@ -13,7 +13,8 @@ from app.models import (
 )  # noqa: F401
 from app.services.ai_platform import (
     STRUCTURE_REQUEST_SYSTEM, STRUCTURE_REQUEST_VERSION,
-    RESEARCH_AND_WRITE_BLOCK_SYSTEM, RESEARCH_AND_WRITE_BLOCK_VERSION,
+    RESEARCH_TOPIC_SYSTEM, RESEARCH_TOPIC_VERSION,
+    WRITE_BLOCK_SYSTEM, WRITE_BLOCK_VERSION,
 )
 from app.services.prompt_registry import seed_prompt_registry
 from app.services.source_catalogue import seed_source_catalogue
@@ -40,7 +41,8 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
         await seed_prompt_registry(db, [
             ("structure_request", STRUCTURE_REQUEST_VERSION, STRUCTURE_REQUEST_SYSTEM),
-            ("research_and_write_block", RESEARCH_AND_WRITE_BLOCK_VERSION, RESEARCH_AND_WRITE_BLOCK_SYSTEM),
+            ("research_topic", RESEARCH_TOPIC_VERSION, RESEARCH_TOPIC_SYSTEM),
+            ("write_block", WRITE_BLOCK_VERSION, WRITE_BLOCK_SYSTEM),
         ], created_by="seed:ai_platform.py")
 
         # Episode Generator PRD §5's source catalogue (app/models/source_catalogue.py)

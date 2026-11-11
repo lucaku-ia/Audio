@@ -9,7 +9,7 @@ app/services/ai_platform.py on first boot.
 
 Fallback-safety design (read before changing get_active_prompt):
 get_active_prompt() is now on the hot path for every AI Platform call —
-structure_request, research_and_write_block, and (once merged) refine.
+structure_request, research_topic, write_block, and (once merged) refine.
 If it raised on a missing active row — an empty table because seeding
 never ran, or someone flipped is_active off without activating a
 replacement — every one of those call paths would start throwing 500s

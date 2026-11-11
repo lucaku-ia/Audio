@@ -23,7 +23,7 @@ Deferred, and why (per the PRD's own engineering notes and open questions):
   needs the AI Platform's shared semantic index for ranking candidates
   against interests — doesn't exist (see README's "AI Platform scope" and
   app/services/ai_platform.py, which only has structure_request/
-  research_and_write_block so far). Returns an empty list; no placeholder
+  research_topic/write_block so far). Returns an empty list; no placeholder
   ranking logic was written.
 - Shared inventory for empty days (PRD §4, "up to three shared-inventory
   episodes matched to interests"): now built. `shared_inventory`
