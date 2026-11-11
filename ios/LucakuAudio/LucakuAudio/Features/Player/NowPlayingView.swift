@@ -63,6 +63,7 @@ struct NowPlayingView: View {
         .sheet(isPresented: $viewModel.isFeedbackSheetOpen) {
             FeedbackSheet(
                 subject: viewModel.currentBlock?.summary ?? "this story",
+                purpose: "your next episodes",
                 onSend: { options, text in viewModel.submitFeedback(options: options, text: text) },
                 onReport: {
                     viewModel.reportProblem()

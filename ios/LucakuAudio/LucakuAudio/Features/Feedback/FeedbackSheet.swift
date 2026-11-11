@@ -8,6 +8,8 @@ import SwiftUI
 struct FeedbackSheet: View {
     /// The story or episode the feedback is about.
     let subject: String
+    /// What the feedback shapes. Stories: how news is written; player: next episodes.
+    var purpose = "how it writes your news"
     let onSend: (_ options: [String], _ suggestion: String) -> Void
     let onReport: () -> Void
 
@@ -31,7 +33,7 @@ struct FeedbackSheet: View {
                     Text("What should we change?")
                         .font(.system(size: 20, weight: .bold))
                         .foregroundStyle(LucakuColor.textPrimary)
-                    Text("About \u{201C}\(subject)\u{201D}. Lucaku uses this to shape how it writes your news.")
+                    Text("About \u{201C}\(subject)\u{201D}. Lucaku uses this to shape \(purpose).")
                         .font(.system(size: 14))
                         .foregroundStyle(LucakuColor.textSecondary)
                         .lineLimit(3)
