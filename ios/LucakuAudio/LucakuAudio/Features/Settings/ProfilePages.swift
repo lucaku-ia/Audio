@@ -13,11 +13,11 @@ func profilePlayEpisode(
     guard let token = session.accessToken else { return }
     Task {
         if player.loadedEpisodeIdentifier == id, player.hasEpisode {
-            player.expandNowPlaying()
+            withAnimation(LucakuMotion.house) { player.expandNowPlaying() }
             return
         }
         if await player.loadEpisode(id: id, token: token, autoplay: true, coverSeed: coverSeed) {
-            player.expandNowPlaying()
+            withAnimation(LucakuMotion.house) { player.expandNowPlaying() }
         }
     }
 }
@@ -147,30 +147,19 @@ struct ProfileNotificationsPage: View {
             VStack(spacing: 12) {
                 ProfileToggleRow(
                     title: "Remind me before research starts",
-                    detail: remindExplain,
-                    isOn: $remindOn
+                    detail: "Coming soon. Reminders arrive once push is live for the app.",
+                    isOn: .constant(false)
                 )
-                if remindOn {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("How long before?")
-                            .font(.system(size: 13))
-                            .foregroundStyle(LucakuColor.textSecondary)
-                        HStack(spacing: 8) {
-                            ForEach(ProfilePrefs.leadOptions, id: \.minutes) { option in
-                                ProfilePill(title: option.label, selected: remindLead == option.minutes) {
-                                    remindLead = option.minutes
-                                }
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                .disabled(true)
+                .opacity(0.5)
                 ProfileSeparator()
                 ProfileToggleRow(
                     title: "When my episode is ready",
-                    detail: "One notification a day, the moment it's ready.",
-                    isOn: $readyOn
+                    detail: "Coming soon. Reminders arrive once push is live for the app.",
+                    isOn: .constant(false)
                 )
+                .disabled(true)
+                .opacity(0.5)
                 ProfileSeparator()
                 ProfileToggleRow(
                     title: "Push notifications",
@@ -210,13 +199,6 @@ struct ProfileNotificationsPage: View {
 
     private var remindAt: String? {
         ProfileFormat.shifted(researchStart, byMinutes: -remindLead)
-    }
-
-    private var remindExplain: String {
-        guard let researchStart, let remindAt else {
-            return "A nudge before research starts, so you can change your topics in time."
-        }
-        return "Nudge at \(ProfileFormat.time12(remindAt)), before research at \(ProfileFormat.time12(researchStart))."
     }
 
     private var pushDetail: String {
@@ -385,20 +367,11 @@ struct ProfileAppearancePage: View {
                 }
                 .buttonStyle(.plain)
                 ProfileSeparator()
-                // Same preference as the Delivery & voice page (PATCH /profile `language`);
-                // saved immediately via PATCH /profile.
-                ProfileRow(symbol: "globe", title: "Language", value: viewModel.language.displayName, showsChevron: true)
-                    .overlay {
-                        Menu {
-                            Picker("Language", selection: $viewModel.language) {
-                                ForEach(ProfileLanguage.allCases) { lang in
-                                    Text(lang.displayName).tag(lang)
-                                }
-                            }
-                        } label: {
-                            Color.clear
-                        }
-                    }
+                // Language saves with the Save control on Delivery & voice.
+                NavigationLink(value: ProfileRoute.delivery) {
+                    ProfileRow(symbol: "globe", title: "Language", value: viewModel.language.displayName, showsChevron: true)
+                }
+                .buttonStyle(.plain)
                 ProfileSeparator()
                 NavigationLink(value: ProfileRoute.delivery) {
                     ProfileRow(
@@ -410,10 +383,6 @@ struct ProfileAppearancePage: View {
                 .buttonStyle(.plain)
             }
         }
-        .onChange(of: viewModel.language) { _, _ in
-            guard let token = session.accessToken else { return }
-            Task { await viewModel.save(token: token) }
-        }
     }
 
     private static func order(_ option: AppearancePreference) -> Int {
@@ -424,11 +393,7 @@ struct ProfileAppearancePage: View {
         }
     }
 
-    private var notificationsValue: String {
-        if !remindOn && !readyOn { return "Off" }
-        if !remindOn { return "When ready" }
-        return ProfilePrefs.leadOptions.first { $0.minutes == remindLead }.map { "\($0.label) before" } ?? "On"
-    }
+    private var notificationsValue: String { "Push" }
 
     private func appearanceTile(_ option: AppearancePreference) -> some View {
         let selected = appearanceRaw == option.rawValue
@@ -442,13 +407,13 @@ struct ProfileAppearancePage: View {
                     .background(LucakuColor.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(selected ? LucakuColor.icon : LucakuColor.borderSoft, lineWidth: selected ? 2 : 1)
+                            .stroke(selected ? LucakuColor.textPrimary : LucakuColor.borderSoft, lineWidth: selected ? 2 : 1)
                     )
                 HStack(spacing: 4) {
                     if selected {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 15))
-                            .foregroundStyle(LucakuColor.icon)
+                            .foregroundStyle(LucakuColor.textPrimary)
                     }
                     Text(option.displayName)
                         .font(.system(size: 14, weight: selected ? .bold : .medium))

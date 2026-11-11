@@ -14,12 +14,12 @@ struct DeliverySettingsPage: View {
         ProfilePage(title: "Delivery & voice", backTitle: "Back") {
             if case .loaded = viewModel.loadState {
                 settingsBody
+                saveBar
+                    .padding(.top, 24)
+                    .padding(.bottom, 96) // keeps Save clear of the mini player
             } else {
                 unavailable
             }
-        }
-        .safeAreaInset(edge: .bottom) {
-            if case .loaded = viewModel.loadState { saveBar }
         }
     }
 
@@ -113,7 +113,7 @@ struct DeliverySettingsPage: View {
                     }
                 }
             }
-            ProfileNote(text: "Updates the app immediately; episodes reflect it from the next one.")
+            ProfileNote(text: "Applies from your next episode.")
         }
     }
 
@@ -205,11 +205,6 @@ struct DeliverySettingsPage: View {
                 Task { await viewModel.save(token: token) }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 12)
-        .background(.bar)
-        .overlay(alignment: .top) { ProfileSeparator() }
     }
 
     static func friendly(_ identifier: String) -> String {
