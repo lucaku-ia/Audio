@@ -1,7 +1,8 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from jose import jwt
 from passlib.context import CryptContext
+from app.core import clock
 from app.core.config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -22,7 +23,7 @@ def create_access_token(cliente_id: Any, token_version: int) -> str:
     on Cliente, which invalidates every previously issued token in one shot
     — so "logout revokes the session" without needing a sessions table.
     """
-    expire = datetime.utcnow() + timedelta(days=settings.ACCESS_TOKEN_EXPIRE_DAYS)
+    expire = clock.utcnow() + timedelta(days=settings.ACCESS_TOKEN_EXPIRE_DAYS)
     payload = {"exp": expire, "sub": str(cliente_id), "tv": token_version}
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
 

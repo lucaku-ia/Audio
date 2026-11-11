@@ -80,6 +80,7 @@ from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
+from app.core import clock
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.episode import Block, Episode
@@ -207,7 +208,7 @@ async def export_account_data(
     return AccountExportOut(
         customer_id=str(cliente.id),
         email=cliente.email,
-        exported_at=datetime.utcnow(),
+        exported_at=clock.utcnow(),
         requests=requests_export,
         episodes=episodes_export,
     )

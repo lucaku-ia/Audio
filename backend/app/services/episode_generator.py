@@ -209,6 +209,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.requests import active_for_generation
+from app.core import clock
 from app.core.config import settings
 from app.models.cliente import AuthProvider, Cliente
 from app.models.episode import Block, Episode, EpisodePath
@@ -284,10 +285,12 @@ async def _compute_eta(db: AsyncSession, cliente: Cliente, path: EpisodePath, fe
     delivery_time, or timezone is missing/invalid — better an approximate
     real estimate than a null one.
 
-    Returned as a naive UTC datetime, matching every other timestamp column
-    in this codebase (see e.g. GenerationJob.creado_en's datetime.utcnow()
-    default) — storing a tz-aware value here would make later comparisons
-    against datetime.utcnow() (in check_late_jobs) silently wrong.
+    Returned as timezone-AWARE UTC, like every other timestamp this codebase
+    writes (see app/core/clock.py). This used to be deliberately naive, to
+    match the convention of the time; the scheduled branch below shows why
+    that was the wrong instinct — it already has a correct aware instant in
+    hand and had to throw the offset away to conform. Keeping it is both
+    simpler and the only form check_late_jobs can compare without guessing.
     """
     if path != EpisodePath.scheduled:
         return created_at + timedelta(minutes=_ON_DEMAND_TARGET_MINUTES)
@@ -303,7 +306,7 @@ async def _compute_eta(db: AsyncSession, cliente: Cliente, path: EpisodePath, fe
         return created_at + timedelta(minutes=_ON_DEMAND_TARGET_MINUTES)
 
     delivery_at_local = datetime.combine(fecha, perfil.delivery_time, tzinfo=tz)
-    return delivery_at_local.astimezone(timezone.utc).replace(tzinfo=None)
+    return delivery_at_local.astimezone(timezone.utc)
 
 
 _NON_TERMINAL_STATUSES = (JobStatus.queued, JobStatus.researching, JobStatus.writing, JobStatus.voicing)
@@ -341,7 +344,7 @@ async def check_late_jobs(db: AsyncSession) -> list[GenerationJob]:
     correct: a run that finishes should always report its real outcome
     regardless of how late it finished.
     """
-    now = datetime.utcnow()
+    now = clock.utcnow()
     result = await db.execute(
         select(GenerationJob).where(
             GenerationJob.status.in_(_NON_TERMINAL_STATUSES),
@@ -350,13 +353,14 @@ async def check_late_jobs(db: AsyncSession) -> list[GenerationJob]:
     )
     newly_late: list[GenerationJob] = []
     for job in result.scalars().all():
-        # asyncpg round-trips a TIMESTAMPTZ column back as timezone-aware (UTC) even
-        # though _compute_eta wrote it naive — strip tzinfo so this compares cleanly
-        # against the naive datetime.utcnow() this whole codebase otherwise standardizes
-        # on (see e.g. GenerationJob.creado_en's default), rather than raising
-        # "can't compare offset-naive and offset-aware datetimes".
-        job_eta = job.eta.replace(tzinfo=None) if job.eta.tzinfo else job.eta
-        deadline = job_eta + timedelta(minutes=_HARD_LIMIT_SLACK_MINUTES)
+        # Rows written before the aware-UTC sweep are naive in the database, and
+        # a job this process created itself and still holds in the identity map
+        # comes back as whatever Python assigned rather than what Postgres
+        # stored. clock.as_utc reads either as the UTC it always meant, so the
+        # comparison below can never raise "can't compare offset-naive and
+        # offset-aware datetimes" — which is the failure mode that would take
+        # the watchdog out entirely, silently, on the first legacy row it met.
+        deadline = clock.as_utc(job.eta) + timedelta(minutes=_HARD_LIMIT_SLACK_MINUTES)
         if now <= deadline:
             continue
         job.status = JobStatus.late
@@ -414,7 +418,7 @@ async def _promote_pending_version(db: AsyncSession, req: Request) -> None:
             actual.status = VersionStatus.superseded
 
     pendiente.status = VersionStatus.applied
-    pendiente.aplicado_en = datetime.utcnow()
+    pendiente.aplicado_en = clock.utcnow()
 
     req.current_version_id = pendiente.id
     req.structured = pendiente.structured
@@ -510,7 +514,7 @@ async def _synthesize_episode(
     settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     (settings.MEDIA_DIR / f"{episode.id}.mp3").write_bytes(b"".join(audio_parts))
     episode.audio_url = f"{settings.PUBLIC_BASE_URL}/media/{episode.id}.mp3"
-    episode.published_at = datetime.utcnow()  # audio exists — only now is it a real episode
+    episode.published_at = clock.utcnow()  # audio exists — only now is it a real episode
     return spent
 
 
@@ -701,13 +705,13 @@ async def run_generation(
         job.retry_count += 1
         job.status = JobStatus.researching
         job.stages = []
-        job.eta = await _compute_eta(db, cliente, path, today, datetime.utcnow())
+        job.eta = await _compute_eta(db, cliente, path, today, clock.utcnow())
         await emitir(db, "job_retried", customer_id=cliente.id, source="episode_generator",
                      job_id=str(job.id), path=job.path.value, retry_count=job.retry_count)
         await db.commit()
         await db.refresh(job)
     else:
-        job_created_at = datetime.utcnow()
+        job_created_at = clock.utcnow()
         eta = await _compute_eta(db, cliente, path, today, job_created_at)
         job = GenerationJob(
             customer_id=cliente.id,
@@ -867,7 +871,7 @@ async def run_generation(
             voice_id=voice_id,
             audio_url=None,  # set below, only if synthesis actually succeeds
             had_more_any=trim_factor < 1.0,
-            # NOT published yet. This used to be datetime.utcnow() here, which
+            # NOT published yet. This used to be stamped right here, which
             # marked the episode published before anyone knew whether it had
             # audio — so a TTS failure still produced a "published", silent
             # episode. published_at is now stamped in the voicing stage below,
@@ -927,7 +931,7 @@ async def run_generation(
         episode.headline = "Today: " + ", ".join(topics[:3]) if language != "es" else "Hoy: " + ", ".join(topics[:3])
 
         for req in [b["request"] for b in answerable]:
-            req.last_answered_at = datetime.utcnow()
+            req.last_answered_at = clock.utcnow()
             if req.kind.value == "one_off":
                 req.status = RequestStatus.fulfilled
                 req.fulfilled_episode_id = episode.id
@@ -1011,7 +1015,7 @@ async def run_generation(
             # module docstring's pre-TTS note — not a failure, so it keeps the
             # pre-existing behaviour: publish the script-only episode. Only a
             # real synthesis *error* is treated as a failed job above.
-            episode.published_at = datetime.utcnow()
+            episode.published_at = clock.utcnow()
 
         voicing_latency_ms = int((time.monotonic() - voicing_start) * 1000)
         job.stages = [*job.stages, {

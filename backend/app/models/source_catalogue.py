@@ -43,6 +43,8 @@ import enum
 import uuid
 from datetime import datetime
 
+from app.core import clock
+
 from sqlalchemy import String, Boolean, DateTime, JSON, Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -75,4 +77,4 @@ class SourceCatalogueEntry(Base):
     topics: Mapped[list] = mapped_column(JSON, default=lambda: [])  # e.g. ["markets", "technology"] — matches onboarding_seeds.json tag vocabulary where applicable, but isn't restricted to it
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)  # why this is genuinely licensed/API-based — audit trail, not customer-facing
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=clock.utcnow)

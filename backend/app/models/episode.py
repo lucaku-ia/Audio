@@ -7,6 +7,8 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
 
+from app.core import clock
+
 
 class EpisodePath(str, enum.Enum):
     scheduled = "scheduled"
@@ -31,7 +33,7 @@ class Episode(Base):
     had_more_any: Mapped[bool] = mapped_column(Boolean, default=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cost: Mapped[dict] = mapped_column(JSON, default=lambda: {})  # {research, writing, tts, other} — Instrumentation snapshot
-    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=clock.utcnow)
 
 
 class Block(Base):

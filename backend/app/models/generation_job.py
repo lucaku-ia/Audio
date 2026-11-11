@@ -8,6 +8,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
 from app.models.episode import EpisodePath
 
+from app.core import clock
+
 
 class JobStatus(str, enum.Enum):
     queued = "queued"
@@ -37,7 +39,7 @@ class GenerationJob(Base):
     eta: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     snapshot: Mapped[dict] = mapped_column(JSON, default=lambda: {})  # active_for_generation result that was used
     stages: Mapped[list] = mapped_column(JSON, default=lambda: [])  # [{name, started, completed, cost, latency}]
-    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=clock.utcnow)
     # How many times the pipeline has been RE-run in place on this same row after a
     # terminal `empty` result — see app.services.episode_generator's "Defect 2" note
     # on run_generation. 0 for a job that has only ever run once (its original

@@ -7,6 +7,8 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
 
+from app.core import clock
+
 
 class NarrationStyle(str, enum.Enum):
     news = "news"
@@ -30,4 +32,4 @@ class Profile(Base):
     delivery_timezone: Mapped[str] = mapped_column(String(50), default="America/Bogota")
     max_length_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)  # null = no limit, a ceiling not a target
     signals: Mapped[dict] = mapped_column(JSON, default=lambda: {})  # completion/skip/rating, refinements, adoptions, dismissals
-    computado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    computado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=clock.utcnow)

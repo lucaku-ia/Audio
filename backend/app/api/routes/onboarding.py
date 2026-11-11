@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
 from app.api.routes.home import SharedInventoryOut, _derive_shared_inventory
+from app.core import clock
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.cliente import Cliente
 from app.models.episode import EpisodePath
@@ -246,7 +247,7 @@ async def accept_consent(
     creation since there's no UI driving that sequencing yet."""
     state = await _get_or_create_state(db, cliente)
     if not state.consent_accepted_at:
-        state.consent_accepted_at = datetime.utcnow()
+        state.consent_accepted_at = clock.utcnow()
     await db.commit()
     return {"consent_accepted": True}
 
@@ -407,7 +408,7 @@ async def complete_onboarding(
     # happened, so those stay un-emittable until a real tour UI exists.
     state.tour_completed = True
     await _transition_step(db, cliente, state, OnboardingStep.done)
-    state.completed_at = datetime.utcnow()
+    state.completed_at = clock.utcnow()
     cliente.onboarding_complete = True
     await db.commit()
     return await get_state(cliente, db)

@@ -82,18 +82,21 @@ Explicitly out of scope / skipped, and why:
 Every query here is read-only aggregation — no route in this file writes
 anything.
 
-Known caveat (pre-existing, not introduced here): day-bucketing in
-cost-summary and event-counts uses func.date() on `creado_en`/`ts`
-columns that this codebase populates everywhere with naive
-datetime.utcnow() rather than timezone-aware UTC. func.date() on a
-timestamptz column buckets per the DB session's own `timezone` setting,
-not necessarily UTC — if that setting isn't UTC, daily counts here could
-be off by up to a day relative to the UTC `since`/`days` cutoffs used
-elsewhere in these same queries. Worth confirming the production
-connection's session timezone before trusting day-level precision.
+Known caveat, now half of what it was: day-bucketing in cost-summary and
+event-counts uses func.date() on `creado_en`/`ts`. The write half of the
+worry is gone — those columns are populated with timezone-aware UTC
+everywhere now (app/core/clock.py), so the stored instants are no longer
+at the mercy of the writing process's timezone.
+
+The read half remains and is irreducible here: func.date() on a timestamptz
+column buckets per the DB SESSION's `timezone` setting, so "which day" is a
+server-side decision this module does not make. app/db/session.py pins that
+setting to UTC, which is the only reason these buckets line up with the UTC
+`since`/`days` cutoffs used in the same queries — this is the dependency
+that keeps that pin earning its place.
 """
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -101,6 +104,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_internal_dashboard_key
+from app.core import clock
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.generation_job import GenerationJob, JobStatus
@@ -171,7 +175,7 @@ async def cost_summary(
     call sites) — no fixed enum exists on the model, so this reports
     whatever purposes are present in the data rather than a hardcoded list.
     """
-    since_dt = datetime.utcnow() - timedelta(days=days)
+    since_dt = clock.utcnow() - timedelta(days=days)
     since_date = since_dt.date()
 
     total_row = (
@@ -280,10 +284,10 @@ async def cache_savings(db: AsyncSession = Depends(get_db)):
     """
     rows = (await db.execute(select(FindingsCache))).scalars().all()
 
-    now = datetime.now(timezone.utc)
+    now = clock.utcnow()
     live = 0
     for row in rows:
-        created = row.creado_en if row.creado_en.tzinfo else row.creado_en.replace(tzinfo=timezone.utc)
+        created = clock.as_utc(row.creado_en)
         if now - created <= (findings_store.EMPTY_TTL if row.no_news else findings_store.FRESH_TTL):
             live += 1
 
@@ -321,7 +325,7 @@ async def event_counts(
     expected event volumes in this codebase to compare against, only the
     events `app/services/events.emitir()` is actually called with today.
     """
-    resolved_end = end_date or datetime.utcnow().date()
+    resolved_end = end_date or clock.utcnow().date()
     resolved_start = start_date or (resolved_end - timedelta(days=7))
 
     day_expr = func.date(Event.ts)
@@ -395,7 +399,7 @@ async def generation_funnel(
     and excludes the whole-job {"error": ...} sentinel a failed run replaces
     `stages` with (no `stage` key at all).
     """
-    since_dt = datetime.utcnow() - timedelta(days=days)
+    since_dt = clock.utcnow() - timedelta(days=days)
 
     total = (
         await db.execute(

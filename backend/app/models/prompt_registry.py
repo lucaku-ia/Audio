@@ -27,6 +27,8 @@ so no migration entry is needed for a new table.
 import uuid
 from datetime import datetime
 
+from app.core import clock
+
 from sqlalchemy import String, Boolean, DateTime, Text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -56,5 +58,5 @@ class PromptVersion(Base):
     version: Mapped[str] = mapped_column(String(50))
     system_prompt: Mapped[str] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=clock.utcnow)
     created_by: Mapped[str | None] = mapped_column(String(200), nullable=True)  # free-text note; no real admin identity exists yet

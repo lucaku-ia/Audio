@@ -6,7 +6,7 @@ credentials created in their respective consoles (same pattern as Gmail in
 the manufacturing project). auth_provider already supports those values in
 the model; each one's callback endpoint is still missing.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
+from app.core import clock
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.db.session import get_db
 from app.models.cliente import AuthProvider, Cliente
@@ -95,9 +96,18 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = 
             detail=f"This account signs in with '{cliente.auth_provider.value}', not email and password.",
         )
 
-    ahora = datetime.now(timezone.utc)
-    if cliente.bloqueado_hasta and cliente.bloqueado_hasta > ahora:
-        segundos_restantes = int((cliente.bloqueado_hasta - ahora).total_seconds())
+    ahora = clock.utcnow()
+    # as_utc, not a bare comparison: bloqueado_hasta is read back aware from
+    # Postgres, but an account locked earlier in this same process is served
+    # from SQLAlchemy's identity map as whatever Python assigned, and rows
+    # written before the aware-UTC sweep are naive. Comparing a naive value to
+    # an aware one raises TypeError, which here would mean a 500 on login for
+    # exactly the accounts the throttle has just locked out — the lockout
+    # failing open would be bad; it failing loudly on the victim's next
+    # attempt would be worse.
+    bloqueado_hasta = clock.as_utc(cliente.bloqueado_hasta) if cliente.bloqueado_hasta else None
+    if bloqueado_hasta and bloqueado_hasta > ahora:
+        segundos_restantes = int((bloqueado_hasta - ahora).total_seconds())
         raise HTTPException(
             status_code=429,
             detail=f"Too many attempts. Try again in {segundos_restantes} seconds.",

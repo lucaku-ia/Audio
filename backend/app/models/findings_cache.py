@@ -33,12 +33,13 @@ What is NEVER cached:
     ever reach this table, the split has been undone.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import String, DateTime, JSON, Boolean, Float, Integer, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core import clock
 from app.db.session import Base
 
 
@@ -69,4 +70,4 @@ class FindingsCache(Base):
     hit_count: Mapped[int] = mapped_column(Integer, default=0)
     last_hit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=clock.utcnow, index=True)
