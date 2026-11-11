@@ -256,6 +256,7 @@ struct NewsDetailView: View {
     @State private var showFeedback = false
     @State private var toast: String?
     @State private var showReported = false
+    @State private var showShare = false
 
     var body: some View {
         ScrollView {
@@ -347,10 +348,14 @@ struct NewsDetailView: View {
                     )
                 }
                 .padding(.top, 4)
+
+                moreFromDay
             }
             .padding(.horizontal, LucakuSpacing.sp4)
             .padding(.top, LucakuSpacing.sp4)
-            .padding(.bottom, playerViewModel.hasEpisode ? 96 : LucakuSpacing.sp8)
+            // The mini player is a tab-bar accessory, so its height is
+            // already in this scroll view's safe area.
+            .padding(.bottom, LucakuSpacing.sp8)
         }
         .background(LucakuColor.bg.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
@@ -369,6 +374,21 @@ struct NewsDetailView: View {
                 }
             )
         }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showShare = true } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .accessibilityLabel("Share this story")
+            }
+        }
+        .sheet(isPresented: $showShare) {
+            ShareSheetView(storyTitle: story.title,
+                           listenLength: "\(story.readMinutes) min read",
+                           firstName: "")
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+        }
         .alert("Problem reported", isPresented: $showReported) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -385,6 +405,62 @@ struct NewsDetailView: View {
                     .padding(.bottom, 12)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+    }
+
+    /// The rest of the same day, so finishing one story offers the next
+    /// instead of a dead end. Read stories are included but drawn quieter —
+    /// the point is the day's shape, not an inbox.
+    @ViewBuilder private var moreFromDay: some View {
+        let siblings = store.groups
+            .first { $0.dayOffset == story.dayOffset }?
+            .stories.filter { $0.id != story.id } ?? []
+
+        if !siblings.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("More from \(story.dayOffset == 0 ? "today" : story.dayLabel)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .tracking(0.3)
+                    .textCase(.uppercase)
+                    .foregroundStyle(LucakuColor.textSecondary)
+                    .padding(.bottom, 8)
+
+                ForEach(Array(siblings.enumerated()), id: \.element.id) { index, sibling in
+                    if index > 0 {
+                        Rectangle().fill(LucakuColor.borderSoft).frame(height: 0.5)
+                    }
+                    NavigationLink(value: sibling) {
+                        HStack(alignment: .top, spacing: 12) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(LucakuColor.fill)
+                                Image(systemName: sibling.category.symbol)
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(LucakuColor.textSecondary)
+                            }
+                            .frame(width: 34, height: 34)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(sibling.category.label.uppercased())
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .tracking(0.4)
+                                    .foregroundStyle(LucakuColor.textTertiary)
+                                Text(sibling.title)
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(LucakuColor.textPrimary)
+                                    .multilineTextAlignment(.leading)
+                                    .lineLimit(3)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .opacity(store.isRead(sibling) ? 0.55 : 1)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 26)
         }
     }
 

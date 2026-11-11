@@ -24,14 +24,15 @@ struct HomeView: View {
     var onSeeInterests: () -> Void = {}
 
     @State private var generatingSince: Date?
-    @State private var openStory: NewsStory?
+    /// Stories push onto this path, so one story can open another.
+    @State private var storyPath = NavigationPath()
     /// DEBUG only: forces a top-card state so every 3.x state is reproducible.
     /// Always nil in release builds (the menu that sets it is #if DEBUG).
     @State private var debugState: HomeTopState?
     @State private var debugStamp = Date()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $storyPath) {
             ZStack {
                 LucakuColor.bg.ignoresSafeArea()
 
@@ -54,7 +55,10 @@ struct HomeView: View {
             }
             .navigationTitle("Home")
             .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(item: $openStory) { story in
+            // Value-based rather than `item:` so a story opened from another
+            // story's "More from today" pushes onto the stack instead of
+            // replacing the one you are reading.
+            .navigationDestination(for: NewsStory.self) { story in
                 NewsDetailView(story: story, store: news)
             }
             .task { await refresh() }
@@ -187,7 +191,7 @@ struct HomeView: View {
         // Both still exist as components; nothing on Home mounts them.
         NewsSectionView(store: news, onOpen: { story in
             news.markRead(story)
-            openStory = story
+            storyPath.append(story)
         })
     }
 
