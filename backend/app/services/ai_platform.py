@@ -40,6 +40,7 @@ and version at call time, passing its own *_SYSTEM/*_VERSION constant as
 the fallback. Do not delete these constants — they are load-bearing for
 both seeding and the fallback path, not dead code.
 """
+import asyncio
 import base64
 import json
 import logging
@@ -65,6 +66,85 @@ _client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 PROVIDER = "anthropic"
 
 logger = logging.getLogger(__name__)
+
+
+class ModelUnavailable(RuntimeError):
+    """
+    The model could not be reached, or answered with an error, after retries.
+
+    Exists so callers can tell "the provider is having a moment" apart from a
+    bug in this module. Every HTTP route that structures text must translate
+    this into a 503 with a sentence a person can act on — a bare exception
+    here reaches the customer as `Server error (500): Internal Server Error`,
+    which is both frightening and useless. See app/api/routes/requests.py.
+    """
+
+
+# Worth one more attempt: the request never reached a model, or the model was
+# momentarily too busy. The SDK already retries these a couple of times on its
+# own; this is the outer loop for when that was not enough. A 400 or a 401 is
+# deliberately NOT here — those are our bug, and retrying them just spends the
+# customer's time before failing anyway.
+_TRANSIENT_ERRORS = (
+    anthropic.APIConnectionError,   # covers APITimeoutError
+    anthropic.RateLimitError,
+    anthropic.InternalServerError,  # covers 529 overloaded
+)
+_MAX_ATTEMPTS = 3
+_RETRY_BACKOFF_S = 0.75
+
+
+async def _invoke(call, *args, **kwargs):
+    """
+    Runs one blocking Anthropic SDK call without stalling the event loop, and
+    retries it when the failure is the kind that passes.
+
+    Two separate problems, one helper, because they share a call site.
+
+    **The blocking half.** `_client` is `anthropic.Anthropic` — the synchronous
+    client. Called directly from an `async def` handler it holds the event loop
+    for the entire round trip, so for those seconds this process serves nobody:
+    not another customer, not a health check, not the scheduler. With
+    generation still running inline on the request path that is tens of seconds
+    of total freeze per episode. `asyncio.to_thread` hands the blocking call to
+    a worker thread and gives the loop back immediately.
+
+    The sync client is kept on purpose rather than switching to
+    `AsyncAnthropic`: the test fakes throughout backend/tests patch `_client`
+    with plain synchronous callables, and `to_thread` runs those unchanged.
+    Switching the client type would mean rewriting every fake to be awaitable
+    for no behavioural gain over this.
+
+    **The failing half.** Nothing used to catch anything. One rate limit, one
+    529, one dropped connection became an uncaught exception, a 500, and — in
+    the onboarding chat — the literal string "Server error (500): Internal
+    Server Error" in a speech bubble next to a friendly assistant. Transient
+    failures now get `_MAX_ATTEMPTS` tries with backoff; anything still failing
+    after that, and anything non-transient, is re-raised as `ModelUnavailable`
+    for the route to turn into a 503.
+    """
+    last: Exception | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            return await asyncio.to_thread(call, *args, **kwargs)
+        except _TRANSIENT_ERRORS as exc:
+            last = exc
+            if attempt == _MAX_ATTEMPTS - 1:
+                break
+            delay = _RETRY_BACKOFF_S * (2 ** attempt)
+            logger.warning(
+                "ai_platform: transient model failure (%s), attempt %d/%d, retrying in %.1fs",
+                type(exc).__name__, attempt + 1, _MAX_ATTEMPTS, delay,
+            )
+            await asyncio.sleep(delay)
+        except anthropic.APIError as exc:
+            # Not transient: a bad request, a bad key, a model id that does not
+            # exist. Retrying cannot help, and the customer cannot act on it,
+            # so it is logged loudly here and reported to them as unavailable.
+            logger.error("ai_platform: model call failed permanently: %s", exc, exc_info=True)
+            raise ModelUnavailable(str(exc)) from exc
+    logger.error("ai_platform: model unreachable after %d attempts: %s", _MAX_ATTEMPTS, last)
+    raise ModelUnavailable(str(last)) from last
 
 # Per-1M-token prices (USD) — PRD §5: "per-provider price tables in config;
 # cost computed at call time." Update here if pricing changes. Note: this
@@ -245,7 +325,8 @@ async def structure_request(
     )
 
     start = time.monotonic()
-    response = _client.messages.parse(
+    response = await _invoke(
+        _client.messages.parse,
         model=model_for("structure_request"),
         max_tokens=1024,
         thinking={"type": "adaptive"},
@@ -589,7 +670,11 @@ async def _run_with_escalation(db, *, purpose: str, version: str, call, parse,
     hiding the retry inside one row. The returned cost is the sum.
     """
     start = time.monotonic()
-    response = call(model_for(purpose))
+    # `call` stays an ordinary synchronous function — _invoke is what takes it
+    # off the event loop and retries it. Keeping that here rather than inside
+    # each closure means every escalating purpose gets both for free, and the
+    # closures stay readable as "this is the request we send".
+    response = await _invoke(call, model_for(purpose))
     latency_ms = int((time.monotonic() - start) * 1000)
     cost = await _log_call(
         db, customer_id=customer_id, prompt=purpose, version=version, purpose=purpose,
@@ -606,7 +691,7 @@ async def _run_with_escalation(db, *, purpose: str, version: str, call, parse,
     logger.warning("ai_platform: %s returned unparseable output on %s, retrying on %s",
                    purpose, model_for(purpose), stronger)
     start = time.monotonic()
-    retry = call(stronger)
+    retry = await _invoke(call, stronger)
     retry_latency_ms = int((time.monotonic() - start) * 1000)
     cost += await _log_call(
         db, customer_id=customer_id, prompt=purpose, version=version, purpose=purpose,
@@ -704,7 +789,8 @@ async def refine_request(
         f"Most recent block summary: {block_summary}\n"
         f"Most recent block script: {block_script}"
     )
-    response = _client.messages.parse(
+    response = await _invoke(
+        _client.messages.parse,
         model=model_for("refine_request"),
         max_tokens=1024,
         thinking={"type": "adaptive"},
