@@ -208,7 +208,7 @@ struct SettingsView: View {
                 ProfileRow(
                     symbol: "circle.lefthalf.filled",
                     title: "Appearance & notifications",
-                    subtitle: "\(AppearancePreference(rawValue: appearanceRaw)?.displayName ?? "System") mode · notifications \(remindOn || readyOn ? "on" : "off")",
+                    subtitle: "\(AppearancePreference(rawValue: appearanceRaw)?.displayName ?? "System") mode · notifications \(remindOn || readyOn ? "on" : "off") · \(viewModel.language.displayName)",
                     showsChevron: true
                 )
             }
@@ -217,7 +217,7 @@ struct SettingsView: View {
                 ProfileRow(
                     symbol: "person.badge.shield.checkmark",
                     title: "Account & privacy",
-                    subtitle: "\(viewModel.me?.email ?? "Your account") · terms, your data",
+                    subtitle: "\(viewModel.me?.email ?? "Your account") · password, terms, your data",
                     showsChevron: true
                 )
             }

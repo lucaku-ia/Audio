@@ -363,6 +363,7 @@ struct ProfileNotificationsPage: View {
 
 struct ProfileAppearancePage: View {
     @ObservedObject var viewModel: SettingsViewModel
+    @EnvironmentObject private var session: SessionStore
     @AppStorage("appearancePreference") private var appearanceRaw = AppearancePreference.system.rawValue
     @AppStorage(ProfilePrefs.remindOn) private var remindOn = true
     @AppStorage(ProfilePrefs.remindLead) private var remindLead = 30
@@ -384,6 +385,21 @@ struct ProfileAppearancePage: View {
                 }
                 .buttonStyle(.plain)
                 ProfileSeparator()
+                // Same preference as the Delivery & voice page (PATCH /profile `language`);
+                // saved immediately via PATCH /profile.
+                ProfileRow(symbol: "globe", title: "Language", value: viewModel.language.displayName, showsChevron: true)
+                    .overlay {
+                        Menu {
+                            Picker("Language", selection: $viewModel.language) {
+                                ForEach(ProfileLanguage.allCases) { lang in
+                                    Text(lang.displayName).tag(lang)
+                                }
+                            }
+                        } label: {
+                            Color.clear
+                        }
+                    }
+                ProfileSeparator()
                 NavigationLink(value: ProfileRoute.delivery) {
                     ProfileRow(
                         symbol: "clock", title: "Delivery & voice",
@@ -393,6 +409,10 @@ struct ProfileAppearancePage: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+        .onChange(of: viewModel.language) { _, _ in
+            guard let token = session.accessToken else { return }
+            Task { await viewModel.save(token: token) }
         }
     }
 
@@ -490,6 +510,7 @@ struct ProfileAccountPage: View {
 
     @State private var showDeleteConfirmation = false
     @State private var showExportShareSheet = false
+    @State private var showPasswordAlert = false
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -504,7 +525,12 @@ struct ProfileAccountPage: View {
                     symbol: "arrow.right.circle", title: "Sign-in method",
                     value: viewModel.me?.authProvider.capitalized ?? "Unavailable"
                 )
-                // TODO(backend): password change (no endpoint yet), so no row is shown.
+                ProfileSeparator()
+                // TODO(backend): password change endpoint; local stub with the demo's chevron row.
+                Button { showPasswordAlert = true } label: {
+                    ProfileRow(symbol: "key", title: "Change password", showsChevron: true)
+                }
+                .buttonStyle(.plain)
             }
 
             ProfileSectionLabel(text: "Privacy")
@@ -549,6 +575,11 @@ struct ProfileAccountPage: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This permanently deletes your account, requests, and episodes. This can't be undone.")
+        }
+        .alert("Change password", isPresented: $showPasswordAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Password changes aren't available in the app yet.")
         }
         .alert("Couldn't delete account", isPresented: errorBinding($viewModel.deleteAccountError)) {
             Button("OK", role: .cancel) {}
