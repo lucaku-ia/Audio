@@ -309,7 +309,9 @@ struct HomeView: View {
                 } else {
                     playerViewModel.selectBlock(0, autoplay: true)
                 }
-                startedEpisodeId = id
+                // Recorded by the `isPlaying` observer if audio actually
+                // starts, for the same reason as the load path below: a tap
+                // is a request to play, not proof that playing happened.
                 return
             }
             // Nothing to record here: if the load succeeds and audio starts,
