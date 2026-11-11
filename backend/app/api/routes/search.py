@@ -107,7 +107,7 @@ async def history(
     """
     episodes_result = await db.execute(
         select(Episode)
-        .where(Episode.customer_id == cliente.id)
+        .where(Episode.customer_id == cliente.id, Episode.published_at.is_not(None))
         .order_by(Episode.fecha.desc(), Episode.published_at.desc())
     )
     episodes = episodes_result.scalars().all()
