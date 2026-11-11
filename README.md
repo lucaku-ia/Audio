@@ -1132,15 +1132,143 @@ unit-tested:
 `explore: []` — the empty-shelves problem is still exactly as described in
 next steps, and still waiting on `INTERNAL_DASHBOARD_KEY` in Railway.
 
+## Three bugs from one screenshot (2026-11-11)
+
+The founder ran the app on a real iPhone, tapped through onboarding, and sent
+back one screenshot of the Details step. It contained three separate defects,
+plus a fourth hiding behind them in the backend.
+
+### "More ideas" could not show a new idea
+
+`OnboardingCategories.pageSize` is 6. Every single topic list — all five
+countries' cities, politics, markets and sports, and all seven fixed category
+lists — held **exactly 6** items. `page(offset:)` wrapped with
+`% topics.count`, so `(6 + i) % 6 == i`: page two was page one, verbatim.
+
+The button therefore could not work, in any category, in any country, ever.
+Four taps produced four "Here are a few more." bubbles above an unchanged set
+of chips. Nothing errored, nothing logged, and the only evidence it was broken
+was a customer counting chips.
+
+The wrap was the kind of mistake that looks careful. It is defensive — it can
+never index out of bounds — and it reads as "cycle through the list". It only
+fails when the list is exactly one page long, which is the case nobody writes a
+test for and, as it happens, the case every list in the file was in.
+
+Three changes, because one would not have been enough:
+
+- `page(offset:)` clamps instead of wrapping, so exhaustion is *visible* to the
+  caller rather than disguised as an endless supply of the same six.
+- `hasMore(after:)` reports it, and `DetailCard` hides "More ideas" when it is
+  false. The app no longer offers what it cannot deliver.
+- Every list is now twelve long, so there is a real second page to show.
+
+### Tapping a chip and then "More ideas" silently discarded the chip
+
+`detailChoices` was replaced wholesale on each page, and `addSelectedDetails`
+only ever submits chips still in `detailChoices`. "New York", then "More
+ideas", and New York was gone — from the card and from the submission — with
+nothing said.
+
+The card is now appended to rather than swapped. That fixes the loss, and it
+makes the sentence literally true: "Here are a few more" now describes
+something the customer can see happen.
+
+### "I'm done, skip the rest" announced success it had not had
+
+```swift
+for label in covered {
+    _ = await vm.addRequest(...)   // result discarded
+}
+await flushError()
+if !covered.isEmpty { await say("Okay, I'll cover the top stories for ...") }
+```
+
+Every add's result was thrown away, and the reassuring line was said whether or
+not a single request had been saved. In the founder's screenshot all three
+failed, so the chat read:
+
+> Server error (500): Internal Server Error
+> Okay, I'll cover the top stories for Local news, World and Personal finance.
+> I need at least one topic to build your first episode. What do you want to follow?
+
+A raw stack-trace string, then a promise, then the promise disowned — three
+bubbles, in the assistant's own voice, one after another.
+
+Each add is checked now. Only what saved is claimed, what failed is named, and
+when nothing lands at all the flow stays on the card to be retried rather than
+advancing into "I need at least one topic" — which was true, but only because
+the step had just failed, and so read as the app contradicting itself.
+
+### Underneath all of it: nothing caught anything
+
+The 500 was real. `POST /requests` calls `ai_platform.structure_request`, and
+there was no error handling anywhere around the model call. One rate limit, one
+529, one dropped connection became an uncaught exception and FastAPI's generic
+500 — which `APIError` then rendered verbatim into a speech bubble.
+
+Two fixes, in `ai_platform._invoke`:
+
+- **Transient failures retry** with backoff; anything that survives the retries
+  is raised as `ModelUnavailable`, which `app/main.py` maps to a 503 carrying a
+  sentence a person can act on. The provider's own error string stays in the
+  logs. A permanent failure is deliberately not retried — it cannot succeed,
+  and retrying only lengthens the wait before the same answer.
+- **The call no longer blocks the event loop.** `_client` is
+  `anthropic.Anthropic`, the *synchronous* client, called from `async def`
+  handlers. For the length of every round trip this process served nobody: not
+  another customer, not `/health`, not the scheduler. With generation still
+  running inline on the request path that is tens of seconds of total freeze per
+  episode, and it makes exactly the timeouts above far more likely under any
+  concurrency. Every call now goes through `asyncio.to_thread`.
+
+The sync client is kept on purpose. Every test fake patches `_client` with
+plain synchronous callables, and `to_thread` runs those unchanged; switching to
+`AsyncAnthropic` would mean rewriting every fake to be awaitable for no
+behavioural gain.
+
+### What the first version of that fix got wrong
+
+`_invoke` originally caught `anthropic.APIError`. Running a local server with
+no `ANTHROPIC_API_KEY` showed that an unconfigured key raises a plain
+`TypeError` from inside the SDK's header builder — not an `APIError` at all —
+so it went straight back to being the 500 the function exists to prevent. It
+now catches `Exception`, logs the traceback, and reports `ModelUnavailable`.
+
+That was found by running the thing, not by reading it. The same is true of the
+event-loop fix: its test was checked against the bug it describes by removing
+`to_thread`, where it reports 0 ticks instead of the 5+ it requires. A guard
+that has never failed is not known to work.
+
+### Verified by driving the app
+
+`Config.apiBaseURL` now accepts a `LUCAKU_API_BASE_URL` override in DEBUG
+builds (release ignores it), which is what made this checkable at all:
+
+```
+SIMCTL_CHILD_LUCAKU_API_BASE_URL=http://127.0.0.1:8077 \
+  xcrun simctl launch --terminate-running-process booted com.lucaku.audio
+```
+
+The `SIMCTL_CHILD_` prefix is not optional — anything after the bundle id is
+passed as a launch *argument*, not an environment variable, so
+`simctl launch ... KEY=VALUE` silently leaves the app talking to production.
+
+Pointed at a local backend with no Anthropic key, so every call genuinely
+failed, the Simulator showed: the card growing by six new cities, the selected
+chip surviving the page change, "More ideas" disappearing once all twelve were
+shown, and the failure producing one honest error, a named list of what did not
+save, and an offer to retry.
+
 ## Suggested next steps
 
-**Status as of 2026-11-11, after the autonomous backend session.** The whole
-stack is merged: #42 (test suite repair), #43 (voicing failures + pool), #44
-(signup error messages), #45 (findings store), #46 (timestamp correctness),
-#47 and #50 (these docs), #48 (re-voice), #49 (continuity), #51 (cache-savings
-metric), #52 (consent prompt removed from onboarding). #41 was superseded by
-#43 and is closed. `main` is green — 85 tests, run against the merged result
-before the merges and again after.
+**Status as of 2026-11-11, after the autonomous backend session.** Everything
+is merged and nothing is open: #42 (test suite repair), #43 (voicing failures +
+pool), #44 (signup error messages), #45 (findings store), #46 (timestamp
+correctness), #47 / #50 / #53 (these docs), #48 (re-voice), #49 (continuity),
+#51 (cache-savings metric), #52 (consent prompt removed from onboarding), #54
+(model-call resilience) and #55 (the three onboarding-chat bugs). #41 was
+superseded by #43 and is closed. `main` is green — 94 tests.
 
 Two things to know about that merge, because both cost time and will recur.
 Deleting a base branch on GitHub **closes** the stacked PR above it rather than
