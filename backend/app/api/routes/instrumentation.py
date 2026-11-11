@@ -93,7 +93,7 @@ elsewhere in these same queries. Worth confirming the production
 connection's session timezone before trusting day-level precision.
 """
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -104,8 +104,10 @@ from app.api.deps import require_internal_dashboard_key
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.generation_job import GenerationJob, JobStatus
+from app.models.findings_cache import FindingsCache
 from app.models.instrumentation import AICall, Event
 from app.models.onboarding import OnboardingState, OnboardingStep
+from app.services import findings_store
 from app.services.episode_generator import SHARED_INVENTORY_EMAIL_DOMAIN
 
 router = APIRouter(
@@ -133,6 +135,17 @@ class CostByDay(BaseModel):
     day: date
     call_count: int
     total_cost: float
+
+
+class CacheSavingsOut(BaseModel):
+    entries: int
+    live_entries: int
+    hits: int
+    research_calls_avoided: int
+    estimated_saved: float
+    avg_entry_cost: float
+    hit_rate: float
+    top_shared_topics: list[dict]
 
 
 class CostSummaryOut(BaseModel):
@@ -243,6 +256,57 @@ class EventCountsOut(BaseModel):
     start_date: date
     end_date: date
     counts: list[EventCount]
+
+
+@router.get("/cache-savings", response_model=CacheSavingsOut)
+async def cache_savings(db: AsyncSession = Depends(get_db)):
+    """
+    What the shared findings store has actually saved.
+
+    The cache's value was argued from design — research is the expensive half,
+    customers overlap on topics, therefore it pays. This reports whether that
+    is true in the data, because an unmeasured cache is indistinguishable from
+    a cache that never hits.
+
+    `estimated_saved` is deliberately an ESTIMATE and named so. It multiplies
+    each entry's recorded hit_count by what that entry's own research actually
+    cost (original_cost, captured at write time), which assumes a hit would
+    otherwise have cost roughly what the original did. That holds while model
+    routing is stable and breaks if routing changes mid-window — so treat it
+    as the right order of magnitude, not an invoice.
+
+    `hit_rate` is hits / (hits + entries): entries are research calls that had
+    to be paid for, hits are ones that were not.
+    """
+    rows = (await db.execute(select(FindingsCache))).scalars().all()
+
+    now = datetime.now(timezone.utc)
+    live = 0
+    for row in rows:
+        created = row.creado_en if row.creado_en.tzinfo else row.creado_en.replace(tzinfo=timezone.utc)
+        if now - created <= (findings_store.EMPTY_TTL if row.no_news else findings_store.FRESH_TTL):
+            live += 1
+
+    hits = sum(r.hit_count for r in rows)
+    saved = sum(r.hit_count * (r.original_cost or 0.0) for r in rows)
+    paid = len(rows)
+    avg = (sum(r.original_cost or 0.0 for r in rows) / paid) if paid else 0.0
+
+    top = sorted(rows, key=lambda r: r.hit_count, reverse=True)[:10]
+    return CacheSavingsOut(
+        entries=paid,
+        live_entries=live,
+        hits=hits,
+        research_calls_avoided=hits,
+        estimated_saved=round(saved, 4),
+        avg_entry_cost=round(avg, 4),
+        hit_rate=round(hits / (hits + paid), 4) if (hits + paid) else 0.0,
+        top_shared_topics=[
+            {"topic": r.topic_key, "geography": r.geography_key or None,
+             "hits": r.hit_count, "saved": round(r.hit_count * (r.original_cost or 0.0), 4)}
+            for r in top if r.hit_count
+        ],
+    )
 
 
 @router.get("/event-counts", response_model=EventCountsOut)
