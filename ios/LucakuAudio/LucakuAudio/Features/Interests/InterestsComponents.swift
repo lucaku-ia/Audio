@@ -193,7 +193,7 @@ struct FollowChip: View {
 }
 
 /// Wrapping layout for chips.
-struct FlowLayout: Layout {
+struct InterestChipFlow: Layout {
     var spacing: CGFloat = 8
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {

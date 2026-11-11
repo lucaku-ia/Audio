@@ -116,7 +116,7 @@ struct InterestSheet: View {
         return VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 10) {
                 sectionLabel("Follow")
-                FlowLayout(spacing: 8) {
+                InterestChipFlow(spacing: 8) {
                     FollowChip(label: "Everything in \(viewModel.label(forCategory: id))", isOn: all, minHeight: 38) {
                         guard let token else { return }
                         Task {
