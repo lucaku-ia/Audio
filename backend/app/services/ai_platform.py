@@ -42,6 +42,7 @@ both seeding and the fallback path, not dead code.
 """
 import base64
 import json
+import logging
 import os
 import re
 import time
@@ -60,24 +61,101 @@ from app.services.source_catalogue import attach_licenses
 
 _client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 
-MODEL = "claude-opus-5"
 PROVIDER = "anthropic"
+
+logger = logging.getLogger(__name__)
 
 # Per-1M-token prices (USD) — PRD §5: "per-provider price tables in config;
 # cost computed at call time." Update here if pricing changes. Note: this
 # does not include the web_search tool's own per-search cost, which isn't
 # broken out by the API response usage object — logged costs are therefore
 # a token-only approximation for any call that uses web_search.
-_PRICE_PER_1M = {"claude-opus-5": {"input": 5.00, "output": 25.00}}
+_PRICE_PER_1M = {
+    "claude-opus-5-5":  {"input": 4.00, "output": 20.00},
+    "claude-opus-5":    {"input": 5.00, "output": 25.00},
+    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00},
+    # Haiku 5.5's listed rate holds for prompts up to 100K tokens; beyond that
+    # it is $0.50 / $2.50. Every call we route to it is far under that, but if
+    # one ever is not, this understates its cost — see _cost.
+    "claude-haiku-5-5": {"input": 0.10, "output": 0.50},
+}
+
+_HAIKU_CHEAP_INPUT_LIMIT = 100_000
+_HAIKU_LONG_PROMPT_PRICE = {"input": 0.50, "output": 2.50}
+
+# Every call still runs on this unless its purpose says otherwise. Kept as a
+# module constant because the rest of the codebase and its tests refer to it.
+MODEL = "claude-opus-5-5"
+
+# ---------------------------------------------------------------------------
+# Model routing
+#
+# Research is ~73% of what an episode costs, and until now every call in this
+# module ran on the same Opus model regardless of what it was doing. The four
+# jobs here have very different shapes, and paying Opus rates for all of them
+# is the single largest avoidable cost in the product:
+#
+#   research_topic     ~50K input tokens of web-search results, real judgment
+#                      about what is new and what is worth reporting.
+#   write_block        small input (findings, not raw search results), no web
+#                      access. Turning facts into a paragraph in a given voice.
+#   structure_request  one short sentence in, a few fields out. Classification.
+#   refine_request     one block plus an intent, a few fields out.
+#
+# So: research stays on a strong model, writing and the two classifiers drop to
+# cheap ones. Writing is the bigger saving of the two because it runs once per
+# block per customer, where research can be shared.
+#
+# Why Sonnet and not Haiku for research: the `web_search_20260209` tool — the
+# one with dynamic filtering, which this module uses — is not available on
+# Haiku 5.5. Routing research there would silently fall back to a weaker search
+# variant, which is a quality change disguised as a cost change.
+#
+# Nothing here is a guess at quality. `_ESCALATE_TO` is the other half: a cheap
+# model that returns something unusable gets retried once on the strong model,
+# so the floor is Opus's answer at Opus's price for the few calls that need it,
+# not a worse episode.
+# ---------------------------------------------------------------------------
+_STRONG = "claude-opus-5-5"
+_MID = "claude-sonnet-5-5"
+_CHEAP = "claude-haiku-5-5"
+
+_MODEL_BY_PURPOSE = {
+    "research_topic": _MID,
+    "write_block": _CHEAP,
+    "structure_request": _CHEAP,
+    "refine_request": _CHEAP,
+}
+
+# Which model a failed cheap call is retried on. One hop only — if the strong
+# model also fails, the caller's own fallback handles it.
+_ESCALATE_TO = {
+    _CHEAP: _MID,
+    _MID: _STRONG,
+}
 
 
-def _cost(usage) -> float:
-    prices = _PRICE_PER_1M.get(MODEL, {"input": 0.0, "output": 0.0})
+def model_for(purpose: str) -> str:
+    """The model a given call runs on. Unknown purposes get the strong model,
+    so a new call site is expensive rather than quietly degraded."""
+    return _MODEL_BY_PURPOSE.get(purpose, _STRONG)
+
+
+def escalation_for(purpose: str) -> str | None:
+    """The model to retry `purpose` on when its first answer is unusable."""
+    return _ESCALATE_TO.get(model_for(purpose))
+
+
+def _cost(usage, model: str) -> float:
+    prices = _PRICE_PER_1M.get(model, {"input": 0.0, "output": 0.0})
+    if model == _CHEAP and usage.input_tokens > _HAIKU_CHEAP_INPUT_LIMIT:
+        prices = _HAIKU_LONG_PROMPT_PRICE
     return (usage.input_tokens / 1_000_000) * prices["input"] + (usage.output_tokens / 1_000_000) * prices["output"]
 
 
 async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, version: str, purpose: str,
-                     usage, latency_ms: int, context: dict, rejected_reason: str | None = None) -> float:
+                     usage, latency_ms: int, context: dict, rejected_reason: str | None = None,
+                     model: str | None = None) -> float:
     """
     Logs the AICall row and returns its `cost` so direct callers (currently
     research_topic, write_block and synthesize) can thread per-call cost up to
@@ -87,13 +165,14 @@ async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, ve
     app/services/episode_generator.py's run_generation for why this (not a
     time-window AICall query) was chosen.
     """
-    cost = _cost(usage)
+    model = model or model_for(purpose)
+    cost = _cost(usage, model)
     db.add(AICall(
         call_id=uuid.uuid4(),
         prompt=prompt,
         version=version,
         purpose=purpose,
-        model=MODEL,
+        model=model,
         provider=PROVIDER,
         tokens_in=usage.input_tokens,
         tokens_out=usage.output_tokens,
@@ -166,7 +245,7 @@ async def structure_request(
 
     start = time.monotonic()
     response = _client.messages.parse(
-        model=MODEL,
+        model=model_for("structure_request"),
         max_tokens=1024,
         thinking={"type": "adaptive"},
         output_config={"effort": "low"},
@@ -199,6 +278,8 @@ class BlockResult(BaseModel):
     # sees list[dict]. Do not narrow this without also changing that prompt.
     sources: list
     no_news: bool
+    # Not model output — see Findings.parse_failed.
+    parse_failed: bool = False
     # Not part of the model's own JSON output (_parse_block_result never sees
     # it) — set by write_block after _log_call returns, so the Generator's
     # writing stage can accumulate real per-call cost across the
@@ -266,6 +347,10 @@ class Findings(BaseModel):
     findings: list[Finding]
     sources: list[dict]
     no_news: bool
+    # Not model output. True when `no_news` is the parser giving up rather than
+    # the model reporting a quiet day. Those look identical downstream and mean
+    # opposite things: one is the correct answer, the other is a lost block.
+    parse_failed: bool = False
     # Not model output — set by research_topic after _log_call returns, so the
     # Generator's research stage can accumulate real cost without reading
     # AICall back out of the DB. BlockResult.cost carries the writing half.
@@ -331,26 +416,22 @@ async def research_topic(
     # transfers) — not to personalize the findings, which stay neutral.
     user_content += f"\nWhat the person asked for, in their words: {raw_text}"
 
-    start = time.monotonic()
-    response = _client.messages.create(
-        model=MODEL,
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        output_config={"effort": "medium"},
-        system=system,
-        messages=[{"role": "user", "content": user_content}],
-        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
-    )
-    latency_ms = int((time.monotonic() - start) * 1000)
+    def call(model: str):
+        return _client.messages.create(
+            model=model,
+            max_tokens=4096,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
+            system=system,
+            messages=[{"role": "user", "content": user_content}],
+            tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
+        )
 
-    cost = await _log_call(
-        db, customer_id=customer_id, prompt="research_topic", version=version,
-        purpose="research_topic", usage=response.usage, latency_ms=latency_ms,
+    findings, cost = await _run_with_escalation(
+        db, purpose="research_topic", version=version, call=call, parse=_parse_findings,
+        customer_id=customer_id,
         context={"customer_id": str(customer_id), "request_id": str(request_id), "topic": topic},
     )
-
-    text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
-    findings = _parse_findings(text)
     findings.cost = cost
     findings.sources = await attach_licenses(db, findings.sources)
     return findings
@@ -407,25 +488,21 @@ async def write_block(
         f"Findings:\n{findings_json}"
     )
 
-    start = time.monotonic()
-    response = _client.messages.create(
-        model=MODEL,
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        output_config={"effort": "medium"},
-        system=system,
-        messages=[{"role": "user", "content": user_content}],
-    )
-    latency_ms = int((time.monotonic() - start) * 1000)
+    def call(model: str):
+        return _client.messages.create(
+            model=model,
+            max_tokens=4096,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
+            system=system,
+            messages=[{"role": "user", "content": user_content}],
+        )
 
-    cost = await _log_call(
-        db, customer_id=customer_id, prompt="write_block", version=version,
-        purpose="write_block", usage=response.usage, latency_ms=latency_ms,
+    result, cost = await _run_with_escalation(
+        db, purpose="write_block", version=version, call=call, parse=_parse_block_result,
+        customer_id=customer_id,
         context={"customer_id": str(customer_id), "request_id": str(request_id)},
     )
-
-    text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
-    result = _parse_block_result(text)
     result.cost = cost
     result.sources = _resolve_sources(result.sources, findings.sources)
     return result
@@ -451,6 +528,54 @@ def _resolve_sources(used: list, available: list[dict]) -> list[dict]:
     return resolved
 
 
+async def _run_with_escalation(db, *, purpose: str, version: str, call, parse,
+                               customer_id: uuid.UUID, context: dict):
+    """
+    Runs `call` on the model `purpose` is routed to, and retries once on a
+    stronger model if the answer could not be parsed.
+
+    The retry trigger is deliberately narrow. It is not "the cheap model's
+    answer looks weak" — nobody can judge that here, and a model that reports
+    an honestly quiet day is giving the *correct* answer, which must not be
+    second-guessed into a fabricated one. It is only `parse_failed`: the model
+    returned something this code cannot read at all. That is unambiguous, it is
+    rare, and before `parse_failed` existed it was silently indistinguishable
+    from a quiet day, so a malformed response became an empty episode.
+
+    Both attempts are logged as their own AICall rows with their own models and
+    costs, so the dashboard shows what escalation actually costs rather than
+    hiding the retry inside one row. The returned cost is the sum.
+    """
+    start = time.monotonic()
+    response = call(model_for(purpose))
+    latency_ms = int((time.monotonic() - start) * 1000)
+    cost = await _log_call(
+        db, customer_id=customer_id, prompt=purpose, version=version, purpose=purpose,
+        usage=response.usage, latency_ms=latency_ms, context=context,
+        model=model_for(purpose),
+    )
+    text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
+    result = parse(text)
+
+    stronger = escalation_for(purpose)
+    if not result.parse_failed or stronger is None:
+        return result, cost
+
+    logger.warning("ai_platform: %s returned unparseable output on %s, retrying on %s",
+                   purpose, model_for(purpose), stronger)
+    start = time.monotonic()
+    retry = call(stronger)
+    retry_latency_ms = int((time.monotonic() - start) * 1000)
+    cost += await _log_call(
+        db, customer_id=customer_id, prompt=purpose, version=version, purpose=purpose,
+        usage=retry.usage, latency_ms=retry_latency_ms,
+        context={**context, "escalated_from": model_for(purpose)},
+        model=stronger,
+    )
+    retry_text = next((b.text for b in reversed(retry.content) if b.type == "text"), "")
+    return parse(retry_text), cost
+
+
 def _parse_findings(text: str) -> Findings:
     try:
         return Findings.model_validate_json(text)
@@ -463,8 +588,10 @@ def _parse_findings(text: str) -> Findings:
         except Exception:
             pass
     # Model didn't return parseable JSON — treat as no_news rather than
-    # writing from nothing (Generator tenet: "no source, no block").
-    return Findings(findings=[], sources=[], no_news=True)
+    # writing from nothing (Generator tenet: "no source, no block"), and flag
+    # it so the caller can retry on a stronger model instead of publishing an
+    # empty day that nothing actually went wrong to produce.
+    return Findings(findings=[], sources=[], no_news=True, parse_failed=True)
 
 
 def _parse_block_result(text: str) -> BlockResult:
@@ -479,8 +606,9 @@ def _parse_block_result(text: str) -> BlockResult:
         except Exception:
             pass
     # Model didn't return parseable JSON — treat as no_news rather than
-    # publishing garbage (Generator tenet: "no source, no block").
-    return BlockResult(summary="", script="", sources=[], no_news=True)
+    # publishing garbage (Generator tenet: "no source, no block"), flagged so
+    # the caller can retry on a stronger model.
+    return BlockResult(summary="", script="", sources=[], no_news=True, parse_failed=True)
 
 
 class RefinedStructured(BaseModel):
@@ -535,7 +663,7 @@ async def refine_request(
         f"Most recent block script: {block_script}"
     )
     response = _client.messages.parse(
-        model=MODEL,
+        model=model_for("refine_request"),
         max_tokens=1024,
         thinking={"type": "adaptive"},
         output_config={"effort": "low"},
