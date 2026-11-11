@@ -468,7 +468,7 @@ struct YourLucakuCard: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Add a topic")
             }
-            ChipFlowLayout(spacing: 6) {
+            FlowLayout(spacing: 6) {
                 ForEach(topics, id: \.self) { topic in
                     HStack(spacing: 5) {
                         Image(systemName: NewsCategory.infer(from: topic)?.symbol ?? "bookmark")

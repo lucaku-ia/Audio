@@ -30,6 +30,9 @@
 		06822CE885F14A8A96FFFDD3 /* LucakuColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69288E30F4EB472DA85EC5C3 /* LucakuColor.swift */; };
 		664AA7F7810C49B383DD1A42 /* LucakuTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C3E4D5839734BB792C450B1 /* LucakuTypography.swift */; };
 		8ACEBCB60F3E408DA1315E2D /* LucakuSpacing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BE9E131A7C5404697A8AF15 /* LucakuSpacing.swift */; };
+		D1E2C3B4A5968778695A4B01 /* FlowLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2C3B4A5968778695A4B02 /* FlowLayout.swift */; };
+		D1E2C3B4A5968778695A4B03 /* FeedbackChips.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2C3B4A5968778695A4B04 /* FeedbackChips.swift */; };
+		D1E2C3B4A5968778695A4B05 /* FeedbackSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2C3B4A5968778695A4B06 /* FeedbackSheet.swift */; };
 		F14D1BBCA30D4B7BA491898D /* LucakuRadius.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D80DD700C864880AEB0361E /* LucakuRadius.swift */; };
 		DFC60E9C334F4DAFA8FB98D5 /* AppearancePreference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B6076273BC4EDCB055DB29 /* AppearancePreference.swift */; };
 		A1B2C3D4E5F60718293A4B5C /* StatusBarFade.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5D /* StatusBarFade.swift */; };
@@ -49,7 +52,6 @@
 		7A13FF4710D14ACAAF28D314 /* NowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD22404D5D04B2ABE84F4CF /* NowPlayingView.swift */; };
 		6A1BA496956D4069B3640620 /* TranscriptPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8233FB7BF60E4EEDB064D344 /* TranscriptPanelView.swift */; };
 		A1B2C3D4E5F60718293A4B02 /* PlayerStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B01 /* PlayerStyle.swift */; };
-		A1B2C3D4E5F60718293A4B04 /* FeedbackSheetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B03 /* FeedbackSheetView.swift */; };
 		A1B2C3D4E5F60718293A4B06 /* ShareSheetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B05 /* ShareSheetView.swift */; };
 		6583FE8D9FFCF7D95CC45170 /* AudioQueueItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 921822581440BF4F6CDCF594 /* AudioQueueItem.swift */; };
 		3E5D1377D432DB1B1D139CD5 /* AudioPlayerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 123F40BC12C216BE9E691675 /* AudioPlayerService.swift */; };
@@ -90,6 +92,9 @@
 		69288E30F4EB472DA85EC5C3 /* LucakuColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LucakuColor.swift; sourceTree = "<group>"; };
 		2C3E4D5839734BB792C450B1 /* LucakuTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LucakuTypography.swift; sourceTree = "<group>"; };
 		5BE9E131A7C5404697A8AF15 /* LucakuSpacing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LucakuSpacing.swift; sourceTree = "<group>"; };
+		D1E2C3B4A5968778695A4B02 /* FlowLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowLayout.swift; sourceTree = "<group>"; };
+		D1E2C3B4A5968778695A4B04 /* FeedbackChips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackChips.swift; sourceTree = "<group>"; };
+		D1E2C3B4A5968778695A4B06 /* FeedbackSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackSheet.swift; sourceTree = "<group>"; };
 		4D80DD700C864880AEB0361E /* LucakuRadius.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LucakuRadius.swift; sourceTree = "<group>"; };
 		77B6076273BC4EDCB055DB29 /* AppearancePreference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearancePreference.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B5D /* StatusBarFade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarFade.swift; sourceTree = "<group>"; };
@@ -109,7 +114,6 @@
 		ADD22404D5D04B2ABE84F4CF /* NowPlayingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingView.swift; sourceTree = "<group>"; };
 		8233FB7BF60E4EEDB064D344 /* TranscriptPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPanelView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B01 /* PlayerStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerStyle.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60718293A4B03 /* FeedbackSheetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackSheetView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B05 /* ShareSheetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheetView.swift; sourceTree = "<group>"; };
 		921822581440BF4F6CDCF594 /* AudioQueueItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioQueueItem.swift; sourceTree = "<group>"; };
 		123F40BC12C216BE9E691675 /* AudioPlayerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayerService.swift; sourceTree = "<group>"; };
@@ -237,7 +241,6 @@
 				ADD22404D5D04B2ABE84F4CF /* NowPlayingView.swift */,
 				8233FB7BF60E4EEDB064D344 /* TranscriptPanelView.swift */,
 				A1B2C3D4E5F60718293A4B01 /* PlayerStyle.swift */,
-				A1B2C3D4E5F60718293A4B03 /* FeedbackSheetView.swift */,
 				A1B2C3D4E5F60718293A4B05 /* ShareSheetView.swift */,
 			);
 			path = Player;
@@ -260,11 +263,21 @@
 			path = Search;
 			sourceTree = "<group>";
 		};
+		D1E2C3B4A5968778695A4B07 /* Feedback */ = {
+			isa = PBXGroup;
+			children = (
+				D1E2C3B4A5968778695A4B04 /* FeedbackChips.swift */,
+				D1E2C3B4A5968778695A4B06 /* FeedbackSheet.swift */,
+			);
+			path = Feedback;
+			sourceTree = "<group>";
+		};
 		3DEE482E18429A2ED0F9619E = {
 			isa = PBXGroup;
 			children = (
 				9772AFA09C8C7B96566D91B3 /* Auth */,
 				58C36A4F5BE2757FF3273C84 /* Home */,
+				D1E2C3B4A5968778695A4B07 /* Feedback */,
 				7FEF5C79E4BA12B954D0FAD4 /* Library */,
 				796E980923CF46D0A07AD00A /* Player */,
 				C35734AC05914397BD561AAD /* Search */,
@@ -316,6 +329,7 @@
 				69288E30F4EB472DA85EC5C3 /* LucakuColor.swift */,
 				2C3E4D5839734BB792C450B1 /* LucakuTypography.swift */,
 				5BE9E131A7C5404697A8AF15 /* LucakuSpacing.swift */,
+				D1E2C3B4A5968778695A4B02 /* FlowLayout.swift */,
 				4D80DD700C864880AEB0361E /* LucakuRadius.swift */,
 				77B6076273BC4EDCB055DB29 /* AppearancePreference.swift */,
 				A1B2C3D4E5F60718293A4B5D /* StatusBarFade.swift */,
@@ -449,6 +463,9 @@
 				06822CE885F14A8A96FFFDD3 /* LucakuColor.swift in Sources */,
 				664AA7F7810C49B383DD1A42 /* LucakuTypography.swift in Sources */,
 				8ACEBCB60F3E408DA1315E2D /* LucakuSpacing.swift in Sources */,
+				D1E2C3B4A5968778695A4B01 /* FlowLayout.swift in Sources */,
+				D1E2C3B4A5968778695A4B03 /* FeedbackChips.swift in Sources */,
+				D1E2C3B4A5968778695A4B05 /* FeedbackSheet.swift in Sources */,
 				F14D1BBCA30D4B7BA491898D /* LucakuRadius.swift in Sources */,
 				DFC60E9C334F4DAFA8FB98D5 /* AppearancePreference.swift in Sources */,
 				A1B2C3D4E5F60718293A4B5C /* StatusBarFade.swift in Sources */,
@@ -468,7 +485,6 @@
 				7A13FF4710D14ACAAF28D314 /* NowPlayingView.swift in Sources */,
 				6A1BA496956D4069B3640620 /* TranscriptPanelView.swift in Sources */,
 				A1B2C3D4E5F60718293A4B02 /* PlayerStyle.swift in Sources */,
-				A1B2C3D4E5F60718293A4B04 /* FeedbackSheetView.swift in Sources */,
 				A1B2C3D4E5F60718293A4B06 /* ShareSheetView.swift in Sources */,
 				6583FE8D9FFCF7D95CC45170 /* AudioQueueItem.swift in Sources */,
 				3E5D1377D432DB1B1D139CD5 /* AudioPlayerService.swift in Sources */,

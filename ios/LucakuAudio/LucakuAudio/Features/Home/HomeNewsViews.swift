@@ -356,8 +356,8 @@ struct NewsDetailView: View {
         .tint(LucakuColor.textPrimary)
         .onAppear { store.markRead(story) } // 3.7: opening clears the dot
         .sheet(isPresented: $showFeedback) {
-            FeedbackChangeSheet(
-                storyTitle: story.title,
+            FeedbackSheet(
+                subject: story.title,
                 onSend: { _, _ in
                     store.setRating(.down, for: story)
                     showToast("Thanks. Lucaku will use this to write your news.")
@@ -367,7 +367,6 @@ struct NewsDetailView: View {
                     showReported = true
                 }
             )
-            .presentationDetents([.large])
         }
         .alert("Problem reported", isPresented: $showReported) {
             Button("OK", role: .cancel) {}
@@ -394,167 +393,5 @@ struct NewsDetailView: View {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             withAnimation(LucakuMotion.house) { toast = nil }
         }
-    }
-}
-
-// MARK: - Feedback (3.8 / 3.9): Useful / Not quite
-
-/// The Useful / Not quite chips. Shared by news stories and the player so
-/// feedback lives in one place (screens spec section 0).
-struct FeedbackChips: View {
-    let rating: StoryRating?
-    var onUseful: () -> Void
-    var onNotQuite: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            chip("Useful", icon: "hand.thumbsup", selectedIcon: "hand.thumbsup.fill", on: rating == .up, action: onUseful)
-            chip("Not quite", icon: "hand.thumbsdown", selectedIcon: "hand.thumbsdown.fill", on: rating == .down, action: onNotQuite)
-        }
-    }
-
-    private func chip(_ label: String, icon: String, selectedIcon: String, on: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: on ? selectedIcon : icon).font(.system(size: 15))
-                Text(label).font(.system(size: 14, weight: .semibold))
-            }
-            .foregroundStyle(on ? LucakuColor.bg : LucakuColor.textPrimary)
-            .padding(.horizontal, 14)
-            .frame(height: 36)
-            .background(Capsule().fill(on ? LucakuColor.textPrimary : LucakuColor.fill))
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(on ? .isSelected : [])
-    }
-}
-
-/// "What should we change?" sheet opened by Not quite (same as 4.7).
-struct FeedbackChangeSheet: View {
-    let storyTitle: String
-    var onSend: (Set<String>, String) -> Void
-    var onReport: () -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var selected: Set<String> = []
-    @State private var text = ""
-
-    private static let options = ["Too long", "Too short", "Hard to follow", "Needs more numbers", "Needs more background", "Not relevant to me"]
-    private var canSend: Bool { !selected.isEmpty || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("What should we change?")
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundStyle(LucakuColor.textPrimary)
-                    .padding(.top, 24)
-                Text("About how “\(storyTitle)” was written. Lucaku uses this to shape how it writes your news.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(LucakuColor.textSecondary)
-                    .lineLimit(3)
-                    .padding(.top, 4)
-                    .padding(.bottom, 16)
-
-                ChipFlowLayout(spacing: 8) {
-                    ForEach(Self.options, id: \.self) { option in
-                        let on = selected.contains(option)
-                        Button {
-                            if on { selected.remove(option) } else { selected.insert(option) }
-                        } label: {
-                            HStack(spacing: 6) {
-                                if on { Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)) }
-                                Text(option).font(.system(size: 15, weight: .semibold))
-                            }
-                            .foregroundStyle(on ? LucakuColor.bg : LucakuColor.textPrimary)
-                            .padding(.horizontal, 14)
-                            .frame(minHeight: 40)
-                            .background(Capsule().fill(on ? LucakuColor.textPrimary : Color.clear))
-                            .overlay(Capsule().strokeBorder(on ? LucakuColor.textPrimary : LucakuColor.border, lineWidth: on ? 1.5 : 1))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(on ? .isSelected : [])
-                    }
-                }
-
-                Text("Any suggestion? (optional)")
-                    .font(LucakuTypography.footnote)
-                    .foregroundStyle(LucakuColor.textSecondary)
-                    .padding(.top, 18)
-                    .padding(.bottom, 8)
-                TextField("e.g. Start with what it means for my savings", text: $text, axis: .vertical)
-                    .lineLimit(3...3)
-                    .font(.system(size: 16))
-                    .padding(12)
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(LucakuColor.bg))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(LucakuColor.border, lineWidth: 1))
-
-                Button {
-                    onSend(selected, text)
-                    dismiss()
-                } label: {
-                    Text("Send feedback")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(LucakuColor.bg)
-                        .frame(maxWidth: .infinity, minHeight: 54)
-                        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(LucakuColor.textPrimary))
-                }
-                .buttonStyle(.plain)
-                .opacity(canSend ? 1 : 0.4)
-                .disabled(!canSend)
-                .padding(.top, 16)
-
-                Button {
-                    onReport()
-                    dismiss()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "flag").font(.system(size: 14))
-                        Text("Something's wrong? Report a problem").font(.system(size: 15, weight: .semibold))
-                    }
-                    .foregroundStyle(LucakuColor.textPrimary)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .buttonStyle(.plain)
-                .padding(.top, 6)
-            }
-            .padding(.horizontal, LucakuSpacing.sp4)
-            .padding(.bottom, 24)
-        }
-        .background(LucakuColor.surface.ignoresSafeArea())
-    }
-}
-
-/// Minimal wrapping layout (iOS 16+) for chips.
-struct ChipFlowLayout: Layout {
-    var spacing: CGFloat = 8
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        arrange(width: proposal.width ?? .infinity, subviews: subviews).size
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let result = arrange(width: bounds.width, subviews: subviews)
-        for (index, origin) in result.origins.enumerated() {
-            subviews[index].place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y), proposal: .unspecified)
-        }
-    }
-
-    private func arrange(width: CGFloat, subviews: Subviews) -> (size: CGSize, origins: [CGPoint]) {
-        var origins: [CGPoint] = []
-        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, maxX: CGFloat = 0
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > 0, x + size.width > width {
-                x = 0
-                y += rowHeight + spacing
-                rowHeight = 0
-            }
-            origins.append(CGPoint(x: x, y: y))
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-            maxX = max(maxX, x - spacing)
-        }
-        return (CGSize(width: maxX, height: y + rowHeight), origins)
     }
 }

@@ -61,8 +61,8 @@ struct NowPlayingView: View {
         .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 28, bottomTrailingRadius: 28, style: .continuous))
         .offset(y: max(0, dragOffset))
         .sheet(isPresented: $viewModel.isFeedbackSheetOpen) {
-            FeedbackSheetView(
-                detail: "About \u{201C}\(viewModel.currentBlock?.summary ?? "this story")\u{201D}. Lucaku uses this to shape your next episodes.",
+            FeedbackSheet(
+                subject: viewModel.currentBlock?.summary ?? "this story",
                 onSend: { options, text in viewModel.submitFeedback(options: options, text: text) },
                 onReport: {
                     viewModel.reportProblem()
@@ -363,31 +363,21 @@ struct NowPlayingView: View {
     // MARK: Feedback chips
 
     private func feedbackChips(_ theme: PlayerTheme) -> some View {
-        let rating = viewModel.currentRating
-        return HStack(spacing: 8) {
-            chip("Useful", icon: "hand.thumbsup", on: rating == .up, theme) { viewModel.toggleUseful() }
-                .accessibilityLabel("Mark story as useful")
-            chip("Not quite", icon: "hand.thumbsdown", on: rating == .down, theme) { viewModel.tapNotQuite() }
-                .accessibilityLabel("Not quite right: tell us what to change")
+        HStack(spacing: 0) {
+            FeedbackChips(
+                rating: viewModel.currentRating,
+                onUseful: { viewModel.toggleUseful() },
+                onNotQuite: { viewModel.tapNotQuite() },
+                text: theme.fg,
+                fill: theme.chip,
+                selectedFill: theme.fg,
+                selectedText: theme.base
+            )
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
         .padding(.top, 14)
         .padding(.bottom, 2)
-    }
-
-    private func chip(_ label: String, icon: String, on: Bool, _ theme: PlayerTheme, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: on ? "\(icon).fill" : icon).font(.system(size: 15))
-                Text(label).font(.system(size: 14, weight: .semibold))
-            }
-            .foregroundStyle(on ? theme.base : theme.fg)
-            .padding(.horizontal, 14)
-            .frame(height: 36)
-            .background(Capsule().fill(on ? theme.fg : theme.chip))
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: Tabs
