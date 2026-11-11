@@ -12,7 +12,7 @@ import pytest_asyncio  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker  # noqa: E402
 
-from app.db.session import Base, DATABASE_URL  # noqa: E402
+from app.db.session import Base, DATABASE_URL, ENGINE_CONNECT_ARGS  # noqa: E402
 from app.models.source_catalogue import SourceCatalogueEntry  # noqa: E402,F401 (registers the table on Base.metadata)
 # Registers the rest of System Contracts' tables on Base.metadata for the
 # onboarding/generation/home test suites below (test_source_catalogue.py's
@@ -35,7 +35,7 @@ async def db_session():
     touches, truncates source_catalogue_entries around each test so tests
     don't see each other's rows, and disposes the engine at the end.
     """
-    engine = create_async_engine(DATABASE_URL, echo=False)
+    engine = create_async_engine(DATABASE_URL, echo=False, connect_args=ENGINE_CONNECT_ARGS)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -79,7 +79,7 @@ async def full_db_session():
     suite writes to, via CASCADE so FK order isn't this fixture's problem,
     rather than relying on rollback for isolation between tests.
     """
-    engine = create_async_engine(DATABASE_URL, echo=False)
+    engine = create_async_engine(DATABASE_URL, echo=False, connect_args=ENGINE_CONNECT_ARGS)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
