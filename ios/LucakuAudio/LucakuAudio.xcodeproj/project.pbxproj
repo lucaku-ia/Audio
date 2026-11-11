@@ -25,6 +25,10 @@
 		74082829A40040CE9A2049FB /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B6BE61D0649F48E86D52298 /* LibraryView.swift */; };
 		597FE6F1116A37B5D0B3D6F2 /* LibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E038740C419994F09025A1CB /* LibraryViewModel.swift */; };
 		B7B9F2984EA2BFBC0ED93994 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE0828A73612D8093A11CDFB /* SettingsView.swift */; };
+		7A10C0DE000000040000BBB2 /* DeliverySettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A10C0DE000000040000AAA1 /* DeliverySettingsViews.swift */; };
+		7A10C0DE000000030000BBB2 /* ProfilePages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A10C0DE000000030000AAA1 /* ProfilePages.swift */; };
+		7A10C0DE000000020000BBB2 /* ProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A10C0DE000000020000AAA1 /* ProfileStore.swift */; };
+		7A10C0DE000000010000BBB2 /* ProfileComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A10C0DE000000010000AAA1 /* ProfileComponents.swift */; };
 		F538702789B39516E2650E67 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 560ACC0AFC14B01D723AAD2E /* Assets.xcassets */; };
 		2E50EF46C1A3C5D03A23FAAE /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F67D742DE0A8670B599C0577 /* Preview Assets.xcassets */; };
 		06822CE885F14A8A96FFFDD3 /* LucakuColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69288E30F4EB472DA85EC5C3 /* LucakuColor.swift */; };
@@ -83,6 +87,10 @@
 		4B6BE61D0649F48E86D52298 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		E038740C419994F09025A1CB /* LibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModel.swift; sourceTree = "<group>"; };
 		BE0828A73612D8093A11CDFB /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		7A10C0DE000000040000AAA1 /* DeliverySettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeliverySettingsViews.swift; sourceTree = "<group>"; };
+		7A10C0DE000000030000AAA1 /* ProfilePages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfilePages.swift; sourceTree = "<group>"; };
+		7A10C0DE000000020000AAA1 /* ProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileStore.swift; sourceTree = "<group>"; };
+		7A10C0DE000000010000AAA1 /* ProfileComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileComponents.swift; sourceTree = "<group>"; };
 		560ACC0AFC14B01D723AAD2E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F67D742DE0A8670B599C0577 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		F84A9469A955E4C09A07189F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -200,6 +208,10 @@
 			isa = PBXGroup;
 			children = (
 				BE0828A73612D8093A11CDFB /* SettingsView.swift */,
+				7A10C0DE000000040000AAA1 /* DeliverySettingsViews.swift */,
+				7A10C0DE000000030000AAA1 /* ProfilePages.swift */,
+				7A10C0DE000000020000AAA1 /* ProfileStore.swift */,
+				7A10C0DE000000010000AAA1 /* ProfileComponents.swift */,
 				5587AB59E9934D6FAD84588C /* SettingsViewModel.swift */,
 			);
 			path = Settings;
@@ -446,6 +458,10 @@
 				74082829A40040CE9A2049FB /* LibraryView.swift in Sources */,
 				597FE6F1116A37B5D0B3D6F2 /* LibraryViewModel.swift in Sources */,
 				B7B9F2984EA2BFBC0ED93994 /* SettingsView.swift in Sources */,
+				7A10C0DE000000040000BBB2 /* DeliverySettingsViews.swift in Sources */,
+				7A10C0DE000000030000BBB2 /* ProfilePages.swift in Sources */,
+				7A10C0DE000000020000BBB2 /* ProfileStore.swift in Sources */,
+				7A10C0DE000000010000BBB2 /* ProfileComponents.swift in Sources */,
 				06822CE885F14A8A96FFFDD3 /* LucakuColor.swift in Sources */,
 				664AA7F7810C49B383DD1A42 /* LucakuTypography.swift in Sources */,
 				8ACEBCB60F3E408DA1315E2D /* LucakuSpacing.swift in Sources */,
