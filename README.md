@@ -933,3 +933,13 @@ idempotency built (see "Episode Generator scope" above); real audio engine + rea
 transcript timestamps wired into the Player screen (#22); tab-bar architecture fixed
 and real Home/Search/Interests wired end-to-end, live-verified, with a re-entrancy
 bug caught and fixed (#27).
+
+## iOS redesign (screens spec) - status
+
+The app is being rebuilt to the screens spec (Login 1.x, Onboarding chat 2.x, Home 3.x, Player 4.x, Interests 6.x, Profile 7-8) on branch `feat/redesign` (PR #40). Tabs are Home, Interests, Profile.
+
+- **Design tokens:** `DesignSystem/LucakuColor.swift` (spec v2 tokens), `StatusBarFade.swift` (`StatusBarFadeAnchor` + `.statusBarFade()`), `FlowLayout.swift`. Shared feedback UI lives in `Features/Feedback/`.
+- **Brand rule:** the accent colour is only for the wordmark dot, the primary action and the spoken word. Everything else is neutral (`textPrimary` / `fill`).
+- **TODO(backend):** Home news uses a sample repository (no news endpoint yet); share links, feedback, downloads and ratings are local stubs; Google/Apple sign-in are visual only; forgot password confirms locally; the chosen voice is not sent.
+- **CI:** `.github/workflows/ios-sideload-build.yml` runs on `macos-15` (macos-14 is no longer supported) and produces the unsigned `.ipa` for Sideloadly.
+- **Onboarding** ends straight at Home and submits notifications as off; the push permission must be requested from the Profile toggle.
