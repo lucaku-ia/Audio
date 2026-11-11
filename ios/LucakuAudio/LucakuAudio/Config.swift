@@ -12,7 +12,34 @@ import Foundation
 /// staging environment), update it here — this is the single source of
 /// truth for the app's backend host.
 enum Config {
-    static let apiBaseURL = URL(string: "https://audio-production-2a77.up.railway.app")!
+    /// Where the app sends its requests.
+    ///
+    /// Production by default. A DEBUG build will instead use
+    /// `LUCAKU_API_BASE_URL` from the environment when it is set, so the app
+    /// can be pointed at a backend running on this machine:
+    ///
+    ///     SIMCTL_CHILD_LUCAKU_API_BASE_URL=http://127.0.0.1:8077 \
+    ///       xcrun simctl launch --terminate-running-process \
+    ///       booted com.lucaku.audio
+    ///
+    /// The `SIMCTL_CHILD_` prefix is not optional: anything written after the
+    /// bundle id is passed to the app as a launch *argument*, not as an
+    /// environment variable, so `simctl launch ... KEY=VALUE` silently leaves
+    /// the app talking to production.
+    ///
+    /// This exists because the only way to exercise a failing backend from
+    /// the app — the 503 path, a dropped connection, a slow response — is to
+    /// run one you control. Release builds ignore the variable entirely, so
+    /// no shipped app can be pointed somewhere else.
+    static let apiBaseURL: URL = {
+        #if DEBUG
+        if let override = ProcessInfo.processInfo.environment["LUCAKU_API_BASE_URL"],
+           let url = URL(string: override), url.scheme != nil {
+            return url
+        }
+        #endif
+        return URL(string: "https://audio-production-2a77.up.railway.app")!
+    }()
 
     /// Every route in the backend is mounted under `/api` (see
     /// `backend/app/main.py`'s `app.include_router(..., prefix="/api")` calls).

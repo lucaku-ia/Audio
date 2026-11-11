@@ -23,12 +23,22 @@ enum APIError: LocalizedError {
             // replies things like "We couldn't tell which team you mean;
             // reply with the team name and league". Dressing that up as
             // "Server error (400)" buries the one part the customer needs to
-            // act on. 5xx (and anything without a message) really is a fault,
-            // so it keeps the status code for reporting.
+            // act on.
             if (400..<500).contains(status), !message.isEmpty {
                 return message
             }
-            return "Server error (\(status)): \(message)"
+            // 503 is this backend's own "the model is unreachable, try again
+            // shortly" (app/main.py's ModelUnavailable handler) — already
+            // written for a person, so it is passed through like a 4xx.
+            if status == 503, !message.isEmpty {
+                return message
+            }
+            // Every other 5xx is a fault with nothing a customer can use.
+            // This used to return "Server error (500): Internal Server Error",
+            // which is how that string ended up in an onboarding speech
+            // bubble, in the assistant's voice, next to a friendly avatar.
+            // The status code belongs in a log, not in a conversation.
+            return "Something went wrong on our side. Try again in a moment."
         case .decoding:
             return "The server's response didn't match what this app expected."
         case .transport(let underlying):

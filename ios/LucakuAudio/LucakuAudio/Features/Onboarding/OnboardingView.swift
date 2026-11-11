@@ -407,6 +407,12 @@ final class OnboardingChatFlow: ObservableObject {
         return "I'm done with details"
     }
 
+    /// Whether this category still has ideas the card is not already showing.
+    /// Drives whether "More ideas" is offered at all.
+    var hasMoreDetailIdeas: Bool {
+        currentCategory?.hasMore(after: detailOffset) ?? false
+    }
+
     var hasTopics: Bool { vm.activeRequestCount > 0 || !vm.addedTopics.isEmpty }
 
     var summaryTopics: String {
@@ -466,6 +472,16 @@ final class OnboardingChatFlow: ObservableObject {
     private func flushError() async -> Bool {
         guard let message = vm.errorMessage else { return false }
         vm.errorMessage = nil
+
+        // One cause, one bubble. A step that makes several calls — adding a
+        // chip, then a "Top X stories" request per remaining category —
+        // fails all of them the same way when the backend is down, and this
+        // used to say the identical sentence once per failure. The customer
+        // reads a stutter and assumes several different things went wrong.
+        if messages.last?.role == .lucaku, messages.last?.text == message {
+            return true
+        }
+
         await say(message, delay: 0.3)
         return true
     }
@@ -830,10 +846,25 @@ final class OnboardingChatFlow: ObservableObject {
 
     func moreDetailIdeas() async {
         guard prompt == .detail, let category = currentCategory else { return }
+        guard category.hasMore(after: detailOffset) else { return }
         prompt = .none
         userSays("More ideas")
         detailOffset += OnboardingCategories.pageSize
-        detailChoices = category.page(offset: detailOffset)
+
+        // Appended, not swapped. Two reasons, both bugs before this.
+        //
+        // The card used to be replaced wholesale, so anything already tapped
+        // on the previous page vanished from `detailChoices` — and
+        // addSelectedDetails only ever submits chips still in
+        // `detailChoices`. Tapping "New York", then "More ideas", silently
+        // dropped New York. Nothing told the customer.
+        //
+        // And "Here are a few more" is a promise about the card. Growing it
+        // keeps that promise literally: the earlier ideas stay where they
+        // were and the new ones arrive underneath.
+        let existing = Set(detailChoices)
+        detailChoices += category.page(offset: detailOffset).filter { !existing.contains($0) }
+
         await say("Here are a few more.", delay: 0.4)
         prompt = .detail
     }
@@ -873,14 +904,42 @@ final class OnboardingChatFlow: ObservableObject {
         prompt = .none
         userSays("I'm done, skip the rest")
         await addSelectedDetails(token: token, category: category)
-        var covered = [String]()
-        if addedInCurrentCategory == 0 { covered.append(category.label) }
-        covered.append(contentsOf: categoryQueue.map(\.label))
-        for label in covered {
-            _ = await vm.addRequest(text: "Top \(label) stories", label: "Top \(label) stories", category: label, token: token)
+
+        var toCover = [String]()
+        if addedInCurrentCategory == 0 { toCover.append(category.label) }
+        toCover.append(contentsOf: categoryQueue.map(\.label))
+
+        // Each add is checked. This loop used to discard the result with
+        // `_ =`, and then announce "Okay, I'll cover the top stories for
+        // Local news, World and Personal finance" whether or not a single one
+        // had been saved. When they all failed, the very next line was "I
+        // need at least one topic to build your first episode" — the app
+        // promising and then disowning the promise, one bubble apart.
+        var covered: [String] = []
+        var failed: [String] = []
+        for label in toCover {
+            if await vm.addRequest(text: "Top \(label) stories", label: "Top \(label) stories",
+                                   category: label, token: token) {
+                covered.append(label)
+            } else {
+                failed.append(label)
+            }
         }
         await flushError()
+
         if !covered.isEmpty { await say("Okay, I'll cover the top stories for \(joined(covered)).", delay: 0.5) }
+        if !failed.isEmpty { await say("I couldn't save \(joined(failed)) just now.", delay: 0.4) }
+
+        guard addedInCurrentCategory > 0 || !covered.isEmpty else {
+            // Nothing was saved at all. Carrying on from here walks straight
+            // into "I need at least one topic", which is true but reads as a
+            // contradiction when the cause is that this step just failed.
+            // Stay on the card instead, so the same tap can be tried again.
+            await say("Tap it again when you're ready and I'll retry.", delay: 0.4)
+            prompt = .detail
+            return
+        }
+
         categoryQueue = []
         await nextCategory()
     }
@@ -1093,42 +1152,62 @@ struct OnboardingPlace {
 
     static let colombia = OnboardingPlace(
         regionCode: "CO", country: "Colombia",
-        cities: ["Bogotá", "Medellín", "Cali", "Barranquilla", "Cartagena", "Santander"],
-        politics: ["Congress", "Elections", "The presidency", "Peace process", "Supreme Court", "Corruption cases"],
-        markets: ["The peso and the dollar", "Ecopetrol", "Banco de la República rates", "Coffee prices", "Inflation", "CDTs"],
-        sports: ["Millonarios FC", "Atlético Nacional", "The national team", "Copa Libertadores", "Egan Bernal", "World Cup"]
+        cities: ["Bogotá", "Medellín", "Cali", "Barranquilla", "Cartagena", "Santander",
+                 "Bucaramanga", "Pereira", "Cúcuta", "Manizales", "Santa Marta", "Villavicencio"],
+        politics: ["Congress", "Elections", "The presidency", "Peace process", "Supreme Court", "Corruption cases",
+                   "The Senate", "Regional elections", "Tax reform", "Health reform", "Public security", "Foreign policy"],
+        markets: ["The peso and the dollar", "Ecopetrol", "Banco de la República rates", "Coffee prices", "Inflation", "CDTs",
+                  "The stock exchange", "Bancolombia", "Oil and gas", "Jobs and unemployment", "Housing prices", "Avianca"],
+        sports: ["Millonarios FC", "Atlético Nacional", "The national team", "Copa Libertadores", "Egan Bernal", "World Cup",
+                 "Junior de Barranquilla", "América de Cali", "Deportivo Cali", "Liga BetPlay", "Colombian cycling", "Tour de France"]
     )
 
     static let mexico = OnboardingPlace(
         regionCode: "MX", country: "Mexico",
-        cities: ["Mexico City", "Guadalajara", "Monterrey", "Puebla", "Tijuana", "Mérida"],
-        politics: ["Congress", "Elections", "The presidency", "Supreme Court", "Security policy", "State governors"],
-        markets: ["The peso and the dollar", "Banxico rates", "Pemex", "The BMV", "Inflation", "Remittances"],
-        sports: ["Club América", "Chivas", "The national team", "Liga MX", "Canelo Álvarez", "World Cup"]
+        cities: ["Mexico City", "Guadalajara", "Monterrey", "Puebla", "Tijuana", "Mérida",
+                 "Querétaro", "León", "Cancún", "Toluca", "San Luis Potosí", "Chihuahua"],
+        politics: ["Congress", "Elections", "The presidency", "Supreme Court", "Security policy", "State governors",
+                   "The Senate", "Local elections", "Judicial reform", "Energy policy", "Public spending", "Foreign policy"],
+        markets: ["The peso and the dollar", "Banxico rates", "Pemex", "The BMV", "Inflation", "Remittances",
+                  "Nearshoring", "América Móvil", "Jobs and wages", "Housing prices", "Oil prices", "Trade with the US"],
+        sports: ["Club América", "Chivas", "The national team", "Liga MX", "Canelo Álvarez", "World Cup",
+                 "Cruz Azul", "Pumas", "Tigres", "Rayados de Monterrey", "Liga MX playoffs", "Formula 1"]
     )
 
     static let spain = OnboardingPlace(
         regionCode: "ES", country: "Spain",
-        cities: ["Madrid", "Barcelona", "Valencia", "Seville", "Bilbao", "Málaga"],
-        politics: ["Congreso", "Elections", "The government", "Catalonia", "Regional elections", "The courts"],
-        markets: ["The euro", "ECB rates", "The IBEX 35", "Inflation", "Santander", "Housing prices"],
-        sports: ["Real Madrid", "FC Barcelona", "LaLiga", "The national team", "Champions League", "Carlos Alcaraz"]
+        cities: ["Madrid", "Barcelona", "Valencia", "Seville", "Bilbao", "Málaga",
+                 "Zaragoza", "Murcia", "Palma", "Las Palmas", "Alicante", "Valladolid"],
+        politics: ["Congreso", "Elections", "The government", "Catalonia", "Regional elections", "The courts",
+                   "The Senado", "Local elections", "The Basque Country", "Immigration policy", "Public spending", "Foreign policy"],
+        markets: ["The euro", "ECB rates", "The IBEX 35", "Inflation", "Santander", "Housing prices",
+                  "Jobs and unemployment", "Tourism", "Telefónica", "Iberdrola", "Energy prices", "Pensions"],
+        sports: ["Real Madrid", "FC Barcelona", "LaLiga", "The national team", "Champions League", "Carlos Alcaraz",
+                 "Atlético de Madrid", "Sevilla FC", "Athletic Club", "La Vuelta", "MotoGP", "Formula 1"]
     )
 
     static let unitedStates = OnboardingPlace(
         regionCode: "US", country: "the United States",
-        cities: ["New York", "Los Angeles", "Chicago", "Houston", "Miami", "San Francisco"],
-        politics: ["Congress", "Elections", "The White House", "The Supreme Court", "State politics", "Immigration policy"],
-        markets: ["The Fed", "The S&P 500", "Inflation", "Interest rates", "Nvidia", "Oil prices"],
-        sports: ["NFL", "NBA", "MLB", "College football", "Formula 1", "World Cup"]
+        cities: ["New York", "Los Angeles", "Chicago", "Houston", "Miami", "San Francisco",
+                 "Washington DC", "Boston", "Seattle", "Atlanta", "Dallas", "Philadelphia"],
+        politics: ["Congress", "Elections", "The White House", "The Supreme Court", "State politics", "Immigration policy",
+                   "The Senate", "The House", "State governors", "Local elections", "Federal courts", "Foreign policy"],
+        markets: ["The Fed", "The S&P 500", "Inflation", "Interest rates", "Nvidia", "Oil prices",
+                  "The jobs report", "The housing market", "Tesla", "Apple", "Crypto", "The dollar"],
+        sports: ["NFL", "NBA", "MLB", "College football", "Formula 1", "World Cup",
+                 "NHL", "March Madness", "The Olympics", "Tennis majors", "Golf majors", "MLS"]
     )
 
     static let argentina = OnboardingPlace(
         regionCode: "AR", country: "Argentina",
-        cities: ["Buenos Aires", "Córdoba", "Rosario", "Mendoza", "La Plata", "Mar del Plata"],
-        politics: ["Congress", "Elections", "The presidency", "The provinces", "Economic reform", "The courts"],
-        markets: ["The peso and the dollar", "Inflation", "BCRA rates", "The Merval", "YPF", "Country risk"],
-        sports: ["Boca Juniors", "River Plate", "The national team", "Lionel Messi", "Copa Libertadores", "World Cup"]
+        cities: ["Buenos Aires", "Córdoba", "Rosario", "Mendoza", "La Plata", "Mar del Plata",
+                 "Salta", "Tucumán", "Santa Fe", "Neuquén", "Bariloche", "Corrientes"],
+        politics: ["Congress", "Elections", "The presidency", "The provinces", "Economic reform", "The courts",
+                   "The Senate", "Provincial elections", "Labour reform", "Public spending", "Security policy", "Foreign policy"],
+        markets: ["The peso and the dollar", "Inflation", "BCRA rates", "The Merval", "YPF", "Country risk",
+                  "Vaca Muerta", "Agricultural exports", "Jobs and wages", "Housing prices", "Bonds", "Energy prices"],
+        sports: ["Boca Juniors", "River Plate", "The national team", "Lionel Messi", "Copa Libertadores", "World Cup",
+                 "Independiente", "Racing Club", "San Lorenzo", "Liga Profesional", "Los Pumas", "Formula 1"]
     )
 
     static let known: [OnboardingPlace] = [colombia, mexico, spain, unitedStates, argentina]
@@ -1139,13 +1218,18 @@ struct OnboardingPlace {
         OnboardingPlace(
             regionCode: "",
             country: country,
-            cities: ["\(country) news", "Your city", "Local politics", "Transport", "Public safety", "Housing"],
+            cities: ["\(country) news", "Your city", "Local politics", "Transport", "Public safety", "Housing",
+                     "Schools", "Hospitals", "Local business", "Roadworks", "The weather", "Crime"],
             politics: ["\(country) elections", "\(country) parliament", "The government", "The courts",
-                       "Public spending", "Foreign policy"],
+                       "Public spending", "Foreign policy",
+                       "Local elections", "The opposition", "Tax policy", "Health policy",
+                       "Immigration policy", "Corruption cases"],
             markets: ["\(country) inflation", "\(country) interest rates", "The stock market",
-                      "The currency", "Jobs", "Housing prices"],
+                      "The currency", "Jobs", "Housing prices",
+                      "Energy prices", "Food prices", "Exports", "Banks", "Startups", "Wages"],
             sports: ["\(country) national team", "The national league", "World Cup", "Champions League",
-                     "Formula 1", "Olympics"]
+                     "Formula 1", "Olympics",
+                     "Tennis", "Athletics", "Basketball", "Cycling", "Rugby", "Golf"]
         )
     }
 
@@ -1169,14 +1253,27 @@ enum OnboardingCategories {
         let example: String
         let topics: [String]
 
-        /// A page of up to `pageSize` chips, wrapping around the list.
+        /// A page of up to `pageSize` chips starting at `offset`.
+        ///
+        /// This used to wrap with `% topics.count`, which was silently fatal:
+        /// every list here held exactly `pageSize` items, so `offset + i`
+        /// modulo the count came back to `i` and page 2 was page 1, verbatim.
+        /// "More ideas" therefore could not show a new idea in any category,
+        /// in any country — it only appended "Here are a few more." to the
+        /// transcript under an unchanged set of chips. Clamping instead means
+        /// running out of ideas is visible to the caller (see `hasMore`)
+        /// rather than disguised as an endless supply of the same six.
         func page(offset: Int) -> [String] {
-            guard !topics.isEmpty else { return [] }
-            var result: [String] = []
-            for i in 0..<min(pageSize, topics.count) {
-                result.append(topics[(offset + i) % topics.count])
-            }
-            return result
+            guard !topics.isEmpty, offset < topics.count else { return [] }
+            let start = max(0, offset)
+            return Array(topics[start..<min(start + pageSize, topics.count)])
+        }
+
+        /// Whether a page after `offset` would hold anything not already shown.
+        /// The "More ideas" button is hidden when this is false, so the app
+        /// never offers something it cannot deliver.
+        func hasMore(after offset: Int) -> Bool {
+            offset + pageSize < topics.count
         }
     }
 
@@ -1203,28 +1300,35 @@ enum OnboardingCategories {
                  topics: place.markets),
             Spec(id: "personal_finance", label: "Personal finance", symbol: "banknote",
                  example: "savings, or taxes",
-                 topics: ["Savings", "Taxes", "Mortgages", "Pensions", "Credit cards", "Investing"]),
+                 topics: ["Savings", "Taxes", "Mortgages", "Pensions", "Credit cards", "Investing",
+                          "Budgeting", "Interest rates", "Insurance", "Student loans", "Retirement planning", "Side income"]),
             Spec(id: "technology", label: "Technology & AI", symbol: "cpu",
                  example: "AI, or Apple",
-                 topics: ["AI", "Apple", "OpenAI", "Cybersecurity", "AI startups", "Nvidia"]),
+                 topics: ["AI", "Apple", "OpenAI", "Cybersecurity", "AI startups", "Nvidia",
+                          "Google", "Big Tech regulation", "Chips", "Privacy and data", "Smartphones", "Quantum computing"]),
             Spec(id: "science", label: "Science & space", symbol: "atom",
                  example: "space, or NASA missions",
-                 topics: ["Space", "NASA missions", "Physics", "Astronomy", "Robotics", "Biology"]),
+                 topics: ["Space", "NASA missions", "Physics", "Astronomy", "Robotics", "Biology",
+                          "Genetics", "Neuroscience", "Archaeology", "Chemistry", "Mars missions", "Telescopes"]),
             Spec(id: "health", label: "Health & wellness", symbol: "heart",
                  example: "running, or sleep",
-                 topics: ["Running", "Sleep", "Nutrition", "Mental health", "Cancer research", "Fitness"]),
+                 topics: ["Running", "Sleep", "Nutrition", "Mental health", "Cancer research", "Fitness",
+                          "Longevity", "Vaccines", "Heart health", "Diabetes", "Public health", "Strength training"]),
             Spec(id: "climate", label: "Climate & environment", symbol: "leaf",
                  example: "renewable energy, or extreme weather",
-                 topics: ["Climate change", "Renewable energy", "Extreme weather", "Deforestation", "Oceans", "Recycling"]),
+                 topics: ["Climate change", "Renewable energy", "Extreme weather", "Deforestation", "Oceans", "Recycling",
+                          "Emissions", "Electric vehicles", "Solar power", "Wind power", "Wildlife", "Water scarcity"]),
             Spec(id: "sports", label: "Sports", symbol: "sportscourt",
                  example: "your club, or the national team",
                  topics: place.sports),
             Spec(id: "entertainment", label: "Culture & entertainment", symbol: "music.note",
                  example: "series, or music releases",
-                 topics: ["Series", "Movies", "Music releases", "Oscars", "Netflix", "Books"]),
+                 topics: ["Series", "Movies", "Music releases", "Oscars", "Netflix", "Books",
+                          "Streaming", "Concerts", "Video games", "Theatre", "Art and museums", "Festivals"]),
             Spec(id: "lifestyle", label: "Lifestyle & travel", symbol: "airplane",
                  example: "travel deals, or cars",
-                 topics: ["Travel deals", "Cars", "Food", "Fashion", "Home design", "Cities to visit"]),
+                 topics: ["Travel deals", "Cars", "Food", "Fashion", "Home design", "Cities to visit",
+                          "Flights and airlines", "Hotels", "Restaurants", "Gardening", "Pets", "Coffee"]),
         ]
     }
 
@@ -1232,8 +1336,9 @@ enum OnboardingCategories {
     /// Local news, not World.
     private static func worldTopics(excluding place: OnboardingPlace) -> [String] {
         let pool = ["The United States", "Europe", "China", "Latin America", "Ukraine",
-                    "The Middle East", "Venezuela", "Mexico", "Brazil", "India"]
-        return Array(pool.filter { !$0.localizedCaseInsensitiveContains(place.country) }.prefix(6))
+                    "The Middle East", "Venezuela", "Mexico", "Brazil", "India",
+                    "Russia", "Africa", "The United Kingdom", "Japan", "Canada", "The European Union"]
+        return Array(pool.filter { !$0.localizedCaseInsensitiveContains(place.country) }.prefix(12))
     }
 
     private static let keywords: [(category: String, words: [String])] = [
@@ -1872,7 +1977,12 @@ private struct DetailCard: View {
             }
             ChoiceButtons {
                 PrimaryButton(title: flow.nextCategoryTitle) { Task { await flow.nextCategoryTapped() } }
-                SecondaryButton(title: "More ideas") { Task { await flow.moreDetailIdeas() } }
+                // Offered only while there are ideas left to show. A button
+                // that answers "Here are a few more." with the same six chips
+                // is worse than no button — see Spec.page(offset:).
+                if flow.hasMoreDetailIdeas {
+                    SecondaryButton(title: "More ideas") { Task { await flow.moreDetailIdeas() } }
+                }
                 TextButton(title: "I'm done, skip the rest") { Task { await flow.skipRestOfDetails() } }
             }
         }
