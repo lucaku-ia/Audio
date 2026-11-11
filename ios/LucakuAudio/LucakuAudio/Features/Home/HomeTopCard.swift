@@ -109,6 +109,8 @@ struct HomeTopCard: View {
     var storyCount: Int = 0
     var durationS: Int?
     var topicsCount: Int = 0
+    /// Profile delivery time as a clock string, e.g. "7:00 AM" (3.15 copy).
+    var deliveryClock: String = "7:00 AM"
     /// Scheduled ready time, when the backend knows it.
     var eta: Date?
     /// Set while a generation started from this device is running.
@@ -149,7 +151,7 @@ struct HomeTopCard: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Today's episode")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(LucakuColor.accent)
+                        .foregroundStyle(LucakuColor.textPrimary)
                     Text(headline)
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(LucakuColor.textPrimary)
@@ -169,7 +171,7 @@ struct HomeTopCard: View {
                         GeometryReader { proxy in
                             ZStack(alignment: .leading) {
                                 Capsule().fill(LucakuColor.borderSoft)
-                                Capsule().fill(LucakuColor.accent)
+                                Capsule().fill(LucakuColor.textPrimary)
                                     .frame(width: proxy.size.width * min(1, max(0, playbackFraction)))
                             }
                         }
@@ -217,7 +219,7 @@ struct HomeTopCard: View {
         case .late:
             return "It's taking a little longer than usual. Your news below is already up to date."
         case .notStarted:
-            return "Lucaku researches \(topicsPhrase) and records them for you. Hear it now instead of waiting."
+            return "Lucaku researches \(topicsPhrase) and records them for you. Hear it now instead of waiting for tomorrow morning."
         default:
             if let eta { return "Ready around \(HomeFormat.shortTime(eta)). Your news below is already up to date." }
             return "Ready in a few minutes. Your news below is already up to date."
@@ -331,7 +333,7 @@ struct HomeTopCard: View {
                 Button(action: actions.onGenerate) {
                     Text("Start now")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(LucakuColor.accent)
+                        .foregroundStyle(LucakuColor.textPrimary)
                         .frame(minHeight: 44)
                 }
                 .buttonStyle(.plain)
@@ -346,7 +348,7 @@ struct HomeTopCard: View {
             Text("You're caught up.")
                 .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(LucakuColor.textPrimary)
-            Text("Nothing new for your episode today. Your next one arrives tomorrow. Your news below is still fresh.")
+            Text("Nothing new for your episode today. Your next one arrives tomorrow at \(deliveryClock). Your news below is still fresh.")
                 .font(LucakuTypography.subhead)
                 .foregroundStyle(LucakuColor.textSecondary)
                 .lineLimit(2)
@@ -390,7 +392,7 @@ struct HomeTopCard: View {
                 .foregroundStyle(LucakuColor.textSecondary)
                 .lineLimit(3)
             requestField(placeholder: "What should Lucaku follow?")
-            CardPrimaryButton(title: isSubmitting ? "Adding…" : "Add topic", icon: "plus", action: actions.onAddTopic)
+            CardPrimaryButton(title: isSubmitting ? "Adding…" : "Add request", icon: "plus", action: actions.onAddTopic)
                 .opacity(canSubmit ? 1 : 0.4)
                 .disabled(!canSubmit)
             if let submitError { Text(submitError).font(LucakuTypography.caption1).foregroundStyle(LucakuColor.destructive) }
@@ -452,7 +454,7 @@ struct YourLucakuCard: View {
                 Button(action: onEdit) {
                     Text("Edit")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(LucakuColor.accent)
+                        .foregroundStyle(LucakuColor.textPrimary)
                         .frame(minWidth: 44, minHeight: 36)
                 }
                 .buttonStyle(.plain)

@@ -27,12 +27,21 @@ final class HomeViewModel: ObservableObject {
     /// "HH:mm" delivery time from the profile (best effort); nil falls back to 7:00 AM.
     @Published private(set) var deliveryTime: String?
 
+    private var deliveryHourMinute: (hour: Int, minute: Int) {
+        let parts = (deliveryTime ?? "07:00").split(separator: ":").compactMap { Int($0) }
+        return (parts.first ?? 7, parts.count > 1 ? parts[1] : 0)
+    }
+
+    /// Delivery time as "7:00 AM".
+    var deliveryClock: String {
+        let (hour, minute) = deliveryHourMinute
+        return String(format: "%d:%02d %@", hour % 12 == 0 ? 12 : hour % 12, minute, hour >= 12 ? "PM" : "AM")
+    }
+
     /// "Tomorrow at 7:00 AM" / "At 7:00 AM" pieces for the "Your Lucaku" card.
     func nextEpisodeLine(todayIsReady: Bool) -> (label: String, when: String) {
-        let parts = (deliveryTime ?? "07:00").split(separator: ":").compactMap { Int($0) }
-        let hour = parts.first ?? 7
-        let minute = parts.count > 1 ? parts[1] : 0
-        let clock = String(format: "%d:%02d %@", hour % 12 == 0 ? 12 : hour % 12, minute, hour >= 12 ? "PM" : "AM")
+        let (hour, minute) = deliveryHourMinute
+        let clock = deliveryClock
         guard todayIsReady else { return ("Then, every day", "At \(clock)") }
         let now = Calendar.current.dateComponents([.hour, .minute], from: Date())
         let later = hour * 60 + minute > (now.hour ?? 0) * 60 + (now.minute ?? 0)

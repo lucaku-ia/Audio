@@ -197,7 +197,7 @@ struct HomeSectionHeader: View {
                 Button(action: action) {
                     Text(actionTitle)
                         .font(LucakuTypography.callout)
-                        .foregroundStyle(LucakuColor.accent)
+                        .foregroundStyle(LucakuColor.textPrimary)
                 }
                 .frame(minHeight: 44)
             }
@@ -231,7 +231,7 @@ struct HomeShelfHeader: View {
                 Button(action: action) {
                     Text(actionTitle)
                         .font(LucakuTypography.subhead.weight(.semibold))
-                        .foregroundStyle(LucakuColor.accent)
+                        .foregroundStyle(LucakuColor.textPrimary)
                 }
                 .buttonStyle(.plain)
                 .frame(minHeight: 44)

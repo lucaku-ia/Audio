@@ -36,7 +36,7 @@ struct NewsSectionView: View {
                 } label: {
                     Text("Mark all read")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(LucakuColor.accent)
+                        .foregroundStyle(LucakuColor.textPrimary)
                         .frame(minHeight: 44)
                 }
                 .buttonStyle(.plain)
@@ -86,7 +86,7 @@ private struct NewsDayCard: View {
                                 .font(.system(size: 12, weight: .semibold))
                         }
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(LucakuColor.accent)
+                        .foregroundStyle(LucakuColor.textPrimary)
                         .padding(.horizontal, LucakuSpacing.sp4)
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         .contentShape(Rectangle())
@@ -113,10 +113,10 @@ private struct NewsDayCard: View {
                         if group.dayOffset == 0 {
                             Text("Today")
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(LucakuColor.accentOn)
+                                .foregroundStyle(LucakuColor.textSecondary)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 2)
-                                .background(Capsule().fill(LucakuColor.accent))
+                                .background(Capsule().fill(LucakuColor.fill))
                         }
                     }
                     let unread = store.unreadCount(in: group)
@@ -176,11 +176,11 @@ struct NewsRowView: View {
                 HStack(spacing: 8) {
                     Text(story.category.label)
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(LucakuColor.accent)
+                        .foregroundStyle(LucakuColor.textSecondary)
                         .lineLimit(1)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(LucakuColor.accentTint))
+                        .background(Capsule().fill(LucakuColor.fill))
                     Text(story.timeLabel)
                         .font(.system(size: 12))
                         .foregroundStyle(LucakuColor.textTertiary)
@@ -205,7 +205,7 @@ struct NewsRowView: View {
         .padding(.trailing, LucakuSpacing.sp4)
         .overlay(alignment: .topLeading) {
             Circle()
-                .fill(LucakuColor.accent)
+                .fill(LucakuColor.textPrimary)
                 .frame(width: 9, height: 9)
                 .padding(.leading, 7)
                 .padding(.top, 44)
@@ -224,7 +224,7 @@ struct NewsRowView: View {
         .foregroundStyle(Color.white)
         .padding(.trailing, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-        .background(isRead ? Color(red: 0x1E / 255, green: 0x64 / 255, blue: 0x7E / 255) : Color(red: 0x48 / 255, green: 0x48 / 255, blue: 0x4A / 255))
+        .background(isRead ? Color(red: 0x63 / 255, green: 0x63 / 255, blue: 0x66 / 255) : Color(red: 0x48 / 255, green: 0x48 / 255, blue: 0x4A / 255))
         .opacity(min(1, Double(-dx) / 60))
     }
 
@@ -268,10 +268,10 @@ struct NewsDetailView: View {
                     HStack(spacing: 8) {
                         Text(story.category.label)
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(LucakuColor.accent)
+                            .foregroundStyle(LucakuColor.textSecondary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 3)
-                            .background(Capsule().fill(LucakuColor.accentTint))
+                            .background(Capsule().fill(LucakuColor.fill))
                         Text("\(story.dayOffset == 0 ? "Today" : story.dayLabel) · \(story.timeLabel) · \(story.readMinutes) min read")
                             .font(LucakuTypography.footnote)
                             .foregroundStyle(LucakuColor.textSecondary)
@@ -291,7 +291,7 @@ struct NewsDetailView: View {
                         .foregroundStyle(LucakuColor.textPrimary)
                     ForEach(story.points, id: \.self) { point in
                         HStack(alignment: .top, spacing: 10) {
-                            Circle().fill(LucakuColor.accent).frame(width: 7, height: 7).padding(.top, 8)
+                            Circle().fill(LucakuColor.textPrimary).frame(width: 7, height: 7).padding(.top, 8)
                             Text(point)
                                 .font(.system(size: 16))
                                 .foregroundStyle(LucakuColor.textPrimary)
@@ -314,7 +314,7 @@ struct NewsDetailView: View {
                 HStack(spacing: 12) {
                     Image(systemName: "bookmark")
                         .font(.system(size: 18))
-                        .foregroundStyle(LucakuColor.accent)
+                        .foregroundStyle(LucakuColor.textSecondary)
                     Text("Because you follow \(story.category.label)")
                         .font(.system(size: 14))
                         .foregroundStyle(LucakuColor.textSecondary)
@@ -353,7 +353,7 @@ struct NewsDetailView: View {
         }
         .background(LucakuColor.bg.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
-        .tint(LucakuColor.accent)
+        .tint(LucakuColor.textPrimary)
         .onAppear { store.markRead(story) } // 3.7: opening clears the dot
         .sheet(isPresented: $showFeedback) {
             FeedbackChangeSheet(
@@ -419,10 +419,10 @@ struct FeedbackChips: View {
                 Image(systemName: on ? selectedIcon : icon).font(.system(size: 15))
                 Text(label).font(.system(size: 14, weight: .semibold))
             }
-            .foregroundStyle(on ? LucakuColor.accentOn : LucakuColor.textPrimary)
+            .foregroundStyle(on ? LucakuColor.bg : LucakuColor.textPrimary)
             .padding(.horizontal, 14)
             .frame(height: 36)
-            .background(Capsule().fill(on ? LucakuColor.accent : LucakuColor.fill))
+            .background(Capsule().fill(on ? LucakuColor.textPrimary : LucakuColor.fill))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(on ? .isSelected : [])
@@ -466,11 +466,11 @@ struct FeedbackChangeSheet: View {
                                 if on { Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)) }
                                 Text(option).font(.system(size: 15, weight: .semibold))
                             }
-                            .foregroundStyle(on ? LucakuColor.accent : LucakuColor.textPrimary)
+                            .foregroundStyle(on ? LucakuColor.bg : LucakuColor.textPrimary)
                             .padding(.horizontal, 14)
                             .frame(minHeight: 40)
-                            .background(Capsule().fill(on ? LucakuColor.accentTint : Color.clear))
-                            .overlay(Capsule().strokeBorder(on ? LucakuColor.accent : LucakuColor.border, lineWidth: on ? 1.5 : 1))
+                            .background(Capsule().fill(on ? LucakuColor.textPrimary : Color.clear))
+                            .overlay(Capsule().strokeBorder(on ? LucakuColor.textPrimary : LucakuColor.border, lineWidth: on ? 1.5 : 1))
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(on ? .isSelected : [])
@@ -512,7 +512,7 @@ struct FeedbackChangeSheet: View {
                         Image(systemName: "flag").font(.system(size: 14))
                         Text("Something's wrong? Report a problem").font(.system(size: 15, weight: .semibold))
                     }
-                    .foregroundStyle(LucakuColor.accent)
+                    .foregroundStyle(LucakuColor.textPrimary)
                     .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.plain)

@@ -100,7 +100,7 @@ struct HomeView: View {
     private var content: some View {
         if debugState == nil, isLoadingHome {
             ProgressView()
-                .tint(LucakuColor.accent)
+                .tint(LucakuColor.textSecondary)
                 .frame(maxWidth: .infinity, minHeight: 300)
         } else if debugState == nil, let message = failureMessage {
             failedView(message)
@@ -138,7 +138,7 @@ struct HomeView: View {
                 .lineLimit(2)
             Button("Retry") { Task { await refresh() } }
                 .font(LucakuTypography.callout.weight(.semibold))
-                .foregroundStyle(LucakuColor.accent)
+                .foregroundStyle(LucakuColor.textPrimary)
         }
         .frame(maxWidth: .infinity, minHeight: 300)
         .padding()
@@ -153,6 +153,7 @@ struct HomeView: View {
             storyCount: debugState != nil ? 4 : (home?.banner.blocks.count ?? home?.banner.requestsCount ?? 0),
             durationS: debugState != nil ? 17 * 60 : home?.banner.durationS,
             topicsCount: max(viewModel.topics.count, home?.banner.requestsCount ?? 0, debugState != nil ? 4 : 0),
+            deliveryClock: viewModel.deliveryClock,
             eta: debugState != nil ? debugStamp.addingTimeInterval(25 * 60) : home?.banner.eta,
             generatingSince: debugState == .generating ? debugStamp : generatingSince,
             playbackFraction: playbackFraction(home),
