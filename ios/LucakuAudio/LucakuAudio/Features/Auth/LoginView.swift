@@ -15,7 +15,12 @@ struct LoginView: View {
     @State private var nombre = ""
     @State private var showPassword = false
     @State private var isLoading = false
-    @State private var credentialsError = false
+    /// Which input the server actually objected to, so only that field is
+    /// outlined. One shared `credentialsError` flag used to redden BOTH email
+    /// and password for every 4xx — including "this email already has an
+    /// account", where the password is perfectly fine and the customer is
+    /// being told to go sign in instead.
+    @State private var invalidFields: Set<Field> = []
     @State private var errorMessage: String?
     @State private var notice: String?
 
@@ -29,8 +34,19 @@ struct LoginView: View {
     }
 
 
+    /// The server's own minimum (auth.py: `password: str = Field(min_length=8)`).
+    /// Kept client-side too so a too-short password is caught before the
+    /// round-trip rather than coming back as a 422 the customer has to decode.
+    private static let minPasswordLength = 8
+
+    private var passwordTooShort: Bool {
+        mode == .signup && !password.isEmpty && password.count < Self.minPasswordLength
+    }
+
     private var canSubmit: Bool {
-        !email.isEmpty && !password.isEmpty && (mode == .login || !nombre.isEmpty) && !isLoading
+        !email.isEmpty && !password.isEmpty && (mode == .login || !nombre.isEmpty)
+            && !isLoading
+            && !(mode == .signup && password.count < Self.minPasswordLength)
     }
 
     var body: some View {
@@ -64,7 +80,21 @@ struct LoginView: View {
                 fields
                     .padding(.top, 14)
 
-                if let message = errorMessage {
+                if passwordTooShort {
+                    // Shown while typing, so the requirement is visible exactly
+                    // when it's being violated. The placeholder also states it,
+                    // but a placeholder is gone by the second character.
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 18))
+                        Text("Passwords need at least \(Self.minPasswordLength) characters.")
+                            .font(.system(size: 14))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundStyle(LucakuColor.textSecondary)
+                    .padding(.top, 10)
+                    .accessibilityElement(children: .combine)
+                } else if let message = errorMessage {
                     HStack(alignment: .top, spacing: 6) {
                         Image(systemName: "exclamationmark.circle")
                             .font(.system(size: 18))
@@ -151,7 +181,7 @@ struct LoginView: View {
                 Button {
                     guard mode != m else { return }
                     mode = m
-                    credentialsError = false
+                    invalidFields = []
                     errorMessage = nil
                     notice = nil
                 } label: {
@@ -253,7 +283,7 @@ struct LoginView: View {
                         .focused($focusedField, equals: .name)
                 }
             }
-            field(icon: "envelope", invalid: credentialsError) {
+            field(icon: "envelope", invalid: invalidFields.contains(.email)) {
                 TextField("Email", text: $email)
                     .keyboardType(.emailAddress)
                     .textInputAutocapitalization(.never)
@@ -261,7 +291,7 @@ struct LoginView: View {
                     .textContentType(.username)
                     .focused($focusedField, equals: .email)
             }
-            field(icon: "lock", invalid: credentialsError) {
+            field(icon: "lock", invalid: invalidFields.contains(.password)) {
                 HStack(spacing: 0) {
                     Group {
                         if showPassword {
@@ -350,7 +380,7 @@ struct LoginView: View {
     private func providerButton<Icon: View>(title: String, message: String, @ViewBuilder icon: () -> Icon) -> some View {
         Button {
             // Shown in the red error line, deliberately without field rings.
-            credentialsError = false
+            invalidFields = []
             notice = nil
             errorMessage = message
         } label: {
@@ -372,7 +402,7 @@ struct LoginView: View {
     }
 
     private func forgotPassword() {
-        credentialsError = false
+        invalidFields = []
         errorMessage = nil
         if email.trimmingCharacters(in: .whitespaces).isEmpty {
             notice = "Enter your email first, then tap Forgot password."
@@ -391,7 +421,7 @@ struct LoginView: View {
         isLoading = true
         errorMessage = nil
         notice = nil
-        credentialsError = false
+        invalidFields = []
         defer { isLoading = false }
 
         do {
@@ -409,25 +439,86 @@ struct LoginView: View {
             }
             session.store(token: token.accessToken, onboardingComplete: token.onboardingComplete)
         } catch {
-            if Self.isCredentialsMismatch(error) {
-                credentialsError = true
-                errorMessage = "That email or password doesn't match. Try again."
-            } else {
-                errorMessage = "Something went wrong. Try again."
+            let failure = Self.failure(for: error, mode: mode)
+            errorMessage = failure.message
+            invalidFields = failure.fields
+            UIAccessibility.post(notification: .announcement, argument: failure.message)
+            // Set iteration order isn't stable, so pick deliberately rather
+            // than taking .first: email is the field the customer edits to
+            // resolve almost every one of these.
+            if failure.fields.contains(.email) {
+                focusedField = .email
+            } else if failure.fields.contains(.password) {
+                focusedField = .password
             }
         }
     }
 
-    private static func isCredentialsMismatch(_ error: Error) -> Bool {
-        guard let apiError = error as? APIError else { return false }
+    /// Turns a thrown error into what the customer should actually read, and
+    /// which field (if any) to outline.
+    ///
+    /// This used to funnel 400/401/403/422 into one sentence — "That email or
+    /// password doesn't match. Try again." — regardless of which mode the form
+    /// was in. On Create account that is nonsense: there is nothing to
+    /// "match" yet. Signing up with an address that already has an account
+    /// told the customer their password was wrong, pointed them at no remedy,
+    /// and reddened both fields.
+    ///
+    /// It also threw away a better message than it substituted. The backend
+    /// writes deliberate, customer-facing sentences into `detail` ("This email
+    /// already has an account using the 'email' method. Sign in with that
+    /// method instead.", "Too many attempts. Try again in 43 seconds."), and
+    /// `APIError.errorDescription` already surfaces those verbatim for any 4xx
+    /// carrying a message. So the rule is: prefer what the server said, and
+    /// only fall back to our own wording when it said nothing useful.
+    ///
+    /// The one place a generic message is correct is a failed sign-in. The
+    /// backend deliberately answers both "no such account" and "wrong
+    /// password" with the same 401 so the form can't be used to discover which
+    /// email addresses are registered — mirroring that with one generic
+    /// sentence is the point, not a shortcut.
+    private static func failure(for error: Error, mode: Mode) -> (message: String, fields: Set<Field>) {
+        guard let apiError = error as? APIError else {
+            return ("Something went wrong. Try again.", [])
+        }
+
         switch apiError {
         case .notAuthenticated:
-            return true
-        case .server(let status, _):
-            return status == 400 || status == 401 || status == 403 || status == 422
-        default:
-            return false
+            return (Self.signInMismatch, [.email, .password])
+
+        case .server(let status, let message):
+            // 401 on sign-in is the deliberately generic one (see above).
+            if status == 401 {
+                return mode == .login
+                    ? (Self.signInMismatch, [.email, .password])
+                    : (message.isEmpty ? "Something went wrong. Try again." : message, [])
+            }
+            // Anything else in the 4xx range: the server's sentence is written
+            // for this customer and is more specific than anything we can say.
+            if (400..<500).contains(status), !message.isEmpty {
+                return (message, Self.fields(forServerMessage: message, status: status))
+            }
+            return ("Something went wrong. Try again.", [])
+
+        case .transport:
+            return ("Can't reach Lucaku. Check your connection and try again.", [])
+
+        case .decoding, .invalidURL:
+            return ("Something went wrong. Try again.", [])
         }
+    }
+
+    private static let signInMismatch = "That email or password doesn't match. Try again."
+
+    /// Best-effort mapping from a server message to the field to outline. A
+    /// wrong guess here only costs a highlight — the sentence itself is always
+    /// shown — so this stays conservative and outlines nothing when unsure.
+    private static func fields(forServerMessage message: String, status: Int) -> Set<Field> {
+        if status == 429 { return [] }  // rate limit: neither field is wrong
+        let lowered = message.lowercased()
+        if lowered.contains("email") || lowered.contains("account") { return [.email] }
+        if lowered.contains("password") { return [.password] }
+        return []
     }
 }
 
