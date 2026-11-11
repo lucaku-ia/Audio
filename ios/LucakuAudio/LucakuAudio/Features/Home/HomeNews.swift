@@ -11,7 +11,7 @@ enum NewsCategory: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .local: return "Colombia & your city"
+        case .local: return "Local news"
         case .politics: return "Politics & government"
         case .world: return "World"
         case .markets: return "Economy & business"

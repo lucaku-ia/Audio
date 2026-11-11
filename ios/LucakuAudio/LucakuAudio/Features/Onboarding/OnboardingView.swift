@@ -328,6 +328,15 @@ final class OnboardingChatFlow: ObservableObject {
 
     // Guide me (2.6-2.8)
     @Published private(set) var selectedCategoryIds: Set<String> = []
+    /// "e.g. Millonarios, inflation, F1" — the first example comes from the
+    /// listener's own place so the hint is something they could actually ask
+    /// for, rather than a Colombian club shown to someone in Madrid.
+    static var inputExample: String {
+        let place = OnboardingPlace.current
+        let local = place.sports.first ?? place.cities.first ?? "your team"
+        return "e.g. \(local), inflation, F1"
+    }
+
     @Published private(set) var categoryQueue: [OnboardingCategories.Spec] = []
     @Published private(set) var currentCategory: OnboardingCategories.Spec?
     @Published private(set) var categoryNumber = 0
@@ -381,7 +390,7 @@ final class OnboardingChatFlow: ObservableObject {
 
     var inputPlaceholder: String {
         switch prompt {
-        case .start, .understood, .suggestions, .summary: return "e.g. Millonarios, Colombian economy, F1"
+        case .start, .understood, .suggestions, .summary: return Self.inputExample
         case .detail:
             if let example = currentCategory?.example { return "Add your own, like \(example)" }
             return "Message Lucaku"
@@ -1038,6 +1047,107 @@ final class OnboardingChatFlow: ObservableObject {
 
 // MARK: - Categories and suggestions
 
+/// Where the listener is. Onboarding's category suggestions used to assume
+/// Colombia — the "local" category was literally named "Colombia & your city",
+/// which is a label nobody outside Colombia can use, and the lists underneath
+/// carried Ecopetrol, CDTs, Millonarios and Karol G.
+///
+/// The fix is not to make everything generic. The backend's own clarity screen
+/// *rejects* vague requests ("How did my favourite team do?" comes back asking
+/// which team), so a generic onboarding produces requests that fail later.
+/// Instead the country became a variable:
+///
+/// - Category names are place-neutral ("Local news", "World").
+/// - Only the four categories that genuinely depend on where you are take
+///   their suggestions from this table: local, politics, markets and sports.
+///   Technology, science, health, climate, culture and lifestyle are the same
+///   everywhere and were never the problem.
+/// - The place is read from the device region, not asked. Onboarding already
+///   has enough steps, the region is right for almost everyone, and Interests
+///   can change any of it afterwards in a sentence.
+/// - Somewhere with no entry here still works: `generic` templates the same
+///   shapes off the country's own name, so the app is not broken in a market
+///   we have not thought about yet.
+struct OnboardingPlace {
+    let regionCode: String
+    let country: String
+    /// Major cities, most prominent first.
+    let cities: [String]
+    /// How politics is actually named there.
+    let politics: [String]
+    /// The instruments and institutions people follow there.
+    let markets: [String]
+    /// Clubs, leagues and teams with a local following.
+    let sports: [String]
+
+    static let colombia = OnboardingPlace(
+        regionCode: "CO", country: "Colombia",
+        cities: ["Bogotá", "Medellín", "Cali", "Barranquilla", "Cartagena", "Santander"],
+        politics: ["Congress", "Elections", "The presidency", "Peace process", "Supreme Court", "Corruption cases"],
+        markets: ["The peso and the dollar", "Ecopetrol", "Banco de la República rates", "Coffee prices", "Inflation", "CDTs"],
+        sports: ["Millonarios FC", "Atlético Nacional", "The national team", "Copa Libertadores", "Egan Bernal", "World Cup"]
+    )
+
+    static let mexico = OnboardingPlace(
+        regionCode: "MX", country: "Mexico",
+        cities: ["Mexico City", "Guadalajara", "Monterrey", "Puebla", "Tijuana", "Mérida"],
+        politics: ["Congress", "Elections", "The presidency", "Supreme Court", "Security policy", "State governors"],
+        markets: ["The peso and the dollar", "Banxico rates", "Pemex", "The BMV", "Inflation", "Remittances"],
+        sports: ["Club América", "Chivas", "The national team", "Liga MX", "Canelo Álvarez", "World Cup"]
+    )
+
+    static let spain = OnboardingPlace(
+        regionCode: "ES", country: "Spain",
+        cities: ["Madrid", "Barcelona", "Valencia", "Seville", "Bilbao", "Málaga"],
+        politics: ["Congreso", "Elections", "The government", "Catalonia", "Regional elections", "The courts"],
+        markets: ["The euro", "ECB rates", "The IBEX 35", "Inflation", "Santander", "Housing prices"],
+        sports: ["Real Madrid", "FC Barcelona", "LaLiga", "The national team", "Champions League", "Carlos Alcaraz"]
+    )
+
+    static let unitedStates = OnboardingPlace(
+        regionCode: "US", country: "the United States",
+        cities: ["New York", "Los Angeles", "Chicago", "Houston", "Miami", "San Francisco"],
+        politics: ["Congress", "Elections", "The White House", "The Supreme Court", "State politics", "Immigration policy"],
+        markets: ["The Fed", "The S&P 500", "Inflation", "Interest rates", "Nvidia", "Oil prices"],
+        sports: ["NFL", "NBA", "MLB", "College football", "Formula 1", "World Cup"]
+    )
+
+    static let argentina = OnboardingPlace(
+        regionCode: "AR", country: "Argentina",
+        cities: ["Buenos Aires", "Córdoba", "Rosario", "Mendoza", "La Plata", "Mar del Plata"],
+        politics: ["Congress", "Elections", "The presidency", "The provinces", "Economic reform", "The courts"],
+        markets: ["The peso and the dollar", "Inflation", "BCRA rates", "The Merval", "YPF", "Country risk"],
+        sports: ["Boca Juniors", "River Plate", "The national team", "Lionel Messi", "Copa Libertadores", "World Cup"]
+    )
+
+    static let known: [OnboardingPlace] = [colombia, mexico, spain, unitedStates, argentina]
+
+    /// Anywhere we have no table for. Templated off the country's own name so
+    /// the suggestions are still specific enough for the clarity screen.
+    static func generic(country: String) -> OnboardingPlace {
+        OnboardingPlace(
+            regionCode: "",
+            country: country,
+            cities: ["\(country) news", "Your city", "Local politics", "Transport", "Public safety", "Housing"],
+            politics: ["\(country) elections", "\(country) parliament", "The government", "The courts",
+                       "Public spending", "Foreign policy"],
+            markets: ["\(country) inflation", "\(country) interest rates", "The stock market",
+                      "The currency", "Jobs", "Housing prices"],
+            sports: ["\(country) national team", "The national league", "World Cup", "Champions League",
+                     "Formula 1", "Olympics"]
+        )
+    }
+
+    /// The device's region, falling back to Colombia — the first market, and a
+    /// better default than a generic table for an app that ships in Spanish.
+    static var current: OnboardingPlace {
+        guard let code = Locale.current.region?.identifier else { return colombia }
+        if let match = known.first(where: { $0.regionCode == code }) { return match }
+        let name = Locale.current.localizedString(forRegionCode: code) ?? code
+        return generic(country: name)
+    }
+}
+
 enum OnboardingCategories {
     static let pageSize = 6
 
@@ -1059,46 +1169,61 @@ enum OnboardingCategories {
         }
     }
 
-    /// The 12 spec categories, in spec order. Ids match the backend's
-    /// interest ids where one exists (`lifestyle` has none).
-    static let all: [Spec] = [
-        Spec(id: "local", label: "Colombia & your city", symbol: "mappin.and.ellipse",
-             example: "Bogotá, or even Santander",
-             topics: ["Bogotá", "Medellín", "Cali", "Santander", "Barranquilla", "Cartagena"]),
-        Spec(id: "politics", label: "Politics & government", symbol: "building.columns",
-             example: "Congress, or the elections",
-             topics: ["Congress", "Elections", "Colombian president", "US politics", "European Union", "Supreme Court"]),
-        Spec(id: "world", label: "World", symbol: "globe",
-             example: "Venezuela, or the United States",
-             topics: ["Venezuela", "United States", "Ukraine", "Middle East", "China", "Europe"]),
-        Spec(id: "markets", label: "Economy & business", symbol: "chart.line.uptrend.xyaxis",
-             example: "the dollar, or Ecopetrol",
-             topics: ["The dollar", "Ecopetrol", "Interest rates", "Oil prices", "Amazon stock", "Inflation"]),
-        Spec(id: "personal_finance", label: "Personal finance", symbol: "banknote",
-             example: "CDTs, or taxes",
-             topics: ["CDTs", "Taxes", "Savings", "Mortgages", "Pensions", "Credit cards"]),
-        Spec(id: "technology", label: "Technology & AI", symbol: "cpu",
-             example: "AI, or Apple",
-             topics: ["AI", "Apple", "OpenAI", "Cybersecurity", "AI startups", "Nvidia"]),
-        Spec(id: "science", label: "Science & space", symbol: "atom",
-             example: "space, or NASA missions",
-             topics: ["Space", "NASA missions", "Physics", "Astronomy", "Robotics", "Biology"]),
-        Spec(id: "health", label: "Health & wellness", symbol: "heart",
-             example: "running, or sleep",
-             topics: ["Running", "Sleep", "Nutrition", "Mental health", "Cancer research", "Fitness"]),
-        Spec(id: "climate", label: "Climate & environment", symbol: "leaf",
-             example: "Amazon deforestation",
-             topics: ["Amazon deforestation", "Renewable energy", "Climate change", "Extreme weather", "Oceans", "Recycling"]),
-        Spec(id: "sports", label: "Sports", symbol: "sportscourt",
-             example: "tennis, or even Novak Djokovic",
-             topics: ["Tennis", "Novak Djokovic", "Millonarios FC", "Formula 1", "World Cup", "Champions League", "NBA"]),
-        Spec(id: "entertainment", label: "Culture & entertainment", symbol: "music.note",
-             example: "series, or Karol G",
-             topics: ["Series", "Karol G", "Movies", "Oscars", "Netflix", "Music releases"]),
-        Spec(id: "lifestyle", label: "Lifestyle & travel", symbol: "airplane",
-             example: "travel deals, or cars",
-             topics: ["Travel deals", "Cars", "Food", "Fashion", "Home design", "Cities to visit"]),
-    ]
+    /// The 12 categories, in spec order. Ids match the backend's interest ids
+    /// where one exists (`lifestyle` has none). Four of them take their
+    /// suggestions from `OnboardingPlace`; the rest are the same everywhere.
+    static var all: [Spec] { specs(for: OnboardingPlace.current) }
+
+    static func specs(for place: OnboardingPlace) -> [Spec] {
+        [
+            Spec(id: "local", label: "Local news", symbol: "mappin.and.ellipse",
+                 example: "\(place.cities.first ?? "your city"), or your region",
+                 topics: place.cities),
+            Spec(id: "politics", label: "Politics & government", symbol: "building.columns",
+                 example: "Congress, or the elections",
+                 topics: place.politics),
+            Spec(id: "world", label: "World", symbol: "globe",
+                 example: "the United States, or Ukraine",
+                 // The country you are in is not "world news" to you, so it is
+                 // deliberately absent from this list.
+                 topics: worldTopics(excluding: place)),
+            Spec(id: "markets", label: "Economy & business", symbol: "chart.line.uptrend.xyaxis",
+                 example: "inflation, or the stock market",
+                 topics: place.markets),
+            Spec(id: "personal_finance", label: "Personal finance", symbol: "banknote",
+                 example: "savings, or taxes",
+                 topics: ["Savings", "Taxes", "Mortgages", "Pensions", "Credit cards", "Investing"]),
+            Spec(id: "technology", label: "Technology & AI", symbol: "cpu",
+                 example: "AI, or Apple",
+                 topics: ["AI", "Apple", "OpenAI", "Cybersecurity", "AI startups", "Nvidia"]),
+            Spec(id: "science", label: "Science & space", symbol: "atom",
+                 example: "space, or NASA missions",
+                 topics: ["Space", "NASA missions", "Physics", "Astronomy", "Robotics", "Biology"]),
+            Spec(id: "health", label: "Health & wellness", symbol: "heart",
+                 example: "running, or sleep",
+                 topics: ["Running", "Sleep", "Nutrition", "Mental health", "Cancer research", "Fitness"]),
+            Spec(id: "climate", label: "Climate & environment", symbol: "leaf",
+                 example: "renewable energy, or extreme weather",
+                 topics: ["Climate change", "Renewable energy", "Extreme weather", "Deforestation", "Oceans", "Recycling"]),
+            Spec(id: "sports", label: "Sports", symbol: "sportscourt",
+                 example: "your club, or the national team",
+                 topics: place.sports),
+            Spec(id: "entertainment", label: "Culture & entertainment", symbol: "music.note",
+                 example: "series, or music releases",
+                 topics: ["Series", "Movies", "Music releases", "Oscars", "Netflix", "Books"]),
+            Spec(id: "lifestyle", label: "Lifestyle & travel", symbol: "airplane",
+                 example: "travel deals, or cars",
+                 topics: ["Travel deals", "Cars", "Food", "Fashion", "Home design", "Cities to visit"]),
+        ]
+    }
+
+    /// Countries and regions, with the listener's own left out — it belongs in
+    /// Local news, not World.
+    private static func worldTopics(excluding place: OnboardingPlace) -> [String] {
+        let pool = ["The United States", "Europe", "China", "Latin America", "Ukraine",
+                    "The Middle East", "Venezuela", "Mexico", "Brazil", "India"]
+        return Array(pool.filter { !$0.localizedCaseInsensitiveContains(place.country) }.prefix(6))
+    }
 
     private static let keywords: [(category: String, words: [String])] = [
         ("Sports", ["arsenal", "football", "soccer", "world cup", "champions", "nba", "tennis", "formula", "f1",
@@ -1107,20 +1232,26 @@ enum OnboardingCategories {
                              "nvidia", "software", "chips"]),
         ("Personal finance", ["savings", "mortgage", "budget", "pension", "taxes", "tax", "retirement"]),
         ("Economy & business", ["stock", "stocks", "amazon", "bitcoin", "crypto", "interest", "oil", "markets",
-                                "market", "inflation", "economy", "business", "dollar", "tesla"]),
+                                "market", "inflation", "economy", "business", "dollar", "tesla", "peso", "euro"]),
         ("Politics & government", ["election", "elections", "president", "congress", "senate", "politics", "government"]),
         ("Climate & environment", ["climate", "weather", "emissions", "environment"]),
         ("Health & wellness", ["health", "vaccine", "vaccines", "medicine", "wellness", "cancer"]),
         ("Science & space", ["nasa", "space", "science", "physics"]),
         ("Culture & entertainment", ["movie", "movies", "film", "music", "oscars", "netflix", "celebrity", "culture"]),
         ("Lifestyle & travel", ["travel", "food", "recipes", "fashion", "lifestyle"]),
-        ("Colombia & your city", ["colombia", "bogota", "bogotá", "medellin", "medellín", "cali"]),
         ("World", ["war", "ukraine", "gaza", "europe", "china", "world"]),
     ]
 
+    /// Local news is matched off the listener's own place rather than a fixed
+    /// keyword list, so "Medellín" lands in Local news for a Colombian and
+    /// "Guadalajara" does for someone in Mexico.
     static func guess(for text: String) -> String {
         let lower = text.lowercased()
         let words = Set(lower.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty })
+        let place = OnboardingPlace.current
+        for local in [place.country] + place.cities where lower.contains(local.lowercased()) {
+            return "Local news"
+        }
         for entry in keywords {
             for word in entry.words {
                 if word.contains(" ") ? lower.contains(word) : words.contains(word) { return entry.category }

@@ -392,19 +392,30 @@ enum InterestCatalog {
                         "science", "health", "climate", "sports", "entertainment", "lifestyle"]
 
     static let fallbackLabel: [String: String] = [
-        "local": "Colombia & your city", "politics": "Politics & government", "world": "World",
+        "local": "Local news", "politics": "Politics & government", "world": "World",
         "markets": "Economy & business", "personal_finance": "Personal finance", "technology": "Technology & AI",
         "science": "Science & space", "health": "Health & wellness", "climate": "Climate & environment",
         "sports": "Sports", "entertainment": "Culture & entertainment", "lifestyle": "Lifestyle & travel",
     ]
 
-    static let specific: [String: [String]] = [
+    /// Place-dependent entries are filled from `OnboardingPlace` so they
+    /// follow the listener's own country rather than naming Colombia for
+    /// everyone — see that type for the reasoning.
+    static var specific: [String: [String]] {
+        var table = specificBase
+        let place = OnboardingPlace.current
+        table["local"] = Array(place.cities.prefix(3))
+        table["markets"] = Array(place.markets.prefix(5))
+        table["sports"] = Array(place.sports.prefix(5))
+        return table
+    }
+
+    private static let specificBase: [String: [String]] = [
         "lifestyle": ["Travel deals", "Food & restaurants", "Cars"],
         "sports": ["World Cup", "Champions League", "NBA", "Formula 1", "Tennis"],
         "markets": ["Amazon stock", "Interest rates", "Bitcoin", "Oil prices", "S&P 500"],
         "technology": ["AI startups", "Apple", "Electric cars", "Cybersecurity"],
         "world": ["US elections", "Europe", "China", "Middle East"],
-        "local": ["Colombian economy", "Bogot\u{00E1}", "Colombian politics"],
         "health": ["Fitness", "Nutrition", "Sleep"],
         "science": ["Space", "Medical breakthroughs"],
         "entertainment": ["Movies", "Music", "Streaming series"],
