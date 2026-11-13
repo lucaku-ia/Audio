@@ -97,7 +97,8 @@ async def test_logged_call_cost_is_nonzero_with_search_and_tagged_news(full_db_s
 # --- 2a. run cost accumulates and survives failures --------------------------
 
 async def _run_row(db):
-    return (await db.execute(select(NewsRun).execution_options(populate_existing=True))).scalar_one()
+    # Plain column values: the pipeline's rollbacks/bulk updates expire ORM instances.
+    return (await db.execute(select(NewsRun.status, NewsRun.cost, NewsRun.attempts))).one()
 
 
 @pytest.mark.asyncio
@@ -125,7 +126,7 @@ async def test_research_cost_is_recorded_when_the_writer_fails_and_accumulates_o
     result = await np_.run_news_for_topic(db, "Premier League", slot="0500", now=NOW)
 
     assert result.status == "done"
-    run = await db.get(NewsRun, run.id, populate_existing=True)
+    run = await _run_row(db)
     assert run.attempts == 2 and run.cost == pytest.approx(0.30 + 0.30 + 0.02)  # added, not overwritten
 
 
