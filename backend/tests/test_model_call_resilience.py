@@ -168,7 +168,8 @@ async def test_the_app_answers_503_with_something_a_person_can_read():
     handler = app.exception_handlers.get(ModelUnavailable)
     assert handler is not None, "nothing maps ModelUnavailable to a response — it would be a 500"
 
-    response = await handler(None, ModelUnavailable("overloaded_error: Overloaded"))
+    english_request = types.SimpleNamespace(state=types.SimpleNamespace(language="en"), headers={})
+    response = await handler(english_request, ModelUnavailable("overloaded_error: Overloaded"))
     assert response.status_code == 503
 
     body = response.body.decode()

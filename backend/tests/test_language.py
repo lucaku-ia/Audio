@@ -257,10 +257,10 @@ async def test_error_handlers_answer_in_the_callers_language():
 async def test_onboarding_confirm_message_follows_language(full_db_session, monkeypatch):
     from tests.test_onboarding_confirm import _make_customer
 
-    def _no_task(coro):  # never run the background first-episode generation
-        coro.close()
+    async def _no_generation(_cliente_id):  # never run the background first-episode generation
+        return None
 
-    monkeypatch.setattr(onboarding.asyncio, "create_task", _no_task)
+    monkeypatch.setattr(onboarding, "_trigger_first_episode_in_background", _no_generation)
     db = full_db_session
     cliente = await _make_customer(db, delivery_in_minutes=180)  # idioma="es"
     result = await onboarding.confirm(cliente, db)

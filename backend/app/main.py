@@ -97,6 +97,8 @@ app.include_router(feedback_routes.router, prefix="/api")
 def _request_language(request: Request) -> str:
     """The caller's language: the authenticated customer's setting when the auth
     dependency ran (request.state.language), else the Accept-Language header, else the default."""
+    if request is None:
+        return DEFAULT_LANGUAGE
     return (getattr(request.state, "language", None)
             or language_from_accept_header(request.headers.get("accept-language"))
             or DEFAULT_LANGUAGE)

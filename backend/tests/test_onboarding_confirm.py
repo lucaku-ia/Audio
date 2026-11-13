@@ -89,6 +89,7 @@ async def test_confirm_on_demand_returns_before_pipeline_finishes(full_db_sessio
     _spy_create_task(monkeypatch, created_tasks)
 
     cliente = await _make_customer(full_db_session, delivery_in_minutes=30)  # < 60 -> on_demand
+    cliente.idioma = "en"  # the message is localized
 
     start = time.monotonic()
     result = await onboarding.confirm(cliente, full_db_session)
