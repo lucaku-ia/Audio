@@ -38,10 +38,10 @@ async def _send(db, cliente, target_type, target_id, rating, reasons=(), suggest
 
 
 async def _signal(db, cliente, subject_type, key):
-    db.expire_all()
     return (await db.execute(select(FeedbackSignal).where(
         FeedbackSignal.cliente_id == cliente.id, FeedbackSignal.subject_type == subject_type,
-        FeedbackSignal.subject_key == key))).scalar_one_or_none()
+        FeedbackSignal.subject_key == key)
+        .execution_options(populate_existing=True))).scalar_one_or_none()
 
 
 async def _count(db, model):
@@ -151,13 +151,11 @@ async def test_stop_topic_pauses_request_and_toggle_off_resumes(full_db_session)
     block, req, _ = await _story(db, me)
 
     await _send(db, me, "story", block.id, "not_quite", ["stop_topic"])
-    db.expire_all()
-    assert (await db.get(Request, req.id)).status == RequestStatus.paused
+    assert (await db.get(Request, req.id, populate_existing=True)).status == RequestStatus.paused
     assert (await _signal(db, me, "request", str(req.id))).stop_topic == 1
 
     await _send(db, me, "story", block.id, "not_quite", ["stop_topic"])  # toggle off
-    db.expire_all()
-    assert (await db.get(Request, req.id)).status == RequestStatus.active
+    assert (await db.get(Request, req.id, populate_existing=True)).status == RequestStatus.active
     assert (await _signal(db, me, "request", str(req.id))).stop_topic == 0
 
 
@@ -172,8 +170,7 @@ async def test_stop_topic_does_not_resume_a_request_the_user_paused_themselves(f
     await _send(db, me, "story", block.id, "not_quite", ["stop_topic"])
     await _send(db, me, "story", block.id, "not_quite", ["stop_topic"])  # off
 
-    db.expire_all()
-    assert (await db.get(Request, req.id)).status == RequestStatus.paused
+    assert (await db.get(Request, req.id, populate_existing=True)).status == RequestStatus.paused
 
 
 @pytest.mark.asyncio
