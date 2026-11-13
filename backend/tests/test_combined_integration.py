@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.routes import feedback as fb_routes
 from app.api.routes import history, home, news
+from app.api.routes import requests as req_routes
 from app.db.session import DATABASE_URL, ENGINE_CONNECT_ARGS
 from app.models.episode import Block, Episode, EpisodePath
 from app.models.feedback import Feedback, FeedbackSignal
@@ -213,10 +214,6 @@ async def test_news_feed_day_is_dst_aware_per_item_for_the_profile_zone(full_db_
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="GET /home applies the profile zone's CURRENT UTC offset as a fixed offset to every item "
-                          "(home.py _derive_news), while GET /news without tz_offset_minutes is DST-aware per item. "
-                          "Items published before a DST change get a different `day` in the two endpoints.",
-                   strict=False)
 async def test_home_news_day_matches_news_across_a_dst_change(full_db_session, frozen_window):
     db = full_db_session
     me = await _follower(db, tz="Europe/Madrid")
@@ -396,11 +393,9 @@ async def test_stop_topic_on_an_episode_or_news_target_never_pauses(full_db_sess
 
 
 @pytest.mark.asyncio
-async def test_two_stop_topic_stories_for_one_request_first_toggle_off_resumes(full_db_session):
-    """Documents actual behaviour: only the feedback that performed the pause owns
-    the resume. The second stop_topic sees an already-paused request and records
-    no pause, so toggling the FIRST off resumes the request while the second
-    stop_topic feedback still stands."""
+async def test_two_stop_topic_stories_for_one_request_resume_only_when_none_remain(full_db_session):
+    """The request stays paused while any stop_topic story feedback for it stands;
+    removing the first hands the pause to the second, removing the last resumes."""
     db = full_db_session
     me = await _follower(db)
     block1, req = await _story(db, me)
@@ -416,25 +411,22 @@ async def test_two_stop_topic_stories_for_one_request_first_toggle_off_resumes(f
     assert await _status(db, req.id) == RequestStatus.paused
 
     await _send(db, me, "story", block1.id, "not_quite", ["stop_topic"])  # first off
-    assert await _status(db, req.id) == RequestStatus.active
+    assert await _status(db, req.id) == RequestStatus.paused  # second stop_topic still stands
     assert (await _signal(db, me, "request", str(req.id))).stop_topic == 1  # second still counted
+
+    await _send(db, me, "story", block2.id, "not_quite", ["stop_topic"])  # last off
+    assert await _status(db, req.id) == RequestStatus.active
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="Known limitation: Feedback.effects only remembers 'paused by feedback'. If the user resumes "
-                          "and then manually RE-pauses, toggling the stop_topic feedback off resumes their manual pause "
-                          "(status paused is indistinguishable from the feedback pause).", strict=False)
 async def test_manual_repause_after_feedback_pause_survives_feedback_toggle_off(full_db_session):
     db = full_db_session
     me = await _follower(db)
     block, req = await _story(db, me)
 
     await _send(db, me, "story", block.id, "not_quite", ["stop_topic"])   # paused by feedback
-    row = await db.get(Request, req.id, populate_existing=True)
-    row.status = RequestStatus.active                                      # user resumes in the app...
-    await db.commit()
-    row.status = RequestStatus.paused                                      # ...then pauses it themselves
-    await db.commit()
+    await req_routes.reanudar_request(request_id=req.id, cliente=me, db=db)  # user resumes in the app...
+    await req_routes.pausar_request(request_id=req.id, cliente=me, db=db)    # ...then pauses it themselves
 
     await _send(db, me, "story", block.id, "not_quite", ["stop_topic"])   # feedback off
     assert await _status(db, req.id) == RequestStatus.paused
@@ -513,10 +505,6 @@ async def test_failed_research_parse_still_counts_both_paid_attempts_toward_the_
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="BUG: when the write stage raises after research was paid for, run_news_for_topic rolls back and "
-                          "marks the run failed WITHOUT cost (news_pipeline.py: `except Exception` -> _finish_run(status='failed', "
-                          "error=...)). The research spend is invisible to the daily ceiling, and the rollback also drops the "
-                          "uncommitted AICall rows.", strict=False)
 async def test_paid_research_followed_by_a_write_failure_is_still_counted(full_db_session, monkeypatch):
     db = full_db_session
     install_sdk(monkeypatch, write_error=RuntimeError("writer exploded"))

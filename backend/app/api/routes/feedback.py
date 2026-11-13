@@ -170,6 +170,17 @@ async def _apply(db: AsyncSession, cliente: Cliente, fb: Feedback, subjects: lis
     fb.effects = {"subjects": subjects, "paused_requests": paused}
 
 
+async def _other_stop_topic_feedback(db: AsyncSession, cliente: Cliente, fb: Feedback, rid: str) -> Feedback | None:
+    rows = (await db.execute(
+        select(Feedback)
+        .join(Block, Block.id == Feedback.target_id)
+        .where(Feedback.cliente_id == cliente.id, Feedback.target_type == "story",
+               Feedback.id != fb.id, Block.request_id == uuid.UUID(rid))
+        .order_by(Feedback.created_at, Feedback.id)
+    )).scalars().all()
+    return next((r for r in rows if "stop_topic" in (r.reasons or [])), None)
+
+
 async def _reverse(db: AsyncSession, cliente: Cliente, fb: Feedback) -> None:
     effects = fb.effects or {}
     deltas = _deltas(fb.rating, list(fb.reasons or []))
@@ -179,6 +190,14 @@ async def _reverse(db: AsyncSession, cliente: Cliente, fb: Feedback) -> None:
         req = (await db.execute(select(Request).where(
             Request.id == uuid.UUID(rid), Request.customer_id == cliente.id))).scalar_one_or_none()
         if req is not None and req.status == RequestStatus.paused:
+            # Another stop_topic story feedback for this request still stands:
+            # it inherits the pause, so the request stays paused until that
+            # one is removed too.
+            heir = await _other_stop_topic_feedback(db, cliente, fb, rid)
+            if heir is not None:
+                heir.effects = {**(heir.effects or {}),
+                                "paused_requests": [*(heir.effects or {}).get("paused_requests", []), rid]}
+                continue
             req.status = RequestStatus.active
             await emitir(db, "request_resumed", customer_id=cliente.id, source="feedback", request_id=rid)
     fb.effects = {}
