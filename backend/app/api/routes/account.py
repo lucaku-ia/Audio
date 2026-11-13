@@ -71,8 +71,10 @@ the deletion unconditionally once called, same as every other mutating
 endpoint in this codebase (e.g. DELETE-equivalents like `archive_request`
 rely on the client to confirm before calling).
 """
+import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -88,8 +90,10 @@ from app.models.instrumentation import AICall, Event
 from app.models.onboarding import OnboardingState
 from app.models.profile import Profile
 from app.models.request import Request, RequestVersion
+from app.services import capsules
 from app.services.events import emitir
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/account", tags=["Account & Data"])
 
 
@@ -127,6 +131,8 @@ class BlockExport(BaseModel):
     sources: list
     had_more: bool
     no_news: bool
+    audio_url: str | None = None  # this capsule's own audio file (additive)
+    audio_status: str | None = None
 
 
 class EpisodeExport(BaseModel):
@@ -195,6 +201,7 @@ async def export_account_data(
                 id=str(b.id), request_id=str(b.request_id) if b.request_id else None,
                 start_s=b.start_s, end_s=b.end_s, summary=b.summary, script=b.script,
                 sources=b.sources, had_more=b.had_more, no_news=b.no_news,
+                audio_url=b.audio_url, audio_status=b.audio_status,
             )
             for b in block_result.scalars().all()
         ]
@@ -236,7 +243,15 @@ async def delete_account(
             GenerationJob.status.in_([JobStatus.queued, JobStatus.researching, JobStatus.writing, JobStatus.voicing]),
         )
     )
-    if in_flight_result.first() is not None:
+    # A capsule being voiced (including a late retry on a published episode)
+    # is in flight too, even though its job is already `ready`.
+    voicing_capsule = await db.execute(
+        select(Block.id).join(Episode, Episode.id == Block.episode_id).where(
+            Episode.customer_id == customer_id, Block.audio_status == capsules.VOICING,
+            Block.voicing_started_at > datetime.now(timezone.utc) - timedelta(seconds=capsules.VOICE_LEASE_S),
+        ).limit(1)
+    )
+    if in_flight_result.first() is not None or voicing_capsule.first() is not None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "An episode is currently being generated for this account. Try deleting again in a moment.",
@@ -247,6 +262,15 @@ async def delete_account(
 
     ep_ids_result = await db.execute(select(Episode.id).where(Episode.customer_id == customer_id))
     episode_ids = [e for (e,) in ep_ids_result.all()]
+
+    # Audio files to remove once the rows are gone: the episode mp3s and every
+    # capsule file (personal audio on a static, unauthenticated mount).
+    audio_urls: list[str] = []
+    if episode_ids:
+        audio_urls += [u for (u,) in (await db.execute(
+            select(Episode.audio_url).where(Episode.id.in_(episode_ids)))).all() if u]
+        audio_urls += [u for (u,) in (await db.execute(
+            select(Block.audio_url).where(Block.episode_id.in_(episode_ids)))).all() if u]
 
     # 1. Break Request -> RequestVersion / Episode references before those rows go.
     if request_ids:
@@ -311,4 +335,9 @@ async def delete_account(
     await db.execute(delete(Cliente).where(Cliente.id == customer_id))
 
     await db.commit()
+    for url in audio_urls:
+        try:
+            capsules.media_path(url).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("could not delete media file %s", Path(url).name)
     return {"deleted": True}

@@ -199,12 +199,13 @@ FROM ai_calls WHERE ...` scoped by customer_id/purpose/timestamp, which
 would be a lossy heuristic if a customer has two jobs running concurrently
 or two stages complete in the same wall-clock second.
 """
+import logging
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -217,6 +218,8 @@ from app.models.profile import Profile
 from app.models.request import CreatedFrom, Request, RequestKind, RequestStatus, RequestVersion, VersionStatus
 from app.services import ai_platform, capsules, told_log
 from app.services.events import emitir
+
+logger = logging.getLogger(__name__)
 
 _WORDS_PER_MINUTE = 150  # rough narration rate, used only to estimate duration/offsets pre-TTS
 _INTRO_OUTRO_SECONDS = 15
@@ -535,7 +538,9 @@ async def _synthesize_episode(
         db, cliente_id=cliente_id, episode=episode, blocks=block_rows, voice_id=voice_id,
     )
     if not outcome.voiced:
-        exc = outcome.error or RuntimeError("no capsule could be voiced")
+        # A spend-guard refusal wins over provider errors so the job failure
+        # carries the stable code (_blocked_job_can_retry keys off it).
+        exc = outcome.report_error or RuntimeError("no capsule could be voiced")
         # Carry the partial spend out so the caller can record what the attempt cost.
         exc.voicing_cost = outcome.spent  # type: ignore[attr-defined]
         raise exc
@@ -546,29 +551,46 @@ async def _synthesize_episode(
 
 async def _mark_answered(db: AsyncSession, cliente: Cliente, blocks: list[Block]) -> None:
     """
-    A request counts as answered only once its capsule is actually delivered
-    (voiced, or a legacy no-TTS block) — doc 4.1. Called once per block, when
-    it first becomes delivered, so one_off fulfilment and `request_answered`
-    never fire twice and a failed capsule leaves its one_off request active.
-    The real on-demand path marks requests here directly rather than through
-    POST /requests/mark_answered, so this is the only place that emits
-    request_answered for what actually happens.
+    A request counts as answered only once its capsule is DELIVERED (inside the
+    episode's concatenated file, or a legacy no-TTS block) — doc 4.1. A failed
+    capsule leaves its one_off request active. Runs after the episode is
+    published and committed, so it must never fail the job: errors are logged
+    and rolled back. Idempotent: a request already answered for this episode
+    (e.g. a pre-deploy episode re-voiced post-deploy) is skipped, so
+    `request_answered` is never emitted twice.
     """
-    req_ids = [b.request_id for b in blocks if b.request_id]
-    if not req_ids:
+    blocks = [b for b in blocks if b.request_id and capsules.counts_as_delivered(b)]
+    if not blocks:
         return
-    reqs = {r.id: r for r in (await db.execute(select(Request).where(Request.id.in_(req_ids)))).scalars().all()}
-    for b in blocks:
-        req = reqs.get(b.request_id)
-        if req is None:
-            continue
-        req.last_answered_at = datetime.now(timezone.utc)
-        if req.kind.value == "one_off":
-            req.status = RequestStatus.fulfilled
-            req.fulfilled_episode_id = b.episode_id
-        await emitir(db, "request_answered", customer_id=cliente.id, source="episode_generator",
-                     request_id=str(req.id), episode_id=str(b.episode_id), had_more=bool(b.had_more))
-    await db.commit()
+    try:
+        reqs = {r.id: r for r in (await db.execute(
+            select(Request).where(Request.id.in_([b.request_id for b in blocks])))).scalars().all()}
+        episodes: dict[uuid.UUID, Episode | None] = {}
+        for b in blocks:
+            req = reqs.get(b.request_id)
+            if req is None:
+                continue
+            if b.episode_id not in episodes:
+                episodes[b.episode_id] = await db.get(Episode, b.episode_id)
+            ep = episodes[b.episode_id]
+            if req.fulfilled_episode_id == b.episode_id:
+                continue  # one_off already fulfilled by this episode
+            if ep is not None and req.last_answered_at is not None:
+                created = ep.creado_en if ep.creado_en.tzinfo else ep.creado_en.replace(tzinfo=timezone.utc)
+                answered = req.last_answered_at if req.last_answered_at.tzinfo \
+                    else req.last_answered_at.replace(tzinfo=timezone.utc)
+                if answered >= created:
+                    continue  # already answered at/after this episode was built
+            req.last_answered_at = datetime.now(timezone.utc)
+            if req.kind.value == "one_off":
+                req.status = RequestStatus.fulfilled
+                req.fulfilled_episode_id = b.episode_id
+            await emitir(db, "request_answered", customer_id=cliente.id, source="episode_generator",
+                         request_id=str(req.id), episode_id=str(b.episode_id), had_more=bool(b.had_more))
+        await db.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("could not mark requests answered; episode stays published")
+        await db.rollback()
 
 
 async def _revoice_late_capsules(db: AsyncSession, cliente: Cliente, job: GenerationJob) -> None:
@@ -580,6 +602,10 @@ async def _revoice_late_capsules(db: AsyncSession, cliente: Cliente, job: Genera
     endpoint only. One try per call, spaced by LATE_REVOICE_BACKOFF_S, capped by
     VOICE_MAX_TOTAL_ATTEMPTS, and refused while the spend guard refuses.
     """
+    # OFF by default: no shipped client can play a late capsule, so paying for
+    # it would buy audio nobody hears (see settings.CAPSULE_LATE_REVOICE_ENABLED).
+    if not settings.CAPSULE_LATE_REVOICE_ENABLED:
+        return
     if job.status != JobStatus.ready or not ai_platform.elevenlabs_configured():
         return
     episode = (await db.execute(
@@ -591,7 +617,10 @@ async def _revoice_late_capsules(db: AsyncSession, cliente: Cliente, job: Genera
     if episode is None:
         return
     blocks = list((await db.execute(select(Block).where(Block.episode_id == episode.id))).scalars().all())
-    due = [b for b in blocks if capsules.late_revoice_due(b, episode)]
+    # Tight bound: at most LATE_REVOICE_PER_CALL capsules, one try each, so a
+    # POST /run on a ready job never blocks for long.
+    due = [b for b in sorted(blocks, key=capsules.sort_key)
+           if capsules.late_revoice_due(b, episode)][:capsules.LATE_REVOICE_PER_CALL]
     if not due:
         return
     try:
@@ -603,12 +632,13 @@ async def _revoice_late_capsules(db: AsyncSession, cliente: Cliente, job: Genera
         db, cliente_id=cliente.id, episode=episode, blocks=due,
         voice_id=perfil.voice_id if perfil else None, max_tries=1,
     )
-    await _mark_answered(db, cliente, [b for b in due if b.audio_status == capsules.VOICED])
-    job.stages = [*job.stages, {
-        "stage": "capsule_revoice", "cost": outcome.spent,
-        "voiced": len([b for b in due if b.audio_status == capsules.VOICED]),
-    }]
-    await db.commit()
+    # A late capsule is NOT marked answered / told: it is outside the file the
+    # shipped client plays (capsules.counts_as_delivered is False for it).
+    if outcome.spent or outcome.voiced:
+        job.stages = [*job.stages, {
+            "stage": "capsule_revoice", "cost": outcome.spent, "voiced": len(outcome.voiced),
+        }]
+        await db.commit()
 
 
 async def _revoice_failed_job(db: AsyncSession, cliente: Cliente, job: GenerationJob) -> bool:
@@ -683,8 +713,17 @@ async def _revoice_failed_job(db: AsyncSession, cliente: Cliente, job: Generatio
     perfil = await db.get(Profile, cliente.id)
     voice_id = perfil.voice_id if perfil else None
 
-    job.retry_count += 1
-    await _advance_status_unless_late(db, job, JobStatus.voicing)
+    # Atomic claim of the JOB: only one overlapping caller re-voices it.
+    claim = await db.execute(
+        update(GenerationJob)
+        .where(GenerationJob.id == job.id, GenerationJob.status == JobStatus.failed)
+        .values(status=JobStatus.voicing, retry_count=GenerationJob.retry_count + 1)
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+    await db.refresh(job)
+    if claim.rowcount != 1:
+        return False  # lost the race: the job is now `voicing`, so callers return it unchanged
     start = time.monotonic()
     await emitir(db, "stage_started", customer_id=cliente.id, source="episode_generator",
                  job_id=str(job.id), stage="revoicing")

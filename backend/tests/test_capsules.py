@@ -6,9 +6,10 @@ Fakes only: research/write are the usual pipeline fakes, and
 `ai_platform.synthesize` is replaced by FakeTTS (known durations, scripted
 failures). Nothing here reaches Anthropic or ElevenLabs.
 """
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, time as dt_time, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -16,6 +17,7 @@ import pytest
 from sqlalchemy import select
 
 from app.api.deps import get_current_cliente
+from app.core.config import settings
 from app.db.session import get_db
 from app.main import app
 from app.models.cliente import AuthProvider, Cliente
@@ -28,7 +30,7 @@ from app.services import ai_platform, capsules, told_log
 from app.services.episode_generator import run_generation
 from tests.fakes import fake_findings
 
-TOPICS = {"alpha": 10, "beta": 20, "gamma": 30}  # marker -> real audio seconds
+TOPICS = {"alpha": 10.4, "beta": 20.4, "gamma": 30.4}  # marker -> real audio seconds (fractional on purpose: rounding each would drift)
 
 
 class FakeTTS:
@@ -36,10 +38,11 @@ class FakeTTS:
     concatenated file's order is checkable; the last word timestamp carries the
     'real' duration. `fail[marker]` = how many calls for it raise first."""
 
-    def __init__(self, fail: dict[str, int] | None = None, guard: bool = False, charge: float = 0.0):
+    def __init__(self, fail: dict[str, int] | None = None, guard: bool = False, charge: float = 0.0,
+                 delay: float = 0.0, fail_msg: str = "provider 503"):
         self.fail = dict(fail or {})
         self.calls: list[str] = []
-        self.guard, self.charge = guard, charge
+        self.guard, self.charge, self.delay, self.fail_msg = guard, charge, delay, fail_msg
 
     async def __call__(self, db, text, voice_id, customer_id, request_id=None, episode_id=None,
                        with_timestamps=True):
@@ -47,9 +50,11 @@ class FakeTTS:
         if self.guard:
             await ai_platform.guard_paid_call(db, customer_id, "synthesize")
         self.calls.append(marker)
+        if self.delay:
+            await asyncio.sleep(self.delay)
         if self.fail.get(marker, 0) > 0:
             self.fail[marker] -= 1
-            raise RuntimeError(f"provider 503 for {marker}")
+            raise RuntimeError(f"{self.fail_msg} for {marker}")
         if self.charge:
             db.add(AICall(call_id=uuid.uuid4(), prompt="synthesize", version="v1", purpose="synthesize",
                           model="m", provider="elevenlabs", characters=len(text), cost=self.charge,
@@ -183,14 +188,19 @@ async def test_concatenation_order_and_offsets_use_real_durations(full_db_sessio
     expected_bytes = b"".join(f"AUDIO[{_marker(b)}]".encode() for b in voiced)
     assert _file_bytes(ep.audio_url) == expected_bytes
 
-    cursor = 0
+    # Offsets accumulate the REAL fractional durations and round only at the
+    # edges: summing per-capsule rounded ints would put the second capsule's
+    # end at 10 + 30 = 40 instead of round(10.4 + 30.4) = 41.
+    cursor = 0.0
     for b in voiced:
-        assert b.duration_s == TOPICS[_marker(b)]  # real, not the 150 wpm estimate
-        assert (b.start_s, b.end_s) == (cursor, cursor + TOPICS[_marker(b)])
+        d = TOPICS[_marker(b)]
+        assert b.duration_s == round(d)  # display value only
+        assert (b.start_s, b.end_s) == (round(cursor), round(cursor + d))
         assert _file_bytes(b.audio_url) == f"AUDIO[{_marker(b)}]".encode()
-        assert b.word_timestamps[-1]["end_s"] == TOPICS[_marker(b)]  # capsule-relative
-        cursor += TOPICS[_marker(b)]
-    assert ep.duration_s == cursor
+        assert b.word_timestamps[-1]["end_s"] == d  # capsule-relative
+        cursor += d
+    assert voiced[-1].end_s == round(cursor) != sum(b.duration_s for b in voiced)  # no per-capsule rounding drift
+    assert ep.duration_s == round(cursor)
     failed = next(b for b in blocks if b.audio_status == "failed")
     assert failed.start_s == failed.end_s  # zero-length: not in the file
 
@@ -223,6 +233,7 @@ def test_mp3_probe_and_duration_fallbacks():
 # ── never rewritten after publish; late retry; bounded ──────────────────────
 
 async def test_late_retry_voices_the_capsule_without_touching_the_published_file(full_db_session, monkeypatch):
+    monkeypatch.setattr(settings, "CAPSULE_LATE_REVOICE_ENABLED", True)
     tts = FakeTTS(fail={"beta": 3})  # exactly the first pass's tries
     _arrange(monkeypatch, tts)
     db = full_db_session
@@ -237,7 +248,7 @@ async def test_late_retry_voices_the_capsule_without_touching_the_published_file
     assert again.status == JobStatus.ready
     blocks = await _blocks(db, ep)
     beta = next(b for b in blocks if _marker(b) == "beta")
-    assert beta.audio_status == "voiced" and beta.audio_url and beta.duration_s == TOPICS["beta"]
+    assert beta.audio_status == "voiced" and beta.audio_url and beta.duration_s == round(TOPICS["beta"])
     assert [(b.id, b.start_s, b.end_s) for b in blocks] == before  # offsets untouched
     assert ep.audio_url == url and ep.published_at == published
     assert _file_bytes(ep.audio_url) == data  # the published file is never rewritten
@@ -252,6 +263,7 @@ async def test_late_retry_voices_the_capsule_without_touching_the_published_file
 
 
 async def test_retries_are_bounded_over_many_polls(full_db_session, monkeypatch):
+    monkeypatch.setattr(settings, "CAPSULE_LATE_REVOICE_ENABLED", True)
     tts = FakeTTS(fail={"beta": 10_000})
     _arrange(monkeypatch, tts)
     db = full_db_session
@@ -264,6 +276,7 @@ async def test_retries_are_bounded_over_many_polls(full_db_session, monkeypatch)
 
 
 async def test_late_retry_respects_its_backoff_window(full_db_session, monkeypatch):
+    monkeypatch.setattr(settings, "CAPSULE_LATE_REVOICE_ENABLED", True)
     tts = FakeTTS(fail={"beta": 10_000})
     _arrange(monkeypatch, tts)
     db = full_db_session
@@ -315,24 +328,248 @@ async def test_legacy_null_status_still_counts_as_told(full_db_session):
     assert await told_log.recent_for_request(db, customer_id=c.id, request_id=req.id) == ["old row"]
 
 
-async def test_one_off_is_fulfilled_only_once_its_capsule_is_voiced(full_db_session, monkeypatch):
+@pytest.mark.parametrize("late_on", [False, True])
+async def test_failed_one_off_stays_active_and_untold_whatever_the_late_flag(full_db_session, monkeypatch, late_on):
+    """A late capsule is outside the file the shipped client plays, so it never
+    counts as delivered: the one_off stays active and is not 'told'."""
+    monkeypatch.setattr(settings, "CAPSULE_LATE_REVOICE_ENABLED", late_on)
     tts = FakeTTS(fail={"beta": 3})
     _arrange(monkeypatch, tts)
     db = full_db_session
     c = await _customer(db, one_off=("beta",))
     await run_generation(db, c)
+    await run_generation(db, c)
+    await run_generation(db, c)
     beta_req = (await db.execute(select(Request).where(Request.customer_id == c.id,
                                                        Request.raw_text == "beta topic"))).scalar_one()
-    assert beta_req.status == RequestStatus.active and beta_req.fulfilled_episode_id is None
-
-    await run_generation(db, c)  # late retry succeeds
-    await run_generation(db, c)  # and a further poll must not answer it twice
     await db.refresh(beta_req)
-    ep = await _episode(db, c)
-    assert beta_req.status == RequestStatus.fulfilled and beta_req.fulfilled_episode_id == ep.id
-    answered = [e for e in (await db.execute(select(Event).where(Event.name == "request_answered"))).scalars()
+    assert beta_req.status == RequestStatus.active and beta_req.fulfilled_episode_id is None
+    assert not [e for e in (await db.execute(select(Event).where(Event.name == "request_answered"))).scalars()
                 if e.payload.get("request_id") == str(beta_req.id)]
-    assert len(answered) == 1
+    assert await told_log.recent_for_request(db, customer_id=c.id, request_id=beta_req.id) == []
+    beta = next(b for b in await _blocks(db, await _episode(db, c)) if _marker(b) == "beta")
+    if late_on:
+        assert beta.audio_status == "voiced" and not capsules.is_in_legacy_file(beta)
+    else:
+        assert beta.audio_status == "failed" and tts.calls.count("beta") == 3  # no paid late retry
+
+
+async def test_mark_answered_is_idempotent(full_db_session, monkeypatch):
+    from app.services.episode_generator import _mark_answered
+    _arrange(monkeypatch, FakeTTS())
+    db = full_db_session
+    c = await _customer(db, one_off=("beta",))
+    await run_generation(db, c)
+    blocks = await _blocks(db, await _episode(db, c))
+    await _mark_answered(db, c, blocks)  # e.g. a pre-deploy episode re-voiced after deploy
+    events = (await db.execute(select(Event).where(Event.name == "request_answered"))).scalars().all()
+    assert len(events) == 3
+
+
+# ── atomic claim / concurrency ──────────────────────────────────────────────
+
+async def _unvoiced_episode(db, c, statuses: dict[str, tuple[str | None, int]]) -> Episode:
+    ep = Episode(customer_id=c.id, fecha=datetime.now(timezone.utc).date(), path=EpisodePath.on_demand)
+    db.add(ep)
+    await db.flush()
+    reqs = {r.raw_text: r for r in (await db.execute(select(Request).where(Request.customer_id == c.id))).scalars()}
+    for seq, (marker, (status, attempts)) in enumerate(statuses.items()):
+        db.add(Block(episode_id=ep.id, request_id=reqs[f"{marker} topic"].id, start_s=0, end_s=0,
+                     summary=f"Summary {marker} topic", script=f"Script {marker} topic. " * 8,
+                     sequence=seq, audio_status=status, voice_attempts=attempts))
+    await db.commit()
+    return ep
+
+
+async def test_overlapping_passes_pay_once_per_capsule(full_db_session, monkeypatch):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    tts = FakeTTS(delay=0.05)
+    _arrange(monkeypatch, tts)
+    db = full_db_session
+    c = await _customer(db)
+    ep = await _unvoiced_episode(db, c, {m: ("pending", 0) for m in TOPICS})
+    maker = async_sessionmaker(db.bind, expire_on_commit=False)
+
+    async def _pass():
+        async with maker() as s:
+            blocks = list((await s.execute(select(Block).where(Block.episode_id == ep.id))).scalars())
+            ep_s = await s.get(Episode, ep.id)
+            return await capsules.voice_pending(s, cliente_id=c.id, episode=ep_s, blocks=blocks, voice_id=None)
+
+    a, b = await asyncio.gather(_pass(), _pass())
+
+    assert sorted(tts.calls) == sorted(TOPICS)  # exactly one paid synthesis per capsule
+    await db.rollback()
+    blocks = await _blocks(db, ep)
+    assert [x.audio_status for x in blocks] == ["voiced"] * 3
+    assert all(x.voice_attempts == 1 and x.audio_url for x in blocks)
+    assert len(a.voiced) + len(b.voiced) >= 3
+    files = {x.audio_url for x in blocks}
+    assert len(files) == 3
+
+
+async def test_overlapping_run_generation_revoices_a_failed_job_once(full_db_session, monkeypatch):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    _arrange(monkeypatch, FakeTTS(fail={m: 99 for m in TOPICS}))
+    db = full_db_session
+    c = await _customer(db)
+    job = await run_generation(db, c)
+    assert job.status == JobStatus.failed
+    tts = FakeTTS(delay=0.05)
+    monkeypatch.setattr(ai_platform, "synthesize", tts)
+    maker = async_sessionmaker(db.bind, expire_on_commit=False)
+
+    async def _run():
+        async with maker() as s:
+            return await run_generation(s, c)
+
+    r1, r2 = await asyncio.gather(_run(), _run())
+
+    assert sorted(tts.calls) == sorted(TOPICS)
+    assert {r1.id, r2.id} == {job.id}
+    await db.rollback()
+    await db.refresh(job)
+    assert job.status == JobStatus.ready and job.retry_count == 1
+    ep = await _episode(db, c)
+    assert ep.audio_url and [b.audio_status for b in await _blocks(db, ep)] == ["voiced"] * 3
+
+
+async def test_a_crashed_voicing_claim_is_reclaimed_after_the_lease(full_db_session, monkeypatch):
+    tts = FakeTTS()
+    _arrange(monkeypatch, tts)
+    db = full_db_session
+    c = await _customer(db)
+    ep = await _unvoiced_episode(db, c, {"alpha": ("voicing", 1), "beta": ("voicing", 1)})
+    blocks = await _blocks(db, ep)
+    now = datetime.now(timezone.utc)
+    blocks[0].voicing_started_at = now  # live claim by another worker
+    blocks[1].voicing_started_at = now - timedelta(seconds=capsules.VOICE_LEASE_S + 5)  # crashed
+    await db.commit()
+
+    out = await capsules.voice_pending(db, cliente_id=c.id, episode=ep, blocks=blocks, voice_id=None)
+
+    assert tts.calls == ["beta"]
+    assert [b.audio_status for b in blocks] == ["voicing", "voiced"]
+    assert blocks[1].voice_attempts == 2 and len(out.skipped) == 1
+    assert not capsules.is_in_legacy_file(blocks[0]) and not capsules.counts_as_delivered(blocks[0])
+
+
+# ── retry policy ────────────────────────────────────────────────────────────
+
+async def test_4xx_is_not_retried(full_db_session, monkeypatch):
+    tts = FakeTTS(fail={"beta": 99}, fail_msg="ElevenLabs synthesize failed: HTTP 401: invalid key")
+    _arrange(monkeypatch, tts)
+    c = await _customer(full_db_session)
+    await run_generation(full_db_session, c)
+    beta = next(b for b in await _blocks(full_db_session, await _episode(full_db_session, c))
+                if _marker(b) == "beta")
+    assert tts.calls.count("beta") == 1 and beta.audio_status == "failed" and beta.voice_attempts == 1
+
+
+async def test_pass_stops_after_two_consecutive_exhausted_capsules(full_db_session, monkeypatch):
+    tts = FakeTTS(fail={m: 99 for m in TOPICS})
+    _arrange(monkeypatch, tts)
+    c = await _customer(full_db_session)
+    job = await run_generation(full_db_session, c)
+    assert job.status == JobStatus.failed
+    assert len(tts.calls) == 2 * capsules.VOICE_MAX_ATTEMPTS  # the third capsule was never tried
+    blocks = await _blocks(full_db_session, await _episode(full_db_session, c))
+    assert [b.voice_attempts for b in blocks] == [3, 3, 0]
+    assert [b.audio_status for b in blocks] == ["failed"] * 3
+
+
+async def test_a_persistence_failure_counts_as_an_attempt_and_is_retried(full_db_session, monkeypatch):
+    tts = FakeTTS()
+    _arrange(monkeypatch, tts)
+    real, n = capsules._write_capsule_file, {"n": 0}
+
+    def _flaky(audio):
+        n["n"] += 1
+        if n["n"] == 1:
+            raise OSError("disk full")
+        return real(audio)
+
+    monkeypatch.setattr(capsules, "_write_capsule_file", _flaky)
+    c = await _customer(full_db_session)
+    job = await run_generation(full_db_session, c)
+    blocks = await _blocks(full_db_session, await _episode(full_db_session, c))
+    assert job.status == JobStatus.ready and [b.audio_status for b in blocks] == ["voiced"] * 3
+    assert sorted(b.voice_attempts for b in blocks) == [1, 1, 2]  # the lost synthesis was counted
+
+
+async def test_refusal_does_not_overwrite_an_exhausted_failure_and_wins_the_error(full_db_session, monkeypatch):
+    c = await _customer(full_db_session)
+    ep = await _unvoiced_episode(full_db_session, c, {
+        "alpha": ("pending", 0), "beta": ("failed", capsules.VOICE_MAX_TOTAL_ATTEMPTS), "gamma": ("pending", 0)})
+    _arrange(monkeypatch, FakeTTS())
+
+    async def _refuse(*a, **kw):
+        raise ai_platform.AIKillSwitchError("synthesize")
+
+    monkeypatch.setattr(ai_platform, "synthesize", _refuse)
+    blocks = await _blocks(full_db_session, ep)
+    out = await capsules.voice_pending(full_db_session, cliente_id=c.id, episode=ep, blocks=blocks, voice_id=None)
+    assert [b.audio_status for b in blocks] == ["blocked", "failed", "blocked"]
+    assert isinstance(out.report_error, ai_platform.AIKillSwitchError)
+
+
+async def test_budget_refusal_outranks_provider_errors_in_the_job_failure(full_db_session, monkeypatch):
+    _arrange(monkeypatch, FakeTTS())
+    n = {"n": 0}
+
+    async def _synth(db, text, *a, **kw):
+        n["n"] += 1
+        if n["n"] <= capsules.VOICE_MAX_ATTEMPTS:
+            raise RuntimeError("provider 503")
+        raise ai_platform.AIKillSwitchError("synthesize")
+
+    monkeypatch.setattr(ai_platform, "synthesize", _synth)
+    c = await _customer(full_db_session)
+    job = await run_generation(full_db_session, c)
+    assert job.status == JobStatus.failed and any(s.get("code") == "ai_paused" for s in job.stages)
+
+
+async def test_a_missing_capsule_file_at_build_time_is_marked_failed(full_db_session, monkeypatch):
+    c = await _customer(full_db_session)
+    ep = await _unvoiced_episode(full_db_session, c, {"alpha": ("voiced", 1), "beta": ("voiced", 1)})
+    blocks = await _blocks(full_db_session, ep)
+    blocks[0].audio_url = capsules._write_capsule_file(b"AUDIO[alpha]")
+    blocks[0].duration_s = 5
+    blocks[1].audio_url = f"{settings.PUBLIC_BASE_URL}/media/capsule-{uuid.uuid4().hex}.mp3"  # never written
+    await full_db_session.commit()
+    n = await capsules.build_concatenated_file(full_db_session, ep, blocks)
+    assert n == 1 and blocks[1].audio_status == "failed" and blocks[1].start_s == blocks[1].end_s
+
+
+# ── mp3 container handling ──────────────────────────────────────────────────
+
+def _frames(n, header=bytes([0xFF, 0xFB, 0x90, 0x00]), length=417):
+    return (header + b"\x00" * (length - 4)) * n
+
+
+def test_mp3_mpeg2_xing_trailer_and_damage():
+    # MPEG-2 Layer III, 64 kbps, 22.05 kHz: 72 * 64000 // 22050 = 208 bytes/frame, 576 samples
+    v2 = _frames(50, bytes([0xFF, 0xF3, 0x80, 0x00]), 208)
+    assert capsules.probe_mp3_duration(v2) == pytest.approx(50 * 576 / 22050)
+
+    audio = _frames(100)
+    xing_frame = bytearray(_frames(1))
+    xing_frame[36:40] = b"Xing"  # MPEG-1 stereo: tag after 4 + 32 bytes of side info
+    with_xing = bytes(xing_frame) + audio
+    assert capsules.probe_mp3_duration(with_xing) == pytest.approx(100 * 1152 / 44100)  # metadata frame not counted
+    assert capsules.strip_mp3_container(with_xing) == audio
+
+    tagged = b"ID3\x04\x00\x00\x00\x00\x00\x0a" + b"\x00" * 10 + audio + b"TAG" + b"\x00" * 125
+    assert capsules.probe_mp3_duration(tagged) == pytest.approx(100 * 1152 / 44100)
+    assert capsules.strip_mp3_container(tagged) == audio
+
+    cut = audio[:-100]  # truncated inside the last frame: complete frames still count
+    assert capsules.probe_mp3_duration(cut) == pytest.approx(99 * 1152 / 44100)
+
+    damaged = _frames(10) + b"\x00" * 3000 + _frames(10)  # garbage mid-stream: do not return a partial total
+    assert capsules.probe_mp3_duration(damaged) is None
+    assert capsules.strip_mp3_container(b"not mp3") == b"not mp3"
+
 
 
 # ── budget ──────────────────────────────────────────────────────────────────
@@ -411,10 +648,10 @@ async def test_playlist_shape_ownership_and_404(full_db_session, monkeypatch):
     assert failed["audio_url"] is None and failed["duration_s"] is None
     assert failed["start_s"] is None and failed["end_s"] is None
     ok = [i for i in body["items"] if i["audio_status"] == "voiced"]
-    expected, cursor = [], 0
+    expected, cursor = [], 0.0
     for b in (b for b in blocks if b.audio_status == "voiced"):
         d = TOPICS[_marker(b)]
-        expected.append((cursor, cursor + d, d))
+        expected.append((round(cursor), round(cursor + d), round(d)))
         cursor += d
     assert [(i["start_s"], i["end_s"], i["duration_s"]) for i in ok] == expected
 
@@ -476,3 +713,41 @@ async def test_without_tts_everything_stays_legacy(full_db_session, monkeypatch)
     async with _client(db, c) as client:
         body = (await client.get(f"/api/generation/episodes/{ep.id}/playlist")).json()
     assert [i["audio_status"] for i in body["items"]] == ["legacy"] * 3
+
+
+# ── history count, account export and deletion ──────────────────────────────
+
+async def test_history_blocks_count_matches_the_visible_blocks(full_db_session, monkeypatch):
+    _arrange(monkeypatch, FakeTTS(fail={"beta": 99}))
+    db = full_db_session
+    c = await _customer(db)
+    await run_generation(db, c)
+    async with _client(db, c) as client:
+        items = (await client.get("/api/episodes")).json()["items"]
+    assert items[0]["blocks_count"] == 2
+
+
+async def test_account_export_and_deletion_cover_capsule_audio(full_db_session, monkeypatch):
+    _arrange(monkeypatch, FakeTTS())
+    db = full_db_session
+    c = await _customer(db)
+    await run_generation(db, c)
+    ep = await _episode(db, c)
+    blocks = await _blocks(db, ep)
+    paths = [capsules.media_path(u) for u in [ep.audio_url, *[b.audio_url for b in blocks]]]
+    assert all(p.exists() for p in paths)
+
+    async with _client(db, c) as client:
+        exported = (await client.get("/api/account/export")).json()
+        assert {b["audio_url"] for b in exported["episodes"][0]["blocks"]} == {b.audio_url for b in blocks}
+
+        blocks[0].audio_status = "voicing"  # a capsule is being voiced right now
+        blocks[0].voicing_started_at = datetime.now(timezone.utc)
+        await db.commit()
+        assert (await client.delete("/api/account")).status_code == 409
+        assert all(p.exists() for p in paths)
+
+        blocks[0].audio_status = "voiced"
+        await db.commit()
+        assert (await client.delete("/api/account")).status_code == 200
+    assert not any(p.exists() for p in paths)

@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # audio still resolves without extra config; override via env if that changes.
     PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "https://audio-production-2a77.up.railway.app")
 
+    # Audio capsules: whether a failed capsule of an already-published episode
+    # is voiced again later. OFF until the Phase 1b iOS client can play the
+    # per-capsule audio (the shipped client only plays the concatenated file,
+    # so a late capsule would be paid for and never heard).
+    CAPSULE_LATE_REVOICE_ENABLED: bool = os.getenv("CAPSULE_LATE_REVOICE_ENABLED", "").strip().lower() in ("1", "true", "yes")
+
     # Shared-secret gate for internal-only endpoints — the founder/ops-only
     # Instrumentation dashboard (app/api/routes/instrumentation.py) and the AI
     # Platform prompt registry's GET /api/internal/prompts both use this same

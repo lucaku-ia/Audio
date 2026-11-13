@@ -29,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.episode import Block, Episode
+from app.services import capsules
 
 # How many previous segments to carry. Three is roughly a working week of a
 # topic the listener follows daily — enough for "this is the third day of
@@ -71,7 +72,7 @@ async def recent_for_request(
             # Capsules: a block whose own audio failed or was budget-blocked
             # was never heard even though its episode published. NULL status
             # is a legacy row and counts as delivered.
-            Block.audio_status.is_(None) | (Block.audio_status == "voiced"),
+            capsules.delivered_clause(),
         )
         .order_by(Episode.published_at.desc(), Block.sequence, Block.start_s)
         .limit(limit)

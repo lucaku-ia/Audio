@@ -53,6 +53,7 @@ COLUMNAS_ESPERADAS: list[tuple[str, str, str]] = [
     ("blocks", "audio_status", "VARCHAR(20)"),
     ("blocks", "voice_attempts", "INTEGER DEFAULT 0"),
     ("blocks", "sequence", "INTEGER DEFAULT 0"),
+    ("blocks", "voicing_started_at", "TIMESTAMPTZ"),
     ("episodes", "playlist_version", "INTEGER DEFAULT 1"),
 ]
 

@@ -72,6 +72,9 @@ class Block(Base):
     audio_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     duration_s: Mapped[int | None] = mapped_column(Integer, nullable=True)  # REAL audio length, not the wpm estimate
     audio_status: Mapped[str | None] = mapped_column(String(20), nullable=True)  # pending|voiced|failed|blocked
+    # Lease for the atomic voicing claim (audio_status='voicing'): a crashed
+    # worker's claim is reclaimable once this is older than capsules.VOICE_LEASE_S.
+    voicing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     voice_attempts: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
     # Position in the episode; start_s alone cannot order capsules that are not
     # in the concatenated file (they share a zero-length offset).

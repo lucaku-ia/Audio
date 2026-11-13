@@ -1183,12 +1183,28 @@ async def synthesize(
         url += "/with-timestamps"
 
     start = time.monotonic()
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(
-            url,
-            headers={"xi-api-key": api_key, "Accept": "audio/mpeg", "Content-Type": "application/json"},
-            json={"text": text, "model_id": _ELEVENLABS_MODEL},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                url,
+                headers={"xi-api-key": api_key, "Accept": "audio/mpeg", "Content-Type": "application/json"},
+                json={"text": text, "model_id": _ELEVENLABS_MODEL},
+            )
+    except httpx.HTTPError as exc:
+        # A timeout or dropped connection may still have been billed by the
+        # provider. Record an ESTIMATED cost so the per-customer budget sees
+        # it (it would otherwise be invisible: no response, no AICall row).
+        db.add(AICall(
+            call_id=uuid.uuid4(), prompt="synthesize", version="v1", purpose="synthesize",
+            model=_ELEVENLABS_MODEL, provider="elevenlabs", characters=len(text),
+            cost=(len(text) / 1000) * _ELEVENLABS_PRICE_PER_1K_CHARS,
+            latency_ms=int((time.monotonic() - start) * 1000),
+            context={"customer_id": str(customer_id), "request_id": str(request_id) if request_id else None,
+                     "episode_id": str(episode_id) if episode_id else None, "cost_estimated": True},
+            rejected_reason=f"{type(exc).__name__}: cost estimated, provider may have billed"[:200],
+            creado_en=datetime.now(timezone.utc),
+        ))
+        raise RuntimeError(f"ElevenLabs synthesize failed: transport error {type(exc).__name__}") from exc
     latency_ms = int((time.monotonic() - start) * 1000)
 
     if response.status_code >= 400:

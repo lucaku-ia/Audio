@@ -30,7 +30,8 @@ from app.services import capsules, told_log
 
 NEW_COLUMNS = [
     ("blocks", "audio_url"), ("blocks", "duration_s"), ("blocks", "audio_status"),
-    ("blocks", "voice_attempts"), ("blocks", "sequence"), ("episodes", "playlist_version"),
+    ("blocks", "voice_attempts"), ("blocks", "sequence"), ("blocks", "voicing_started_at"),
+    ("episodes", "playlist_version"),
 ]
 
 
