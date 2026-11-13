@@ -206,6 +206,14 @@ async def test_every_paid_entry_point_is_guarded(full_db_session, monkeypatch):
 
 # ── generation degrades gracefully ──────────────────────────────────────────
 
+async def _run(db, cliente):
+    """run_generation rolls back on failure, which expires `cliente`; real
+    routes reload it per request, so the tests refresh it here."""
+    job = await run_generation(db, cliente)
+    await db.refresh(cliente)
+    return job
+
+
 def _real_guard_with_fake_pipeline(monkeypatch):
     """Research/write are faked but run the real guard first, like production."""
     patch_ai_pipeline(monkeypatch)
@@ -223,7 +231,7 @@ async def test_generation_over_budget_fails_cleanly_and_does_not_retry(full_db_s
     c = await _customer(full_db_session)
     await _spend(full_db_session, c.id, 0.80)
 
-    job = await run_generation(full_db_session, c)
+    job = await _run(full_db_session, c)
 
     assert job.status == JobStatus.failed
     assert job.stages == [{"error": "budget_exceeded", "code": "budget_exceeded"}]  # no exception text leaks
@@ -232,7 +240,7 @@ async def test_generation_over_budget_fails_cleanly_and_does_not_retry(full_db_s
 
     # Calling again while still over budget hands back the same job: no new
     # run, no retry_count bump, no extra events, no loop.
-    again = await run_generation(full_db_session, c)
+    again = await _run(full_db_session, c)
     assert again.id == job.id and again.started_new_run is False
     assert again.retry_count == job.retry_count
     assert len(await _events(full_db_session, "job_failed")) == 1
@@ -243,12 +251,12 @@ async def test_blocked_job_reruns_once_the_guard_allows_it(full_db_session, monk
     _real_guard_with_fake_pipeline(monkeypatch)
     c = await _customer(full_db_session)
 
-    job = await run_generation(full_db_session, c)
+    job = await _run(full_db_session, c)
     assert job.status == JobStatus.failed and job.stages[0]["code"] == "ai_paused"
-    assert (await run_generation(full_db_session, c)).started_new_run is False  # still paused
+    assert (await _run(full_db_session, c)).started_new_run is False  # still paused
 
     monkeypatch.setenv("AI_GLOBAL_KILL_SWITCH", "false")
-    job = await run_generation(full_db_session, c)
+    job = await _run(full_db_session, c)
     # (With no TTS key the pipeline leaves the job on `voicing` — pre-existing;
     # what matters here is that it ran again and did not fail.)
     assert job.started_new_run is True and job.status != JobStatus.failed
@@ -259,7 +267,7 @@ async def test_home_banner_keeps_its_existing_states_for_a_blocked_job(full_db_s
     monkeypatch.setenv("AI_GLOBAL_KILL_SWITCH", "1")
     _real_guard_with_fake_pipeline(monkeypatch)
     c = await _customer(full_db_session)
-    job = await run_generation(full_db_session, c)
+    job = await _run(full_db_session, c)
     assert job.status == JobStatus.failed
 
     banner = await _derive_banner(full_db_session, c)
