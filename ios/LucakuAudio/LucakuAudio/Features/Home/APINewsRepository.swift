@@ -30,7 +30,7 @@ final class APINewsRepository: NewsRepository {
             items = try await fetchAll(scope: scope, token: token)
         }
         lastScope = scope
-        return items.items.map(Self.story(from:))
+        return items.items.map { Self.story(from: $0) }
     }
 
     func setRead(id: String, read: Bool, token: String) async throws {
