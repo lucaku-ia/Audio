@@ -47,6 +47,10 @@ class JobOut(BaseModel):
     # and was never the thing that started or didn't start anything, so it's
     # left null there rather than guessed.
     run_started: bool | None = None
+    # Additive. Stable reason code when the job failed because the AI spend
+    # guard refused it ("budget_exceeded" daily limit, "ai_paused" kill
+    # switch); null otherwise. Safe to show as a short message.
+    failure_code: str | None = None
 
 
 class BlockOut(BaseModel):
@@ -103,9 +107,13 @@ class EpisodeOut(BaseModel):
 
 
 def _job_out(job: GenerationJob, run_started: bool | None = None) -> JobOut:
+    stages = job.stages or []
+    failure_code = next(
+        (st.get("code") for st in reversed(stages) if isinstance(st, dict) and st.get("code")), None
+    ) if job.status.value == "failed" else None
     return JobOut(
         id=str(job.id), fecha=job.fecha, path=job.path.value, status=job.status.value,
-        creado_en=job.creado_en, stages=job.stages or [], run_started=run_started,
+        creado_en=job.creado_en, stages=stages, run_started=run_started, failure_code=failure_code,
     )
 
 
