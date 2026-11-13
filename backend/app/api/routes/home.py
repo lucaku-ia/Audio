@@ -76,6 +76,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
 from app.api.routes.generation import _block_common_fields
+from app.services import capsules
 from app.api.routes.news import NewsListOut, fetch_news_page
 from app.api.routes.requests import CrearRequestBody, RequestOut, crear_request
 from app.models.profile import Profile
@@ -239,7 +240,7 @@ async def _derive_banner(db: AsyncSession, cliente: Cliente) -> BannerOut:
         blocks_result = await db.execute(
             select(Block).where(Block.episode_id == episode.id).order_by(Block.start_s)
         )
-        all_blocks = blocks_result.scalars().all()
+        all_blocks = [b for b in blocks_result.scalars().all() if capsules.is_in_legacy_file(b)]
         answered_blocks = [b for b in all_blocks if b.request_id is not None]
         return BannerOut(
             state="ready",

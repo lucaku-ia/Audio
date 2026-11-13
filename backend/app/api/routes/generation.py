@@ -25,6 +25,7 @@ from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.episode import Block, Episode
 from app.models.generation_job import GenerationJob
+from app.services import capsules
 from app.services.episode_generator import run_generation
 
 router = APIRouter(prefix="/generation", tags=["Episode Generator"])
@@ -104,6 +105,34 @@ class EpisodeOut(BaseModel):
     had_more_any: bool
     published_at: datetime | None
     blocks: list[BlockOut]
+    # Additive: 1 = legacy single file, 2 = built from per-capsule audio (see
+    # GET /episodes/{id}/playlist). blocks[] lists only blocks whose audio is
+    # inside audio_url, so a capsule that failed to voice is not seekable here.
+    playlist_version: int | None = None
+
+
+class PlaylistItemOut(BaseModel):
+    block_id: str
+    request_id: str | None
+    sequence: int  # 0-based position in the episode
+    title: str  # the capsule's one-line topic (same text as summary)
+    summary: str
+    duration_s: int | None  # real audio length; null until voiced (legacy rows: end_s - start_s)
+    audio_url: str | None  # the capsule's own file; null when not voiced (and for legacy rows)
+    # pending | voiced | failed | blocked | legacy (audio exists only inside the
+    # episode's concatenated file, e.g. an episode made before capsules).
+    audio_status: str
+    # Offsets inside Episode.audio_url; null when the capsule is not in that file.
+    start_s: int | None
+    end_s: int | None
+
+
+class PlaylistOut(BaseModel):
+    episode_id: str
+    playlist_version: int
+    published: bool
+    audio_url: str | None  # the legacy concatenated file; null until published
+    items: list[PlaylistItemOut]
 
 
 def _job_out(job: GenerationJob, run_started: bool | None = None) -> JobOut:
@@ -162,8 +191,48 @@ async def _episode_out(db: AsyncSession, episode: Episode) -> EpisodeOut:
         audio_url=episode.audio_url, had_more_any=episode.had_more_any, published_at=episode.published_at,
         blocks=[
             BlockOut(**_block_common_fields(b), script=b.script, word_timestamps=b.word_timestamps)
-            for b in blocks
+            for b in blocks if capsules.is_in_legacy_file(b)
         ],
+        playlist_version=episode.playlist_version or 1,
+    )
+
+
+@router.get("/episodes/{episode_id}/playlist", response_model=PlaylistOut)
+async def episode_playlist(
+    episode_id: uuid.UUID,
+    cliente: Cliente = Depends(get_current_cliente),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    The episode as an ordered list of capsules, each with its own audio. For
+    the caller's OWN episodes only (shared inventory and other people's
+    episodes are a plain 404), and usable before the episode publishes, so a
+    client can start on the first voiced capsule while the rest is voiced.
+    Additive: nothing here changes the legacy episode shape.
+    """
+    episode = await db.get(Episode, episode_id)
+    if not episode or episode.customer_id != cliente.id:
+        raise HTTPException(404, "Episode not found")
+    blocks = sorted(
+        (await db.execute(select(Block).where(Block.episode_id == episode.id))).scalars().all(),
+        key=capsules.sort_key,
+    )
+    items = []
+    for i, b in enumerate(blocks):
+        in_file = capsules.is_in_legacy_file(b)
+        items.append(PlaylistItemOut(
+            block_id=str(b.id), request_id=str(b.request_id) if b.request_id else None, sequence=i,
+            title=b.summary, summary=b.summary,
+            duration_s=b.duration_s if b.duration_s is not None
+            else ((b.end_s - b.start_s) if b.audio_status is None else None),
+            audio_url=b.audio_url,
+            audio_status=b.audio_status or "legacy",
+            start_s=b.start_s if in_file and episode.audio_url else None,
+            end_s=b.end_s if in_file and episode.audio_url else None,
+        ))
+    return PlaylistOut(
+        episode_id=str(episode.id), playlist_version=episode.playlist_version or 1,
+        published=episode.published_at is not None, audio_url=episode.audio_url, items=items,
     )
 
 

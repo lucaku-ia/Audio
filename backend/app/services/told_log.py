@@ -68,8 +68,12 @@ async def recent_for_request(
             # Only what was actually delivered — see the module docstring.
             Episode.published_at.is_not(None),
             Block.no_news.is_(False),
+            # Capsules: a block whose own audio failed or was budget-blocked
+            # was never heard even though its episode published. NULL status
+            # is a legacy row and counts as delivered.
+            Block.audio_status.is_(None) | (Block.audio_status == "voiced"),
         )
-        .order_by(Episode.published_at.desc(), Block.start_s)
+        .order_by(Episode.published_at.desc(), Block.sequence, Block.start_s)
         .limit(limit)
     )
     if before_episode_id is not None:

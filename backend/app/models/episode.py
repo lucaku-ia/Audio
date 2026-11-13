@@ -31,6 +31,9 @@ class Episode(Base):
     had_more_any: Mapped[bool] = mapped_column(Boolean, default=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cost: Mapped[dict] = mapped_column(JSON, default=lambda: {})  # {research, writing, tts, other} — Instrumentation snapshot
+    # 1 = legacy single concatenated file; 2 = built from per-capsule audio
+    # (Block.audio_url). Old rows read 1 via the migration default.
+    playlist_version: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
@@ -60,3 +63,16 @@ class Block(Base):
     # populated, not off an empty list, since a no_news/empty-script block would
     # legitimately have an empty list otherwise.
     word_timestamps: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+
+    # --- Capsule (per-block) audio, Phase 1a -------------------------------
+    # A Block is the capsule: it owns its own audio file. NULL audio_status is
+    # a LEGACY block (pre-capsule row, or an episode built without TTS) and
+    # counts as delivered everywhere; only 'failed'/'blocked'/'pending' mean
+    # "no audio for this capsule". word_timestamps above is capsule-relative.
+    audio_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    duration_s: Mapped[int | None] = mapped_column(Integer, nullable=True)  # REAL audio length, not the wpm estimate
+    audio_status: Mapped[str | None] = mapped_column(String(20), nullable=True)  # pending|voiced|failed|blocked
+    voice_attempts: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    # Position in the episode; start_s alone cannot order capsules that are not
+    # in the concatenated file (they share a zero-length offset).
+    sequence: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)

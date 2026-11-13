@@ -200,6 +200,13 @@ _SQL_HEADLINES = text(f"""
     LIMIT :limit
 """)
 
+# Only blocks whose audio is inside the episode's concatenated file are
+# seekable by the shipped client; a capsule that failed to voice (or was voiced
+# after publish) is not. NULL audio_status = legacy row, in the file.
+_IN_LEGACY_FILE_SQL = (
+    "({a}.audio_status IS NULL OR ({a}.audio_status = 'voiced' AND {a}.end_s > {a}.start_s))"
+)
+
 _SQL_BLOCKS = text(f"""
     SELECT b.id AS block_id, b.episode_id, b.start_s,
            e.fecha, e.headline, e.path,
@@ -207,6 +214,7 @@ _SQL_BLOCKS = text(f"""
     FROM blocks b
     JOIN episodes e ON e.id = b.episode_id
     WHERE e.customer_id = :customer_id
+      AND {_IN_LEGACY_FILE_SQL.format(a='b')}
       AND to_tsvector('{TS_CONFIG}', coalesce(b.summary, '')) @@ plainto_tsquery('{TS_CONFIG}', :q)
     ORDER BY e.fecha DESC
     LIMIT :limit
@@ -218,7 +226,7 @@ _SQL_REQUESTS = text(f"""
            b.id AS block_id, b.episode_id, e.fecha AS episode_fecha, e.headline AS episode_headline,
            e.path AS episode_path
     FROM requests r
-    LEFT JOIN blocks b ON b.request_id = r.id
+    LEFT JOIN blocks b ON b.request_id = r.id AND {_IN_LEGACY_FILE_SQL.format(a='b')}
     LEFT JOIN episodes e ON e.id = b.episode_id
     WHERE r.customer_id = :customer_id
       AND to_tsvector('{TS_CONFIG}', r.raw_text) @@ plainto_tsquery('{TS_CONFIG}', :q)

@@ -46,6 +46,14 @@ COLUMNAS_ESPERADAS: list[tuple[str, str, str]] = [
     ("clientes", "token_version", "INTEGER DEFAULT 0"),
     ("blocks", "word_timestamps", "JSON"),
     ("generation_jobs", "retry_count", "INTEGER DEFAULT 0"),
+    # Audio capsules, Phase 1a. audio_url/duration_s/audio_status stay NULL for
+    # existing rows (NULL status = legacy, counts as delivered).
+    ("blocks", "audio_url", "VARCHAR(1000)"),
+    ("blocks", "duration_s", "INTEGER"),
+    ("blocks", "audio_status", "VARCHAR(20)"),
+    ("blocks", "voice_attempts", "INTEGER DEFAULT 0"),
+    ("blocks", "sequence", "INTEGER DEFAULT 0"),
+    ("episodes", "playlist_version", "INTEGER DEFAULT 1"),
 ]
 
 # (table, index name, "CREATE [UNIQUE] INDEX ... ON ..." statement, without "IF NOT EXISTS")
