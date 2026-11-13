@@ -25,6 +25,15 @@ jobs:
       # hardcoded path (e.g. /Applications/Xcode_15.4.app) silently breaks the
       # moment that changes. If a pinned version is ever needed, use
       # maxim-lobanov/setup-xcode@v1 with `xcode-version` instead of `xcode-select`.
+      # ContentView uses iOS 26 APIs (tabViewBottomAccessory), so the build needs
+      # an Xcode 26 SDK. The default Xcode on macos-15 is 16.x; pick the newest
+      # preinstalled Xcode 26 if the image has one, otherwise keep the default.
+      - name: Select the newest Xcode 26
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$X" ]; then sudo xcode-select -s "$X"; fi
+          xcodebuild -version
+
       - name: Show selected Xcode version
         run: xcodebuild -version
 
