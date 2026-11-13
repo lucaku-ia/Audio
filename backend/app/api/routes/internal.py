@@ -118,17 +118,22 @@ class NewsRunOut(BaseModel):
 @router.post("/news/run", response_model=NewsRunOut)
 async def run_news_now(
     topic: str = Query(min_length=1, max_length=300),
-    slot: str | None = Query(default=None, description="0500 | 1300 | adhoc. Default: the current slot band, or adhoc before 05:00 UTC."),
+    slot: str | None = Query(default=None, description="0500 | 1300 | adhoc. Default: the current local slot band, or adhoc during local quiet hours."),
+    timezone: str | None = Query(default=None, description="IANA zone (e.g. America/Bogota) used to pick the default slot and run date; default UTC."),
     db: AsyncSession = Depends(get_db),
 ):
     """Runs the news pipeline for one topic on demand. Idempotent per
-    (topic, UTC date, slot): a second call for the same slot reports 'skipped'."""
+    (topic, date, slot), the date being the local date in `timezone` (UTC by
+    default): a second call for the same key reports 'skipped'."""
     from app.services import news_pipeline as np_
 
-    chosen = slot or np_.slot_for(np_._now()) or np_.SLOT_ADHOC
+    now = np_._now()
+    due = np_.local_slot(now, timezone)
+    chosen = slot or (due[0] if due else np_.SLOT_ADHOC)
     if chosen not in np_.VALID_SLOTS:
         raise HTTPException(422, f"slot must be one of {', '.join(np_.VALID_SLOTS)}")
-    result = await np_.run_news_for_topic(db, topic, slot=chosen)
+    run_date = now.astimezone(np_.resolve_tz(timezone)[1]).date()
+    result = await np_.run_news_for_topic(db, topic, slot=chosen, run_date=run_date, now=now)
     return NewsRunOut(topic=topic, slot=chosen, status=result.status, items=len(result.items), cost=result.cost)
 
 

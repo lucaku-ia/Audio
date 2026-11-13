@@ -28,6 +28,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -35,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.news import NewsItem, NewsRun
+from app.models.profile import Profile
 from app.models.request import Request, RequestStatus
 from app.services import ai_platform
 from app.services.findings_store import normalize
@@ -100,6 +102,25 @@ def slot_for(now: datetime) -> str | None:
     if now.hour >= 5:
         return SLOT_MORNING
     return None
+
+
+def resolve_tz(name: str | None) -> tuple[str, ZoneInfo]:
+    """(canonical name, tzinfo) for an IANA name; missing or invalid -> UTC."""
+    if name:
+        try:
+            return name, ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            logger.warning("news: unknown timezone %r, falling back to UTC", name)
+    return "UTC", ZoneInfo("UTC")
+
+
+def local_slot(now: datetime, tz_name: str | None) -> tuple[str, date] | None:
+    """(slot, local date) a UTC instant falls in for a timezone: local
+    05:00-12:59 -> 0500, 13:00-23:59 -> 1300, 00:00-04:59 -> None (quiet)."""
+    _, tz = resolve_tz(tz_name)
+    local = now.astimezone(tz)
+    slot = slot_for(local)
+    return (slot, local.date()) if slot else None
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +248,13 @@ async def _claim_run(db: AsyncSession, topic_key: str, run_date: date, slot: str
     return claimed
 
 
-async def _finish_run(db: AsyncSession, run_id: uuid.UUID, **fields) -> None:
-    await db.execute(update(NewsRun).where(NewsRun.id == run_id).values(updated_at=_now(), **fields))
+async def _finish_run(db: AsyncSession, run_id: uuid.UUID, *, cost: float = 0.0, **fields) -> None:
+    """Cost is ADDED to what earlier attempts of this run already spent (a
+    retry pays a fresh web search), never overwritten."""
+    await db.execute(
+        update(NewsRun).where(NewsRun.id == run_id)
+        .values(updated_at=_now(), cost=func.coalesce(NewsRun.cost, 0.0) + cost, **fields)
+    )
     await db.commit()
 
 
@@ -262,13 +288,14 @@ async def run_news_for_topic(
     if run_id is None:
         return NewsRunResult("skipped")
 
+    cost = 0.0  # spend of THIS attempt; recorded on every exit path, success or failure
     try:
         # 1. Research: shared via findings_store, so followers never multiply it.
         findings = await ai_platform.research_topic(
             db, f"Latest news about {topic}", topic, "latest news", None,
             None, uuid.UUID(int=0),
         )
-        cost = findings.cost
+        cost += findings.cost
         if findings.parse_failed:
             await _finish_run(db, run_id, status="failed", error="research parse failed", cost=cost)
             return NewsRunResult("failed", cost=cost)
@@ -328,7 +355,7 @@ async def run_news_for_topic(
         return NewsRunResult("done" if items else "no_news", items, cost)
     except Exception as exc:
         await db.rollback()
-        await _finish_run(db, run_id, status="failed", error=str(exc)[:300])
+        await _finish_run(db, run_id, status="failed", error=str(exc)[:300], cost=cost)
         raise
 
 
@@ -378,31 +405,111 @@ async def topics_with_followers(db: AsyncSession) -> list[str]:
     return [display[k] for k in sorted(counts, key=lambda k: (-counts[k], k))]
 
 
+async def followers_by_timezone(db: AsyncSession) -> dict[str, dict[str, tuple[str, int]]]:
+    """{timezone: {topic_key: (display topic, follower count)}} for active
+    requests. The timezone is the follower's Profile.delivery_timezone; a
+    customer with no profile, or an invalid zone, counts under UTC."""
+    rows = (await db.execute(
+        select(Request.structured, Profile.delivery_timezone)
+        .outerjoin(Profile, Profile.customer_id == Request.customer_id)
+        .where(Request.status == RequestStatus.active)
+    )).all()
+    out: dict[str, dict[str, tuple[str, int]]] = {}
+    for structured, tz_name in rows:
+        topic = request_topic(structured)
+        key = normalize(topic)
+        if not key:
+            continue
+        tz_key, _ = resolve_tz(tz_name)
+        topics = out.setdefault(tz_key, {})
+        display, n = topics.get(key, (topic, 0))
+        topics[key] = (display, n + 1)
+    return out
+
+
+def due_work(now: datetime, by_tz: dict[str, dict[str, tuple[str, int]]]) -> dict[tuple[date, str], dict[str, tuple[str, int]]]:
+    """Which (local date, slot) pairs are open right now, and the topics each
+    covers. Timezones that land on the same (date, slot) merge into one entry,
+    so a topic is never scheduled twice for the same key."""
+    work: dict[tuple[date, str], dict[str, tuple[str, int]]] = {}
+    for tz_name, topics in by_tz.items():
+        due = local_slot(now, tz_name)
+        if due is None:
+            continue
+        slot, local_date = due
+        merged = work.setdefault((local_date, slot), {})
+        for key, (display, n) in topics.items():
+            prev = merged.get(key)
+            merged[key] = (prev[0] if prev else display, (prev[1] if prev else 0) + n)
+    return work
+
+
 async def run_scheduled_slot(db: AsyncSession, *, now: datetime | None = None, max_topics: int = 60,
                              ceiling: float | None = None) -> dict:
-    """Runs the current slot for every followed topic. Safe to call as often as
-    you like: finished (topic, date, slot) rows are skipped."""
+    """Runs every slot that is currently open in at least one customer
+    timezone. The unit of work is still (topic_key, date, slot): the date is the
+    LOCAL date in the timezone that opened the slot, and the work is deduped on
+    that key, so cost grows with distinct (date, slot) pairs, never with
+    followers. Safe to call as often as you like: finished keys are skipped."""
     now = now or _now()
-    slot = slot_for(now)
-    summary = {"slot": slot, "topics": 0, "ran": 0, "skipped": 0, "failed": 0, "ceiling_hit": False}
-    if slot is None:
-        return summary
+    work = due_work(now, await followers_by_timezone(db))
+    summary = {"slots": sorted(f"{d.isoformat()}:{s}" for d, s in work), "topics": 0, "ran": 0, "skipped": 0,
+               "failed": 0, "ceiling_hit": False}
     ceiling = settings.NEWS_DAILY_COST_CEILING_USD if ceiling is None else ceiling
-    for topic in (await topics_with_followers(db))[:max_topics]:
+
+    # One candidate list across ALL (date, slot) groups: most-followed first.
+    # Keys that cannot be claimed any more are dropped BEFORE the max_topics cap,
+    # so topics ranked beyond the cap are not starved by finished ones.
+    blocked = await _unclaimable_keys(db, {d for d, _ in work})
+    candidates = [
+        (run_date, slot, key, display, n)
+        for (run_date, slot), topics in work.items()
+        for key, (display, n) in topics.items()
+        if (key, run_date, slot) not in blocked
+    ]
+    summary["skipped"] += sum(len(topics) for topics in work.values()) - len(candidates)
+    candidates.sort(key=lambda c: (-c[4], c[0], c[1], c[2]))
+
+    for run_date, slot, key, display, _n in candidates[:max_topics]:
+        # ONE global ceiling: everything spent since UTC midnight, whatever the
+        # topic, slot or timezone group that spent it.
+        utc_midnight = _now().replace(hour=0, minute=0, second=0, microsecond=0)
         spent = (await db.execute(
-            select(func.coalesce(func.sum(NewsRun.cost), 0.0)).where(NewsRun.run_date == now.date())
+            select(func.coalesce(func.sum(NewsRun.cost), 0.0)).where(NewsRun.updated_at >= utc_midnight)
         )).scalar_one()
         if spent >= ceiling:
-            logger.warning("news: daily cost ceiling reached (%.2f >= %.2f), stopping slot", spent, ceiling)
+            logger.warning("news: daily cost ceiling reached (%.2f >= %.2f), stopping", spent, ceiling)
             summary["ceiling_hit"] = True
-            break
+            return summary
         summary["topics"] += 1
         try:
-            result = await run_news_for_topic(db, topic, slot=slot, now=now)
+            result = await run_news_for_topic(db, display, slot=slot, run_date=run_date, now=now)
         except Exception:
-            logger.exception("news: run failed for topic %r", topic)
+            logger.exception("news: run failed for topic %r", key)
             summary["failed"] += 1
             continue
-        key = result.status if result.status in ("skipped", "failed") else "ran"
-        summary[key] += 1
+        outcome = result.status if result.status in ("skipped", "failed") else "ran"
+        summary[outcome] += 1
     return summary
+
+
+async def _unclaimable_keys(db: AsyncSession, run_dates: set[date]) -> set[tuple[str, date, str]]:
+    """(topic_key, run_date, slot) keys _claim_run would refuse right now:
+    finished, out of attempts, in failure backoff, or held by a fresh run."""
+    if not run_dates:
+        return set()
+    now = _now()
+    rows = (await db.execute(
+        select(NewsRun.topic_key, NewsRun.run_date, NewsRun.slot, NewsRun.status, NewsRun.attempts, NewsRun.updated_at)
+        .where(NewsRun.run_date.in_(run_dates))
+    )).all()
+    out: set[tuple[str, date, str]] = set()
+    for topic_key, run_date, slot, status, attempts, updated_at in rows:
+        updated = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=timezone.utc)
+        if status in ("done", "no_news") or attempts >= MAX_ATTEMPTS:
+            out.add((topic_key, run_date, slot))
+        elif status == "failed" and updated >= now - FAILED_BACKOFF:
+            out.add((topic_key, run_date, slot))
+        elif status == "running" and updated >= now - STALE_RUNNING:
+            out.add((topic_key, run_date, slot))
+    return out

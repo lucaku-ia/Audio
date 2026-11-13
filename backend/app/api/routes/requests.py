@@ -54,6 +54,7 @@ from app.api.deps import get_current_cliente
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.episode import Block, Episode
+from app.models.feedback import Feedback
 from app.models.profile import Profile
 from app.models.request import (
     CreatedFrom, Request, RequestKind, RequestStatus, RequestVersion,
@@ -380,6 +381,19 @@ async def refinar_request(
     return RefineResponse(pending_version_id=str(nueva_version.id))
 
 
+async def _disown_feedback_pause(db: AsyncSession, cliente: Cliente, request_id: uuid.UUID) -> None:
+    """A manual pause/resume takes over the request's state from feedback: drop
+    it from every Feedback.effects["paused_requests"], so removing that feedback
+    later cannot resume a pause the customer chose themselves."""
+    rid = str(request_id)
+    rows = (await db.execute(select(Feedback).where(Feedback.cliente_id == cliente.id))).scalars().all()
+    for fb in rows:
+        effects = fb.effects or {}
+        paused = effects.get("paused_requests") or []
+        if rid in paused:
+            fb.effects = {**effects, "paused_requests": [p for p in paused if p != rid]}
+
+
 @router.patch("/{request_id}/pause", response_model=RequestOut)
 async def pausar_request(
     request_id: uuid.UUID,
@@ -387,6 +401,7 @@ async def pausar_request(
     db: AsyncSession = Depends(get_db),
 ):
     req = await _obtener_request_del_cliente(db, request_id, cliente)
+    await _disown_feedback_pause(db, cliente, req.id)
     req.status = RequestStatus.paused
     await emitir(db, "request_paused", customer_id=cliente.id, source="requests", request_id=str(req.id))
     await db.commit()
@@ -401,6 +416,7 @@ async def reanudar_request(
     db: AsyncSession = Depends(get_db),
 ):
     req = await _obtener_request_del_cliente(db, request_id, cliente)
+    await _disown_feedback_pause(db, cliente, req.id)
     req.status = RequestStatus.active
     await emitir(db, "request_resumed", customer_id=cliente.id, source="requests", request_id=str(req.id))
     await db.commit()
