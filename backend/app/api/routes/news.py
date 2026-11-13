@@ -15,7 +15,7 @@ the app can fall back to the whole feed, which it requests with `scope=all`.
 """
 import base64
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -27,7 +27,8 @@ from app.api.deps import get_current_cliente
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.news import NewsItem, NewsReadState
-from app.services.news_pipeline import followed_topics_for
+from app.models.profile import Profile
+from app.services.news_pipeline import followed_topics_for, resolve_tz
 
 router = APIRouter(prefix="/news", tags=["News"])
 
@@ -67,13 +68,22 @@ class NewsListOut(BaseModel):
     followed_categories: list[str]
 
 
-def _out(item: NewsItem, read_at, tz_offset_minutes: int = 0) -> NewsItemOut:
+async def _caller_tz(db: AsyncSession, cliente: Cliente, tz_offset_minutes: int | None) -> tzinfo:
+    """An explicit tz_offset_minutes wins (fixed offset). Without it, the
+    caller's stored Profile.delivery_timezone (IANA, DST-aware), else UTC."""
+    if tz_offset_minutes is not None:
+        return timezone(timedelta(minutes=tz_offset_minutes))
+    name = (await db.execute(select(Profile.delivery_timezone).where(Profile.customer_id == cliente.id))).scalar_one_or_none()
+    return resolve_tz(name)[1]
+
+
+def _out(item: NewsItem, read_at, tz: tzinfo = timezone.utc) -> NewsItemOut:
     published = item.published_at if item.published_at.tzinfo else item.published_at.replace(tzinfo=timezone.utc)
     return NewsItemOut(
         id=str(item.id), topic_key=item.topic_key, category=item.category, title=item.title,
         summary=item.summary, short_version=item.short_version, body=item.body,
         sources=[NewsSourceOut(**s) for s in (item.sources or [])],
-        image_hint=item.image_hint, published_at=published, day=(published.astimezone(timezone.utc) + timedelta(minutes=tz_offset_minutes)).date(),
+        image_hint=item.image_hint, published_at=published, day=published.astimezone(tz).date(),
         read_minutes=max(1, -(-len(item.body.split()) // 200)),
         slot=item.slot, cluster_id=str(item.cluster_id) if item.cluster_id else None,
         read=read_at is not None,
@@ -127,7 +137,7 @@ async def _visible_filters(db: AsyncSession, cliente: Cliente, scope: str):
 @router.get("", response_model=NewsListOut)
 async def list_news(
     day: date | None = Query(default=None, description="Only this day (YYYY-MM-DD) in the caller's tz."),
-    tz_offset_minutes: int = Query(default=0, ge=-840, le=840, description="Caller's UTC offset in minutes (e.g. -300 for Bogota); default UTC."),
+    tz_offset_minutes: int | None = Query(default=None, ge=-840, le=840, description="Caller's UTC offset in minutes (e.g. -300 for Bogota). When absent, the stored profile timezone is used (UTC if none)."),
     cursor: str | None = None,
     limit: int = Query(default=30, ge=1, le=100),
     scope: str = Query(default="followed", pattern="^(followed|all)$"),
@@ -135,9 +145,11 @@ async def list_news(
     db: AsyncSession = Depends(get_db),
 ):
     where, no_match, keys, cats = await _visible_filters(db, cliente, scope)
+    tz = await _caller_tz(db, cliente, tz_offset_minutes)
     if day is not None:
-        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc) - timedelta(minutes=tz_offset_minutes)
-        where += [NewsItem.published_at >= start, NewsItem.published_at < start + timedelta(days=1)]
+        start = datetime(day.year, day.month, day.day, tzinfo=tz).astimezone(timezone.utc)
+        end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=tz).astimezone(timezone.utc)
+        where += [NewsItem.published_at >= start, NewsItem.published_at < end]
     if cursor:
         ts, item_id = _decode_cursor(cursor)
         where.append(tuple_(NewsItem.published_at, NewsItem.id) < tuple_(ts, item_id))
@@ -151,7 +163,7 @@ async def list_news(
     )).all()
     page = rows[:limit]
     return NewsListOut(
-        items=[_out(item, read_at, tz_offset_minutes) for item, read_at in page],
+        items=[_out(item, read_at, tz) for item, read_at in page],
         next_cursor=_encode_cursor(page[-1][0]) if len(rows) > limit and page else None,
         no_follow_match=no_match,
         followed_topics=sorted(keys),
@@ -190,7 +202,7 @@ async def _get_item(db: AsyncSession, news_id: uuid.UUID) -> NewsItem:
 @router.get("/{news_id}", response_model=NewsItemOut)
 async def get_news(
     news_id: uuid.UUID,
-    tz_offset_minutes: int = Query(default=0, ge=-840, le=840),
+    tz_offset_minutes: int | None = Query(default=None, ge=-840, le=840),
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
@@ -198,7 +210,7 @@ async def get_news(
     read_at = (await db.execute(
         select(NewsReadState.read_at).where(NewsReadState.news_id == news_id, NewsReadState.cliente_id == cliente.id)
     )).scalar_one_or_none()
-    return _out(item, read_at, tz_offset_minutes)
+    return _out(item, read_at, await _caller_tz(db, cliente, tz_offset_minutes))
 
 
 @router.put("/{news_id}/read")
