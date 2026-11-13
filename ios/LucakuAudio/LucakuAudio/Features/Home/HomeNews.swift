@@ -88,6 +88,8 @@ struct NewsStory: Identifiable, Hashable {
     /// Minutes since midnight, for ordering inside a day.
     let minuteOfDay: Int
     let readMinutes: Int
+    /// Read state reported by the server (live feed only; false for samples).
+    var serverRead: Bool = false
 
     var timeLabel: String {
         let h = minuteOfDay / 60, m = minuteOfDay % 60
@@ -116,15 +118,26 @@ struct NewsStory: Identifiable, Hashable {
 
 /// Source of the news feed.
 ///
-/// TODO(backend): the backend has no news endpoint yet. When it exists, add an
-/// `APINewsRepository` conforming to this protocol (GET /api/news, read/unread
-/// and rating sync) and swap it in `NewsStore.init`. Nothing else changes.
+/// `APINewsRepository` is the live implementation (GET /api/news plus the
+/// read-state endpoints); `NewsStore` falls back to `SampleNewsRepository`
+/// when it fails or returns nothing.
 protocol NewsRepository {
     func stories(token: String?) async throws -> [NewsStory]
+    /// True when the server filters by follows and owns the read state.
+    var isLive: Bool { get }
+    func setRead(id: String, read: Bool, token: String) async throws
+    func markAllRead(token: String) async throws
 }
 
-/// TODO(backend): placeholder content. Realistic English sample stories across
-/// the 12 categories; not real reporting.
+extension NewsRepository {
+    var isLive: Bool { false }
+    func setRead(id: String, read: Bool, token: String) async throws {}
+    func markAllRead(token: String) async throws {}
+}
+
+/// Placeholder content used as the offline / not-deployed fallback, in DEBUG
+/// and in previews. Realistic English sample stories across the 12
+/// categories; not real reporting.
 struct SampleNewsRepository: NewsRepository {
     func stories(token: String?) async throws -> [NewsStory] { Self.sample }
 
@@ -241,11 +254,17 @@ final class NewsStore: ObservableObject {
     @Published var expandedDays: Set<Int> = []
     @Published private(set) var followed: Set<NewsCategory> = []
 
+    /// True while the feed comes from the backend (server-filtered, server read state).
+    @Published private(set) var isLive = false
+
     private let repository: NewsRepository
+    private let fallback: NewsRepository
+    private var token: String?
     private static let readKey = "lucaku.news.readIDs"
 
-    init(repository: NewsRepository = SampleNewsRepository()) {
+    init(repository: NewsRepository = APINewsRepository(), fallback: NewsRepository = SampleNewsRepository()) {
         self.repository = repository
+        self.fallback = fallback
         if let saved = UserDefaults.standard.array(forKey: Self.readKey) as? [String] {
             readIDs = Set(saved)
         } else {
@@ -256,7 +275,17 @@ final class NewsStore: ObservableObject {
     }
 
     func load(token: String?) async {
-        if let loaded = try? await repository.stories(token: token) { stories = loaded }
+        self.token = token
+        if token != nil, let live = try? await repository.stories(token: token), !live.isEmpty {
+            stories = live
+            isLive = true
+            readIDs = Set(live.filter(\.serverRead).map(\.id))
+            return
+        }
+        // Offline, endpoint not deployed, or nothing on either scope: keep an
+        // already-loaded live feed, otherwise show the sample so Home never regresses.
+        guard !isLive else { return }
+        if let sample = try? await fallback.stories(token: token) { stories = sample }
     }
 
     /// Maps the customer's topics to categories; an empty result shows everything.
@@ -265,6 +294,8 @@ final class NewsStore: ObservableObject {
     }
 
     var feed: [NewsStory] {
+        // The server already applied follows (or fell back to the whole feed).
+        if isLive { return stories }
         let filtered = followed.isEmpty ? stories : stories.filter { followed.contains($0.category) }
         return filtered.isEmpty ? stories : filtered
     }
@@ -283,19 +314,41 @@ final class NewsStore: ObservableObject {
     func unreadCount(in group: NewsDayGroup) -> Int { group.stories.filter { !isRead($0) }.count }
 
     func toggleRead(_ story: NewsStory) {
-        if readIDs.contains(story.id) { readIDs.remove(story.id) } else { readIDs.insert(story.id) }
-        persist()
+        setRead(story.id, to: !readIDs.contains(story.id))
     }
 
     func markRead(_ story: NewsStory) {
         guard !readIDs.contains(story.id) else { return }
-        readIDs.insert(story.id)
+        setRead(story.id, to: true)
+    }
+
+    /// Optimistic: updates the UI first, syncs in the background, and puts the
+    /// story back as it was if the request fails.
+    private func setRead(_ id: String, to read: Bool) {
+        if read { readIDs.insert(id) } else { readIDs.remove(id) }
         persist()
+        guard isLive, let token else { return }
+        Task {
+            do {
+                try await repository.setRead(id: id, read: read, token: token)
+            } catch {
+                if read { readIDs.remove(id) } else { readIDs.insert(id) }
+            }
+        }
     }
 
     func markAllRead() {
-        readIDs.formUnion(feed.map(\.id))
+        let newlyRead = feed.map(\.id).filter { !readIDs.contains($0) }
+        readIDs.formUnion(newlyRead)
         persist()
+        guard isLive, let token, !newlyRead.isEmpty else { return }
+        Task {
+            do {
+                try await repository.markAllRead(token: token)
+            } catch {
+                readIDs.subtract(newlyRead)
+            }
+        }
     }
 
     func rating(for story: NewsStory) -> StoryRating? { ratings[story.id] }
@@ -311,6 +364,8 @@ final class NewsStore: ObservableObject {
     }
 
     private func persist() {
+        // The server owns read state for the live feed.
+        guard !isLive else { return }
         UserDefaults.standard.set(Array(readIDs), forKey: Self.readKey)
     }
 }

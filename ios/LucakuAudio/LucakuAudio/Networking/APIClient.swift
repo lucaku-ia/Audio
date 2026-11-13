@@ -203,6 +203,31 @@ actor APIClient {
         )
     }
 
+    // MARK: - News (backend/app/api/routes/news.py)
+
+    /// GET /news: last 7 days. `scope` is "followed" (default) or "all".
+    func news(scope: String, cursor: String? = nil, limit: Int = 100, token: String) async throws -> NewsListOut {
+        var query = [
+            URLQueryItem(name: "scope", value: scope),
+            URLQueryItem(name: "limit", value: "\(limit)"),
+            URLQueryItem(name: "tz_offset_minutes", value: "\(TimeZone.current.secondsFromGMT() / 60)"),
+        ]
+        if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await send(path: "/news", method: "GET", query: query, token: token)
+    }
+
+    func setNewsRead(id: String, read: Bool, token: String) async throws {
+        try await sendRaw(path: "/news/\(id)/read", method: read ? "PUT" : "DELETE", token: token)
+    }
+
+    /// POST /news/read-all. `scope` mirrors the list call that produced the feed.
+    func markAllNewsRead(scope: String, token: String) async throws {
+        try await sendRaw(
+            path: "/news/read-all", method: "POST",
+            query: [URLQueryItem(name: "scope", value: scope)], token: token
+        )
+    }
+
     // MARK: - Request Management (backend/app/api/routes/requests.py)
 
     /// GET /requests?status=... — used by Search to check which topics
@@ -334,8 +359,8 @@ actor APIClient {
     }
 
     @discardableResult
-    private func sendRaw(path: String, method: String, token: String?) async throws -> Data {
-        let request = try makeRequest(path: path, method: method, token: token)
+    private func sendRaw(path: String, method: String, query: [URLQueryItem] = [], token: String?) async throws -> Data {
+        let request = try makeRequest(path: path, method: method, query: query, token: token)
         return try await performRaw(request)
     }
 
