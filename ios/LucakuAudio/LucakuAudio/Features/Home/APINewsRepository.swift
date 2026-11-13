@@ -80,7 +80,7 @@ final class APINewsRepository: NewsRepository {
             sources: sourcesLabel(item.sources),
             dayOffset: dayOffset,
             minuteOfDay: minuteOfDay,
-            readMinutes: max(1, Int((Double(words) / 200).rounded())),
+            readMinutes: item.readMinutes.map { max(1, $0) } ?? max(1, Int((Double(words) / 200).rounded())),
             serverRead: item.read
         )
     }

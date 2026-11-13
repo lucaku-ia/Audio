@@ -27,9 +27,12 @@ struct NewsItemOut: Decodable {
     let day: String
     let slot: String
     let read: Bool
+    /// Server estimate; optional so older backends still decode.
+    let readMinutes: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, category, title, summary, body, sources, day, slot, read
+        case readMinutes = "read_minutes"
         case topicKey = "topic_key"
         case shortVersion = "short_version"
         case publishedAt = "published_at"

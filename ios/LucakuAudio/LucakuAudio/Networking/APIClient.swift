@@ -207,7 +207,11 @@ actor APIClient {
 
     /// GET /news: last 7 days. `scope` is "followed" (default) or "all".
     func news(scope: String, cursor: String? = nil, limit: Int = 100, token: String) async throws -> NewsListOut {
-        var query = [URLQueryItem(name: "scope", value: scope), URLQueryItem(name: "limit", value: "\(limit)")]
+        var query = [
+            URLQueryItem(name: "scope", value: scope),
+            URLQueryItem(name: "limit", value: "\(limit)"),
+            URLQueryItem(name: "tz_offset_minutes", value: "\(TimeZone.current.secondsFromGMT() / 60)"),
+        ]
         if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
         return try await send(path: "/news", method: "GET", query: query, token: token)
     }
