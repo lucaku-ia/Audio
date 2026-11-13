@@ -300,6 +300,26 @@ Deferred, and why (see the relevant module's own docstring for detail):
 - **Real, team-curated shared-inventory content** — the pipeline and seed-list
   infrastructure exist; the actual content is still a placeholder (see above).
 
+### Home in one call, and episode history
+
+`GET /api/home` is purely additive for the iOS Home: besides `banner`, `recent`,
+`shared_inventory` and `explore` it now also returns
+`next_delivery` (`{at, local_time, timezone, is_today}`: next episode time from
+the profile's `delivery_time` + `delivery_timezone`, `at` is an aware UTC ISO
+datetime, null until a delivery time is set), `followed_topics`
+(`[{id, topic, category, icon}]`: the active standing requests; `icon` is the
+inferred category or `"topic"`) and `news` (page 1 of `GET /news`, same shape
+and ordering, scope followed with a fallback to all when nothing matches; the
+day grouping uses the profile's timezone). The query count is constant (guarded
+by a test).
+
+`GET /api/episodes?before=&q=&limit=20` lists the caller's own published
+episodes, newest first, with keyset pagination (`next_cursor`; `before` takes
+that cursor, a `YYYY-MM-DD` date or an ISO datetime). `q` is a case-insensitive
+search over the headline and block summaries. Items:
+`{id, date, headline, duration_s, style, state, blocks_count, published_at}`.
+The detail endpoint already exists: `GET /api/generation/episodes/{id}`.
+
 ### Notifications & Settings scope
 
 Built: `PATCH /api/profile` (Settings CRUD — partial updates to voice_id,
