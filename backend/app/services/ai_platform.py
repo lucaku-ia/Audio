@@ -159,9 +159,8 @@ async def _invoke(call, *args, **kwargs):
 
 # Per-1M-token prices (USD) — PRD §5: "per-provider price tables in config;
 # cost computed at call time." Update here if pricing changes. Note: this
-# does not include the web_search tool's own per-search cost, which isn't
-# broken out by the API response usage object — logged costs are therefore
-# a token-only approximation for any call that uses web_search.
+# includes the web_search surcharge ($0.01 per request, read from
+# usage.server_tool_use.web_search_requests) in _cost below.
 _PRICE_PER_1M = {
     "claude-opus-5-5":  {"input": 4.00, "output": 20.00},
     "claude-opus-5":    {"input": 5.00, "output": 25.00},
@@ -239,11 +238,30 @@ def escalation_for(purpose: str) -> str | None:
     return _ESCALATE_TO.get(model_for(purpose))
 
 
+_WEB_SEARCH_USD_PER_REQUEST = 0.01  # $10 per 1,000 searches
+
+
+def _web_search_requests(usage) -> int:
+    """Billed web_search requests reported on usage.server_tool_use; 0 when the
+    object has no such field (read defensively: SDK shapes and fakes vary)."""
+    stu = getattr(usage, "server_tool_use", None)
+    if stu is None:
+        return 0
+    n = stu.get("web_search_requests") if isinstance(stu, dict) else getattr(stu, "web_search_requests", 0)
+    return n if isinstance(n, (int, float)) and not isinstance(n, bool) and n > 0 else 0
+
+
 def _cost(usage, model: str) -> float:
-    prices = _PRICE_PER_1M.get(model, {"input": 0.0, "output": 0.0})
+    prices = _PRICE_PER_1M.get(model)
+    if prices is None:
+        # Never price an unknown model at $0: that would blind the news cost
+        # ceiling. Assume the most expensive known rate and shout.
+        prices = max(_PRICE_PER_1M.values(), key=lambda p: p["input"] + p["output"])
+        logger.error("ai_platform: no price for model %r, costing it at the most expensive known rate", model)
     if model == _CHEAP and usage.input_tokens > _HAIKU_CHEAP_INPUT_LIMIT:
         prices = _HAIKU_LONG_PROMPT_PRICE
-    return (usage.input_tokens / 1_000_000) * prices["input"] + (usage.output_tokens / 1_000_000) * prices["output"]
+    return ((usage.input_tokens / 1_000_000) * prices["input"] + (usage.output_tokens / 1_000_000) * prices["output"]
+            + _web_search_requests(usage) * _WEB_SEARCH_USD_PER_REQUEST)
 
 
 async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, version: str, purpose: str,
@@ -541,7 +559,8 @@ async def research_topic(
     findings, cost = await _run_with_escalation(
         db, purpose="research_topic", version=version, call=call, parse=_parse_findings,
         customer_id=customer_id,
-        context={"customer_id": str(customer_id), "request_id": str(request_id), "topic": topic},
+        context={"customer_id": str(customer_id), "request_id": str(request_id), "topic": topic,
+                 **({"source": "news"} if request_id == uuid.UUID(int=0) else {})},
     )
     findings.cost = cost
     findings.sources = await attach_licenses(db, findings.sources)
@@ -719,7 +738,7 @@ async def write_news_items(
     drafts = response.parsed_output or NewsDrafts(items=[])
     drafts.cost = await _log_call(
         db, customer_id=None, prompt="news_write", version=version, purpose="news_write",
-        usage=response.usage, latency_ms=latency_ms, context={"topic": topic},
+        usage=response.usage, latency_ms=latency_ms, context={"topic": topic, "source": "news"},
     )
     return drafts
 

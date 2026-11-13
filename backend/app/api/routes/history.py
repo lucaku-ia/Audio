@@ -75,7 +75,7 @@ def _before_clause(before: str):
 
 
 def _like_pattern(q: str) -> str:
-    escaped = q.replace("\\", "\\\\").replace("%", "\%").replace("_", "\_")
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
 
 

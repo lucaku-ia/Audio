@@ -245,7 +245,7 @@ async def submit_feedback(
 @router.get("", response_model=list[FeedbackOut])
 async def get_feedback(
     target_type: TargetType,
-    target_ids: str = Query(..., description="Comma-separated target ids (max 100)"),
+    target_ids: str = Query(..., max_length=4000, description="Comma-separated target ids (max 100)"),
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
