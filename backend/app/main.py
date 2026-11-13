@@ -10,7 +10,7 @@ from app.db.migraciones import ejecutar_migraciones
 # Import every model so create_all() sees them
 from app.models import (
     cliente, request, profile, episode, generation_job, instrumentation, onboarding, prompt_registry,
-    source_catalogue, findings_cache, news,
+    source_catalogue, findings_cache, news, feedback,
 )  # noqa: F401
 from app.services.ai_platform import (
     ModelUnavailable,
@@ -26,6 +26,7 @@ from app.api.routes import (
     onboarding as onboarding_routes, generation as generation_routes, internal as internal_routes,
     search as search_routes, account as account_routes,
     home as home_routes, instrumentation as instrumentation_routes, news as news_routes,
+    feedback as feedback_routes,
 )
 from app.services.scheduler import scheduler
 
@@ -88,6 +89,7 @@ app.include_router(account_routes.router, prefix="/api")
 app.include_router(home_routes.router, prefix="/api")
 app.include_router(instrumentation_routes.router, prefix="/api")
 app.include_router(news_routes.router, prefix="/api")
+app.include_router(feedback_routes.router, prefix="/api")
 
 
 @app.exception_handler(ModelUnavailable)
