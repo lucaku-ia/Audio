@@ -3,7 +3,7 @@ name: backend-tests
 on:
   workflow_dispatch:
   push:
-    branches: ["feat/news-backend", "feat/news-per-timezone", "main"]
+    branches: ["main"]
     paths:
       - "backend/**"
       - ".github/workflows/backend-tests.yml"
