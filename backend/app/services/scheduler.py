@@ -197,10 +197,12 @@ def news_scheduler_enabled() -> bool:
 
 
 async def _news_tick() -> dict:
-    """News feed slots (05:00 and 13:00 UTC bands). Idempotent: the NewsRun
-    unique (topic, date, slot) row makes every tick after the first a no-op
-    for a topic, and a restart mid-day simply catches up. Cost is per topic,
-    never per follower (see app/services/news_pipeline.py)."""
+    """News feed slots, per customer timezone (local 05:00 and 13:00 bands).
+    Each tick runs the (topic, local date, slot) keys open in any follower
+    timezone. Idempotent: the NewsRun unique (topic, date, slot) row makes
+    every tick after the first a no-op for a key, and a restart mid-day simply
+    catches up. Cost is per distinct key, never per follower (see
+    app/services/news_pipeline.py)."""
     if not news_scheduler_enabled():
         return {"enabled": False}
     async with AsyncSessionLocal() as db:
