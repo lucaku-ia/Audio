@@ -144,6 +144,15 @@ async def list_news(
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
+    return await fetch_news_page(db, cliente, scope=scope, day=day, tz_offset_minutes=tz_offset_minutes,
+                                 cursor=cursor, limit=limit)
+
+
+async def fetch_news_page(
+    db: AsyncSession, cliente: Cliente, *, scope: str = "followed", day: date | None = None,
+    tz_offset_minutes: int = 0, cursor: str | None = None, limit: int = 30,
+) -> NewsListOut:
+    """The news feed query behind GET /news (also reused by GET /home for page 1)."""
     where, no_match, keys, cats = await _visible_filters(db, cliente, scope)
     tz = await _caller_tz(db, cliente, tz_offset_minutes)
     if day is not None:
