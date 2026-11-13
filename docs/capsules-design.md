@@ -1,202 +1,212 @@
-# Capsules: design document
+# Capsules: design document (rev 2)
 
-Status: proposal for founder review. Author: software architect. Scope: design only, no production code.
-Everything marked **(unverified)** could not be confirmed from the repository and needs a check before build.
+Status: proposal for founder review, revised after senior review. Author: software architect. Design only, no production code.
+Baseline read: `origin/main` (da0c772), `origin/fix/combined-review` (PR #65 state: feedback, account, search, conftest, news_pipeline) and `origin/feat/ai-budget`. Anything marked **(unverified)** was not confirmed from the repository.
 
 ## 1. Problem, goals, current state
 
-Today one request produces one monolithic episode per listener. Research is shared (findings store), but writing and voicing are per listener, and the voiced blocks are byte-concatenated into one mp3 per episode.
+Today one request produces one monolithic episode per listener. Research is shared (findings store); writing and voicing are per listener; voiced blocks are byte-concatenated into one mp3.
 
-Goals (founder decisions, not re-opened here):
-- **Capsules**: one topic each, 2-3 min ceiling, content-driven length, so the listener can reorder, pick, or "play all".
-- **One capsule serves many users**: write once, voice once per voice, serve everywhere.
-- Everything is shareable when topic keys match; text normalisation only until embeddings exist.
-- Two voices, lazily synthesised; one writing style in the pilot; personal bits live only in a short intro clip; pre-voiced transitions between capsules.
+Goals (founder decisions, not re-opened): capsules of one topic each, 2-3 min ceiling, content-driven length; listener can prioritise, pick, or "play all"; one capsule is generated once and served to many users; everything shareable when the topic key matches (text normalisation only until embeddings); 2 voices synthesised lazily; one writing style in the pilot; only greeting and name in a short personal intro; pre-voiced transitions.
 
-Current state (file references on `origin/main`, `da0c772`):
-- `services/episode_generator.py::run_generation` loops requests: `ai_platform.research_topic` (cached via `findings_store`), then `write_block` (per listener, takes `style`, `language`, `depth`, `previously_told`), then `_synthesize_episode` voices each block and writes `b"".join(parts)` to `MEDIA_DIR/{episode.id}.mp3`. Only one `Episode.audio_url`.
-- `models/episode.py`: `Block` has `start_s/end_s` (estimated from word count at 150 wpm, `_WORDS_PER_MINUTE`), `script`, `sources`, `word_timestamps` (relative to the block's own audio). `Block.request_id` ties a block to one listener's request.
-- `findings_store`: key `(normalize(topic), normalize(scope), normalize(geography))`; TTL fresh 6 h, empty 45 min. `normalize` is casefold plus accent-fold only, deliberately conservative (a false hit is worse than a miss).
-- `told_log.recent_for_request`: per-listener, per-request summaries from *published* episodes, fed into `write_block`. This is the main thing that makes scripts non-shareable.
-- `max_length_minutes` trimming (`trim_factor`) truncates scripts by word count (cuts mid-thought). Capsule selection replaces it.
-- Jobs: one `GenerationJob` per (customer, fecha, path); `empty`, retry, revoice (`_revoice_failed_job`) logic exists; a voicing failure fails the whole job.
-- Home (`api/routes/home.py`) derives banner state from the job and returns `blocks` (`BlockSummaryOut`). `api/routes/generation.py` exposes `JobOut`, `EpisodeOut` (single `audio_url`, `blocks[]` with `word_timestamps`).
-- News (`models/news.py`, `news_pipeline.py`): `NewsItem` per `topic_key` with `category` (12 values: local, politics, world, markets, personalFinance, technology, science, health, climate, sports, entertainment, lifestyle) and `cluster_id`. Already topic-keyed, never customer-keyed.
-- Feedback (`origin/feat/feedback-signals`, not on main): `FeedbackSignal` per (customer, request|topic) with `useful`, `not_quite`, reason counters, `score`.
-- iOS: `PlayerViewModel` plays one file and `seek`s to `block.startS`. `AudioPlayerService` already has `play(queue:[AudioQueueItem], startIndex:)` with manual `AVPlayerItem` swapping, so a queue primitive exists. There is no server-side playback position anywhere (stated in `home.py`).
+Current state, with the facts the design depends on:
+- `episode_generator.run_generation`: sequential research (`research_topic`, cached by `findings_store`, TTL 6 h fresh / 45 min empty) then `write_block` (per listener; takes `style`, `language`, `depth`, `previously_told`) then `_synthesize_episode` (voices every block, `b"".join` into one file, sets `Episode.audio_url` and `published_at`). A single TTS failure fails the whole job. It runs inline on one `AsyncSession`; there is no job queue, the scheduler calls it inline. `run_generation` calls `guard_paid_call("generation_precheck")` up front (feat/ai-budget).
+- `Block` has `start_s/end_s` estimated at 150 wpm, `script`, `sources`, `word_timestamps` (block-relative). `told_log` treats any non-`no_news` Block of a *published* episode as told. `search.py` reports `state = "ready" if ep.audio_url else "voicing"`. The PR #43 bug class (publishing before audio exists) is the reason `published_at` is stamped only after audio.
+- `trim_factor` truncates scripts by word count (cuts mid-thought) to honour `max_length_minutes`.
+- `research_topic` puts `raw_text` (the user's own words) into the research prompt; `scope` and `geography` come from a per-user Haiku structuring step. `researched_from` stores the first requester's text in the shared findings row.
+- Feedback (`feedback.py::_resolve_subjects`): `story` targets resolve by `Block.id` (404 otherwise), request taken from `Block.request_id`; signals stay per user, per request.
+- `account.py` deletes customer data explicitly (no `ON DELETE CASCADE` there); `tests/conftest._FULL_SESSION_TABLES` lists tables truncated between tests.
+- News: `news_pipeline` has `MAX_ATTEMPTS=3`, `STALE_RUNNING` 30 min, claim-by-unique-key (`NewsRun`), cost recorded on the run row even on failure, `title_similarity` for dedupe, and a daily cost ceiling. 12 categories (`CATEGORIES`).
+- ai-budget: `guard_paid_call` treats `customer_id` None or `UUID(0)` as a news caller (only the kill switch applies; news has its own ceiling). `AICall` rows roll back with the transaction on failure.
+- iOS: `PlayerViewModel` plays one file and seeks to `block.startS`. `AudioPlayerService.play(queue:)` exists but swaps `AVPlayerItem`s on `DidPlayToEndTime` (single `AVPlayer`, no preload, not gapless). No server-side playback position exists.
+- Voice: `Profile.voice_id` is client-settable free text; null resolves to `_default_voice_id()` at synthesis.
 
 ## 2. The Capsule model
 
-### 2.1 Identity and cache key
+### 2.1 Identity: claim key vs content identity
 
-A capsule is an immutable, listener-independent piece of content:
+Two separate things, because the findings fingerprint cannot be known before research:
 
-```
-capsule_key = (topic_key, scope_key, geography_key, language, style_id, prompt_version, findings_fingerprint)
-```
-- `topic/scope/geography_key` reuse `findings_store.normalize`, same conservative rule. Free-form questions share only if they normalise (or, later, embed) to the same key.
-- `findings_fingerprint` = hash of the findings payload ids/urls/headlines used. It is the **freshness window**: same fingerprint means same content, so a capsule is reused for as long as the findings entry is live (6 h fresh, 45 min empty). A new research run with materially different findings creates a *new* capsule row; old ones stay (history needs them).
-- `voice` is **not** part of the content key: it is a child (`capsule_audio`). `style_id` is constant in the pilot (one style), but is in the key so later styles do not require a migration.
-- `depth` (brief/standard/deep) is **dropped from the key**: depth fragments sharing and conflicts with "content-driven length". Length preference becomes selection (section 4). Open question 5.
+- **Claim key** (known before any work): `(topic_key, geography_key, language, style_id, prompt_version)`, all via `findings_store.normalize`. This is what the single-flight claim and the "is there a live capsule" lookup use. **`scope` is dropped from the key in the pilot**: scope comes from a per-user Haiku structuring step and would fragment otherwise identical topics. The shared research input is topic + geography only (below, 2.5).
+- **Content identity** (known after research): `findings_fingerprint` = hash of the normalised headlines+urls of the findings used. It is used only for exact dedupe, not as a novelty signal (LLM research reshuffles headlines every window, so a changed fingerprint does not mean news).
 
-### 2.2 What is stored
+Voice is not part of the content key: it is a child (`capsule_audio`). `depth` is dropped from the key (it fragments sharing and fights content-driven length); the time budget replaces it (founder question 5).
 
-`capsules`: id, key columns, `status` (`queued|researching|writing|ready|failed|empty`), `script`, `summary` (one line), `sources` (same JSON shape as `Block.sources`), `findings_cache_id`, `as_of` (research time), `valid_until`, `category`, `duration_est_s`, `had_more`, `cost` JSON {research, writing}, `prev_capsule_id` (topic-level lineage), error code.
+### 2.2 Flow (miss path, in order)
 
-`capsule_audio` (one row per capsule per voice): `capsule_id`, `voice_key` (`valentina|andres`), `eleven_voice_id`, `audio_url`, `duration_s` (real, from audio), `word_timestamps` (relative to capsule start), `chars`, `cost`, `status`.
+1. Normalise the request to a claim key. Look up a live capsule (`valid_until > now`, `status=ready`). Hit: attach, zero model calls.
+2. Miss: try to claim the key (unique partial index on the claim key where status in `queued|researching|writing`). Winner proceeds; losers see 2.4.
+3. `findings_store.lookup` (research cache, topic + geography only); on miss, `research_topic`.
+4. Compute fingerprint. If a previous capsule for this claim key exists, run the **novelty check**: compare the new findings' headlines with the previous capsule's stored headlines using `title_similarity` (as `news_pipeline` does). If every new finding matches the previous set above the threshold, nothing new: extend the previous capsule's `valid_until` and reuse it (no write, no voice). Only if something genuinely differs create a new capsule and set `prev_capsule_id` (so "update" labelling means a real update).
+5. Write once (listener-independent prompt), persist text as `ready`. Voice is a separate step per voice (section 5).
 
-Duration is real after voicing; the 150 wpm estimate is only used for selection before audio exists.
+### 2.3 What is stored
 
-### 2.3 Lifecycle and invalidation
+`capsules`: id, claim-key columns, `status` (`queued|researching|writing|ready|failed|empty|blocked|retired`), `attempts`, `next_attempt_at`, `claimed_at`/`updated_at` (heartbeat), `script`, `summary`, `headlines` (for the novelty check), `sources` (same shape as `Block.sources`), `fingerprint`, `findings_cache_id`, `as_of`, `valid_until`, `category`, `duration_est_s`, `owner_customer_id` (null = shared), `cost` (committed ledger, see 6), `error_code`.
+`capsule_audio` (capsule x `voice_key`): `audio_url` (random uuid filename), real `duration_s`, `word_timestamps` (capsule-relative), `chars`, `cost`, `status`, `attempts`.
+`researched_from` is **not** copied to capsules and never exposed via the API.
 
-1. `get_or_create(key)`: lookup live capsule by (topic keys, language, style, prompt_version) whose `valid_until > now`; hit means no model calls.
-2. Miss: research via `research_topic` (findings store still the research cache), write once (listener-independent prompt), persist `ready` (text) immediately. Voice is a separate step per voice.
-3. `valid_until = as_of + FRESH_TTL` (6 h) for news, `+ EMPTY_TTL` (45 min) for no-news. A `no_news` result creates an `empty` capsule row (so concurrent requests do not each re-research) but is never playable, and expires fast, preserving the PR #31 empty-day correctness property.
-4. **News changes during the day**: the next lookup after expiry re-researches; if the new findings fingerprint differs, a new capsule is created with `prev_capsule_id` set. Optional improvement (later): the news pipeline's 0500/1300 slots (`NewsRun`) mark a topic's capsule stale when a new `NewsItem` cluster lands, instead of waiting for TTL. Not needed in the pilot.
-5. Concurrency: claim-by-unique-key (a `capsules_inflight` row or a unique partial index on key where status in queued/researching/writing), same approach as `NewsRun`'s claim. Without it, ten simultaneous listeners of a new topic pay ten times. This is the one place sharing can silently fail, so it is Phase 2 acceptance.
-6. Never cache a parse failure (existing rule); a `failed` capsule is retried by the next requester, not served.
+### 2.4 Single-flight: what losers do
 
-### 2.4 Listener-independent scripts, per-user novelty by selection
+Losers poll the winner's claim row (short interval, timeout ~90 s). Outcomes: winner `ready`: attach. Winner `failed`/`blocked`/timeout: the loser does **not** inherit that outcome as its own failure. Shared capsules are paid by the platform sentinel (section 6), so one customer's budget can never block a shared capsule for everyone; what *is* shared and legitimately inherited is a global block (kill switch, capsule ceiling). On timeout the item is left `pending` in the playlist and retried on the next scheduler tick or playlist poll, never blocking the episode. **Stale claim reclaim**: a claim whose `updated_at` is older than 30 min (Railway redeploy killed the task) is re-claimable, consuming one attempt, as in `NewsRun._claim_run`.
 
-The writing prompt receives only the findings, language, the single style, and optionally the **topic-level** previous capsule summary (`prev_capsule_id`), never a listener's history. It must not contain greetings, sign-offs, "you", or the listener's phrasing (`raw_text` is no longer a writer input; it stays a research hint only in the key's first-creator `researched_from`). Scripts are self-contained: each capsule states enough context to stand alone, and leads with what is new.
+### 2.5 Privacy and wrong-listener safeguards
 
-Per-user continuity moves from rewriting to selection, using a new `capsule_heard` log (customer, capsule_id, topic_key, heard_at, completed):
-- skip a capsule whose `findings_fingerprint` or topic lineage the user already heard (replaces `told_log` for capsules);
-- if the user heard an older capsule on the topic and a newer one exists, serve the newer one and label it "update" in the playlist (`is_update=true`);
-- if nothing new, omit it ("nothing new on X today" is a playlist-level note, not audio).
+- `raw_text` is removed from the shared research and writing path (today it leaks the first requester's phrasing into shared findings). Cost: loses the "how did Arsenal do" intent hint. The claim key is the normalised structured topic, so free-form questions that normalise to the same topic share; the rest stay bespoke (founder question 6).
+- A **bespoke** capsule (`owner_customer_id` set, e.g. a private or niche question) is readable only by its owner; a shared capsule is readable only if it is in the caller's own playlist (`episode_items` join). No capsule is readable by id alone.
+- Test: shared scripts must contain no listener name, no `raw_text` substring, no "you/your" (fixture-based).
 
-Trade-off, stated plainly: this loses the old "yesterday we covered the rate decision" narrative thread. We accept it (decision 3); the lineage line in the prompt recovers some of it at topic level.
+### 2.6 Lifecycle, invalidation, retries
 
-"Heard" needs a signal. Until iOS reports playback (no server position exists today), "heard" = included in a published playlist, matching today's `told_log` semantics. Phase 3 adds `POST /capsules/{id}/heard`.
+- `valid_until = as_of + FRESH_TTL` (6 h) for news, `+ EMPTY_TTL` (45 min) for no-news (empty capsule row stops thundering herds, never playable; preserves the PR #31 empty-day property).
+- **Retry cap**: per claim key `attempts <= 3` with 45 min backoff (`next_attempt_at`), exactly like `NewsRun.MAX_ATTEMPTS`; beyond it the key stays `failed` until the window rolls. A failed capsule is **not** silently retried by every next requester.
+- **Retire action** (ops/internal route, Phase 2a): marks a capsule `retired`; next lookup regenerates (bounded by attempts). Needed because a shared bad capsule reaches many users.
+- **`prompt_version` bump** invalidates every key and would thundering-herd the research budget: roll out per topic (percentage/allowlist) and run under the capsule ceiling (section 6).
+- Optional later: mark a topic stale when a new `NewsItem` cluster lands in a `NewsRun` slot.
+
+### 2.7 Per-user novelty by selection
+
+Scripts never see `previously_told`. Per-user continuity is selection: skip capsules already heard (same capsule or same lineage), serve the newer capsule on a topic with `is_update=true`, omit when nothing is new. Trade-off stated: the "yesterday we covered X" thread is lost (decision 3); `prev_capsule_id` gives the writer topic-level background only. "Heard" defined in 3.3.
 
 ## 3. Episode as a playlist
 
-`Episode` stays (history, Home, feedback targets all reference it). It becomes an ordered list of items:
+### 3.1 Structure
 
-`[intro] , capsule_1 , [transition] , capsule_2 , [transition] , ... , capsule_n`
+`Episode` stays (history, Home, feedback, search). It gets `episode_items`: `episode_id`, `position`, `kind` (`intro|capsule|transition`), `capsule_id`, `voice_key`, `audio_url`, `duration_s`, `voiced` (bool), `reason`, `in_budget`, `is_update`. **`Block` rows keep being written, one per capsule item that is voiced and attached**, with `request_id` = the caller's own request and a new `blocks.capsule_id`. This keeps feedback (`_resolve_subjects` by `Block.id`, signals per user request, `stop_topic` context), `told_log`, history and Home working unchanged. Feedback target stays `story` + Block id; a capsule id is never a target (it would 404 and lose request context). Blocks are not written for unvoiced items, which also fixes the told_log hole (3.4).
 
-New table `episode_items`: `episode_id`, `position`, `kind` (`intro|capsule|transition`), `capsule_id`, `voice_key`, `audio_ref` (resolved URL), `duration_s`, `reason` (`priority|signal|update|fill`), `is_update`, `playable` (bool). Existing `Block` rows are still written in Phase 1 (compat); in later phases they are derived views over capsule items.
+### 3.2 Ordering and budget (Phase 3)
 
-**Ordering** (deterministic, explainable):
-1. User-pinned order, if any (new nullable `requests.priority`, or a per-episode reorder the client PATCHes). The founder wants listener prioritisation (goal a), so this is required in Phase 3.
-2. Then `FeedbackSignal.score` descending per topic (useful minus not_quite; `stop_topic > 0` excludes), ties by recency of the request.
-3. Updates before repeats; never-heard before heard.
+Order: user priority (new `requests.priority`), then `FeedbackSignal.score` (useful minus not_quite; `stop_topic>0` excludes), updates first, never-heard first. Greedy fill until `max_length_minutes` (5/10/15/20): `intro + capsules + transitions <= budget`. Capsules that do not fit are not truncated; they appear as "More for later" (`in_budget=false`), voiced on tap. Honest regression to flag: with 5 min only 1-2 capsules fit, where today every topic is trimmed into the episode; "More for later" must be prominent in the UI.
 
-**Time budget**: `Profile.max_length_minutes` (5/10/15/20; null means no ceiling). Greedy fill in order: `intro + sum(capsule est + transition est) <= budget`. Capsules that do not fit are **not truncated**; they appear in the playlist with `playable=true, in_budget=false` under "More for later", voiced lazily on tap. This removes today's word-truncation (`trim_factor`) and the `had_more` hack. A capsule is never cut; a 3-min capsule in a 5-min budget simply means fewer capsules.
+### 3.3 "Heard"
 
-## 4. Intro and transitions
+Until iOS reports playback, "heard" = voiced and delivered in a published playlist (today's told_log semantics). Phase 3 adds `POST /capsules/{id}/heard` (completion >= 80%) and `capsule_heard` rows only for items with `voiced=true`.
 
-**Intro** (`kind=intro`): "Good morning, {name}." plus optional date/weather-free one-liner. Short (~20-60 chars, ~$0.004-0.011). Cached by (name_normalised, language, voice_key, daypart); the same user reuses it daily, so the marginal cost is about zero after the first day. Generated at episode assembly (name is known), never inside a capsule. Failure fallback: skip the intro (or text-only line in the UI).
+### 3.4 Publishing and old-client contract (partial episodes)
 
-**Transition library** (`transition_clips`): pre-voiced, keyed `(language, voice_key, from_category|*, to_category|*)` with text variants (2-3 per key, rotated to avoid repetition). Categories are the 12 in `news_pipeline.CATEGORIES`. Resolution order: exact pair, then `(from,*)` / `(*,to)`, then neutral, then **no transition** (the capsules already start/end neutral). Boundedness: the full pair matrix is 12x12=144 keys x 2 voices x 1-2 languages x ~10 words (60 chars, ~$0.011 each) is about $3-6 total if fully pre-generated once; realistically generate the 12 neutral + (to,*) clips eagerly (about 40 clips, under $1) and pairs lazily on first use, with a hard cap on the table. Library is content-addressed by text hash so a copy edit regenerates only that clip. Transitions never mention topics by name beyond category-level phrasing ("Switching to sports"), since the neighbouring capsule may differ per user.
+Hard rules, because `search.py` says ready iff `audio_url` and `told_log` trusts published Blocks:
+- The **job stays `voicing`** until the concatenated file exists. `Episode.published_at` and `audio_url` are set once, together, when the file is built; `audio_url` is never rewritten after publish.
+- Partial state is exposed only through the **playlist endpoint** (new clients), including for a job that is not yet published (owner-checked). Old clients keep seeing `making` until the file exists.
+- The concatenated file contains the voiced items present at build time; `Block.start_s/end_s` are computed from **real audio durations** (from ElevenLabs alignment end or an mp3 duration probe), not the 150 wpm estimate. Concatenating mp3 frames with encoder padding drifts slightly; verified only by a manual smoke test (section 10).
+- Items that fail terminally are omitted from the file; they are retried by the re-voice path (3.5) and appear in the playlist later, but never mutate the published file. A late-arriving item is visible only to new clients.
+- One-off requests are marked `fulfilled` only when their item is voiced and attached (today it happens at assemble, before voicing).
 
-**Prosody rules in the writing prompt** (so capsule bodies join cleanly): start in medias res with the fact, no greeting or "Welcome", no "as we said"; no "now / next / moving on / finally / that's all", no questions to the listener, no cliffhangers or teasers; end on a declarative, complete sentence, falling intonation, no sign-off; plain punctuation, no ellipses, no all-caps, no parenthetical asides (they synthesise unevenly); numbers and names written as spoken. Add a post-write validator (regex deny-list, ends with `.`) with one rewrite retry; a failing capsule is blocked from sharing rather than published. Whether ElevenLabs `eleven_multilingual_v2` request-stitching (previous/next text) can improve joins is **unverified**; not needed with neutral bodies plus transitions.
+### 3.5 Who re-voices failed items (bounded)
+
+The generalised `_revoice_failed_job`: on the next `POST /run`, scheduler tick or playlist poll, an item with `attempts < 3` and past its backoff is retried; cost is counted. After the cap it stays `failed` and is shown as unavailable.
+
+### 3.6 Shared shelves
+
+`generate_shared_episode`, `Episode.shared`, `InventoryItem`, `_latest_shared_by_tag` stay on the **v1 path** through Phase 2. Mapping them to capsules (a shared episode = a curated playlist of shared capsules) is a later optimisation, not a dependency.
+
+## 4. Intro and transitions (Phase 2b)
+
+**Intro**: "Good morning, {name}." (20-60 chars, ~$0.004-0.011). Cached by (normalised name, language, voice_key, daypart). The file is `intro_clips` customer data: random uuid filename (never derived from the name; `/media` is a static, unauthenticated mount), deleted on account deletion and included in export. Failure: skip the intro.
+
+**Transitions**: `transition_clips` keyed `(language, voice_key, from_category|*, to_category|*)`, 2-3 text variants rotated. Resolution: exact pair, then wildcard, then neutral, then none. Bounded: 12 categories, so 144 pairs x 2 voices x 1-2 languages x ~60 chars at $0.18/1k is about $3-6 if everything were generated once; in practice eager neutral + `(to,*)` clips (~40, under $1), pairs lazily on first use, hard row cap, content-addressed by text hash. Wording is category-level only ("Switching to sports").
+
+**Prosody rules in the writing prompt** (capsule bodies neutral at both ends): start with the fact, no greeting/"welcome", no "as we said"; no "now/next/moving on/finally/that's all", no questions to the listener, no teasers; end on a complete declarative sentence, no sign-off; plain punctuation, no ellipses or parentheticals; numbers/names written as spoken. A post-write validator (deny-list, ends with `.`) allows one rewrite; failing capsules are not shared. ElevenLabs request stitching is **unverified**; neutral bodies plus transitions do not rely on it.
 
 ## 5. Voice variants
 
-Two voices (Valentina/Andres placeholders; real ElevenLabs ids TBD, stored as config keyed by `voice_key`, not hardcoded in rows). `capsule_audio` is synthesised **lazily**: the first listener who needs voice V triggers it, with an in-flight claim (same idea as 2.3 step 5) so two simultaneous listeners do not both pay; later listeners hit the cache. Cost implication: worst case the first 2 listeners of a capsule each pay one voicing, then it is free. A capsule's total cost is `research + write + voicing x (voices actually used)`, so the second voice roughly doubles the cost of capsules that have listeners in both voices, but only after demand exists. `Profile.voice_id` maps to `voice_key` (migration: map unknown ids to a default; **unverified** what ids exist in production profiles). Language is part of the capsule key, so es and en do not share audio.
+- **Allowlisted `voice_key`** (config: `valentina`, `andres` mapping to ElevenLabs ids, ids TBD), stored in a new validated `profiles.voice_key`. `Profile.voice_id` stays untouched (client-settable free text, not trusted for the shared path). Null/unknown maps to a defined default `voice_key` (today null resolves to `_default_voice_id()` at synthesis; the migration/resolver must pin that default explicitly). Per-language voice allowlist is a founder question.
+- Voicing is lazy per (capsule, voice_key) with the same claim/attempts/stale logic as capsules (a `capsule_audio` claim), so two simultaneous listeners pay once.
+- `POST /capsules/{id}/voice` is a platform-paid action: it requires the capsule to be in the caller's own playlist, the voice in the allowlist, a per-user daily rate limit (suggest 20), the kill switch and the capsule ceiling; otherwise any user could trigger platform spend.
+- Cost: a capsule's total is research + write + voicing x voices actually used.
 
-## 6. Cost model
+## 6. Cost model and budget attribution
 
-Inputs. From `README.md` routing section and `episode_generator.py` comments: ElevenLabs about $0.18 per 1k characters; 150 wpm and ~6 chars/word gives about $0.16 per audio minute. Routed Claude cost per researched+written block about $0.11 (research on Sonnet is the bulk; I assume roughly $0.09 research and $0.02 writing, **unverified split**). The $0.43 research + $0.15 voicing = $0.58 one-request episode in the generator comment predates routing, so use it as the pre-routing reference, not the current run rate. Assume a 2-minute capsule (about 300 words, 1,800 chars): voicing about $0.32, text about $0.11, so about $0.43 for the first listener with one voice. Intro/transitions are at most a few cents per user per day and are omitted below.
+Inputs (README routing section, `ai_platform.py`): one researched+written block measured at **$0.1106**; research (Sonnet, ~50K input tokens, plus the $0.01/search surcharge, up to ~$0.03 with 3 searches) is ~99% of it; writing (Haiku, ~2K in / <500 out) is **~$0.001, not $0.02** (rev 1 was ~20x off). Voice: README measured **$0.142/audio-minute** (Starter tier, $0.117 on Scale); the code constant is **$0.18 per 1k chars (~$0.16/min)**. A 2-3 min capsule costs **$0.28-0.49 to voice** per first listener per voice. The $0.58 episode in a generator comment predates routing. Consequence: **writing once saves almost nothing; all the saving is voice, which is ~99% of per-listener marginal cost. Capsules win only if script AND voice audio are reused.**
 
-Cost per listener, per topic, per day (one voice, 2-min capsule):
+Per listener, per topic, per day (2-min capsule: voice $0.32 at the code rate, text $0.111):
 
-| Followers of the topic | Today (research shared inside the 6 h window, write+voice per listener) | Capsule model, one voice | Capsule model, 2 voices split 50/50 |
+| Followers | Today (research shared in the 6 h window, write + voice per listener) | Capsule, one voice | Capsule, both voices used |
 |---|---|---|---|
-| 1 | $0.43 | $0.43 | $0.43 (only one voice is ever synthesised) |
-| 10 | about $0.35 ($0.009 research + $0.02 write + $0.32 voice) | $0.043 | about $0.075 ($0.11 + 2 x $0.32 over 10) |
-| 100 | about $0.34 | $0.0043 | about $0.0075 |
-| Bespoke long tail (free-form, nobody else matches) | $0.43 | $0.43 (no regression, no gain) | $0.43 |
+| 1 | $0.43 | $0.43 | $0.43 (second voice only on demand) |
+| 10 | $0.33 ($0.011 + $0.001 + $0.32) | $0.043 | $0.075 |
+| 100 | $0.32 | $0.0043 | $0.0075 |
+| Bespoke long tail | $0.43 | $0.43 (no gain, no regression) | $0.43 |
 
-Caveats. (a) The "today" column assumes all followers hit the same 6 h research window; users spread across delivery times miss it, so today is at best this good. (b) Today's blocks are ~100-140 words (`_DEPTH_WORDS`), a 2-3 min capsule is 2-3x longer, so absolute spend per capsule is higher than per block today; the comparison above holds length constant. Longer capsules raise listener value but also total voice spend; the content-driven rule (no padding) is the cost control. (c) Capsules that are generated but never played cost text only if voicing is lazy for out-of-budget capsules (recommended, section 3). (d) The headline: voice is now the larger cost and today it does not amortise; capsules make it amortise, which is the real prize.
+Caveats: "today" is a best case (needs all followers inside one research window); capsules are longer than today's ~45 s blocks, so absolute spend per capsule rises (content-driven length and the hard cap are the control); out-of-budget capsules are voiced lazily so unplayed capsules cost text only.
 
-Budget attribution (`origin/feat/ai-budget`: `guard_paid_call`, per-customer daily budget, global budget, kill switch; news calls with `customer_id=None` or the zero-UUID sentinel are governed by `NEWS_DAILY_COST_CEILING_USD`, not the customer budget). Recommendation:
-- Shared capsule creation is **platform cost**, attributed to a sentinel customer (like the news sentinel), counted in the global daily budget and visible in a per-day "capsule spend" metric, but **not** charged against the first requester's per-customer budget. Otherwise the unlucky first listener of a hot topic burns their budget for everyone, and a depleted budget would starve shared content.
-- Bespoke capsules (key not matched by anyone else within the window; `capsule.owner_customer_id` set when the origin request was free-form and no other follower exists) are attributed to the requester via the existing `customer_id` in `AICall.context`. Rule: attribute to the requester at creation, then re-label as shared once a second user attaches, for reporting only (no refund).
-- The kill switch must refuse capsule creation and lazy voicing equally. A budget-blocked customer can still **play** already-built shared capsules (no paid call), which is a feature; the generator must not treat "no new capsule" as "failed episode" (see section 8).
-- Anchoring cost to `AICall.context` today uses a JSON `customer_id`; add `capsule_id` and `audio_id` there for per-capsule cost roll-ups. No new ledger.
+### Attribution and ceilings (fixes the sentinel hole)
+
+Reusing the news sentinel (`None`/`UUID(0)`) would exempt capsules from the per-customer budget, the global budget and the news ceiling, leaving only the kill switch: unbounded spend. Instead:
+- A **distinct capsule sentinel** (`CAPSULE_SENTINEL = UUID(int=1)`) and a **dedicated global UTC-day `CAPSULE_DAILY_COST_CEILING_USD`**, enforced **inside `guard_paid_call`** with its own branch (kill switch + capsule ceiling). Capsule spend still counts toward the global daily budget.
+- The ceiling is computed from a **committed ledger**: `capsules.cost + capsule_audio.cost` summed over the UTC day, not from `AICall` (AICall rows roll back on failure, hiding spend). Mirror the news fixes: cost accumulated additively per attempt, recorded on the failure path, hard per-day cap, row committed in its own short transaction.
+- `AICall.context` for capsule calls carries `source=capsule`, `capsule_id`, and `audio_id`.
+- **Bespoke** capsules (owner set) are charged to the owner through the normal `guard_paid_call` with the real `customer_id`, and also recorded in the capsule ledger.
+- **Per paid step, not up front**: today `run_generation` calls `guard_paid_call("generation_precheck")`, so a budget-blocked customer cannot even assemble from cached capsules. In Phase 2 the capsule path checks per paid step; assembling from ready cached capsules makes no paid call and must succeed for a blocked customer (acceptance test). A blocked paid step marks that item `blocked` (codes `budget_exceeded`/`ai_paused`), not the whole job failed.
+- Founder questions: ceiling value and who bears hot-topic spikes (section 11).
 
 ## 7. API and iOS impact
 
-All changes additive. Existing fields keep their meaning for the shipped iOS build.
+All additive; the shipped iOS build keeps working.
+- `GET /generation/episodes/{id}`: unchanged shape. `audio_url` and `blocks[]` keep their meaning (concatenated file, Block offsets). New optional `playlist_version` (1/2) and `items`. `Episode.style` stays meaningful (set to the capsule `style_id`); note `Profile.narration_style` is **ignored for capsules** in the pilot (one style).
+- `GET /generation/jobs/{id}/playlist` (and by episode id): owner-checked items `{position, kind, capsule_id, title, category, audio_url|null, duration_s, state (ready|voicing|pending|blocked|failed), voiced, in_budget, is_update, sources}`; works before publish.
+- `GET /capsules/{id}`: script, sources, capsule-relative `word_timestamps`; authorised as in 2.5; no `researched_from`.
+- `POST /capsules/{id}/voice`: rules in section 5.
+- `GET /home`: banner states unchanged (`making` until the file exists); optional `items_ready/items_total` for new clients. `JobOut` gets no new enum value.
+- Feedback: unchanged, by Block id.
 
-- `GET /generation/episodes/{id}` (`EpisodeOut`): unchanged shape. Add optional `items: [PlaylistItemOut]`, `playlist_version: 2`. `audio_url` and `blocks[]` continue to be populated (Phase 1 and 2) by a server-built concatenated mp3 (byte-join of the cached per-item mp3s, same technique as today, cheap) so old clients keep working. Block offsets then still refer to the concatenated file. Retire when the old build is gone.
-- New `GET /generation/episodes/{id}/playlist` returning items:
-  `{position, kind, capsule_id, title (summary), category, topic_key, audio_url|null, duration_s, ready: bool, voiced: bool, in_budget, is_update, sources[], transcript_available}`. `audio_url` is per item; null while lazily unvoiced.
-- `GET /capsules/{id}`: script, sources, `word_timestamps` (capsule-relative, so no offset math), `duration_s`.
-- `POST /capsules/{id}/voice?voice=valentina`: triggers lazy voicing for a "tap to hear" item; returns 202 plus `audio_url` when ready; idempotent.
-- `POST /capsules/{id}/heard` (Phase 3): completion telemetry.
-- `GET /home`: banner states unchanged. Add to `blocks[]` items `capsule_id` optionally; add banner field `playable_now: bool` and `ready_items/total_items` so Home can show "3 of 5 ready" (section 8).
-- `JobOut`: unchanged; add optional `items_ready`, `items_total`, and a `partial` status is NOT a new enum for old clients (they would not know it): keep `voicing` until the first item is playable then flip to `ready`. New per-item states live in the playlist endpoint only. This is the main backward-compat decision.
-- Feedback: `target_type` stays `episode|story|news`; capsule feedback uses `story` with `target_id = capsule_id` (today it is a block id). Aggregation key remains topic, so signals still feed ordering. Check `feedback.py` mapping when Phase 3 lands (**unverified**: file is on `feat/feedback-signals`, not main).
+iOS (Juanfe):
+- The current `AudioPlayerService` queue is not enough: one `AVPlayer`, item swap on `DidPlayToEndTime`, no preload, not gapless. Needs `AVQueuePlayer` with prefetched next items. MP3 encoder padding prevents truly gapless joins, so transitions do real masking work.
+- Per-capsule resume position (local first), lock-screen Now Playing per item, capsule-relative transcript timestamps (no `start_s` offset math), per-item states ("tap to hear"), "Play all" vs "pick one". Feature-flag on `playlist_version`.
+- **A device test of queue joins is a GATE** for 1b; fallback is the concatenated file for "play all".
+- Needs UI decisions: priority controls, voice picker, prominent "More for later".
 
-iOS (for Juanfe, front-end owner):
-- `PlayerViewModel` today equals one file plus `seek(to: block.startS)`. New mode: queue of per-item URLs through `AudioPlayerService.play(queue:startIndex:)`, which already swaps `AVPlayerItem`s on `DidPlayToEndTime`. "In this episode" list becomes the playlist; tap = `startIndex`; "Play all" = queue from index 0; "Pick one" = queue of one.
-- Gapless: separate `AVPlayerItem`s are not guaranteed gapless; mitigation is preloading the next item and relying on transitions to mask joins. If gaps are audible in testing, fallback is the server concatenated file for "play all". Needs a device test (**unverified**).
-- Resume position per capsule (local `UserDefaults` first, server later), transcript per capsule using capsule-relative `word_timestamps` (simpler than now: no `start_s` offset), per-item states (ready / voicing / "tap to generate voice").
-- Time-to-first-audio: start playback at the first `ready` item; refresh the playlist while later items arrive (poll `GET .../playlist`).
-- Feature-flag the new player behind `playlist_version` so one build supports both.
-- Needs UI decisions: capsule priority controls and the voice selector (2 voices).
+## 8. Failure isolation and execution model
 
-## 8. Failure isolation and partial episodes
+Capsule/item is the unit of failure; the episode is a best-effort assembly. One failed item never fails the job; the job fails only if zero items succeed (`empty` if all empty, keeping the existing retry rule). Budget/kill-switch blocks are item-level `blocked`.
 
-Rule: **a capsule is the unit of failure; an episode is a best-effort assembly.**
-- Each capsule has its own status and retry. Research/write/voice failure of capsule k marks that item `failed`, is retried by background job (existing `_run_with_escalation`), and does not touch the others. Today a single TTS failure fails the whole job and unpublishes the episode (`episode_generator.py` voicing `except` branch); that is replaced by per-item failure plus the existing "keep scripts, re-voice" principle (`_revoice_failed_job` generalises to "re-voice this item").
-- Episode state: `ready` as soon as >= 1 voiced capsule is attached. `published_at` is stamped then (not at the end), still only when audio exists, preserving the told-log invariant for the items that exist. Missing items show `ready=false` in the playlist and fill in as they land (push/poll). If zero capsules ever succeed: `failed`/`empty` as today.
-- `empty` day semantic is preserved: all capsules `empty` means job `empty`; the 45 min TTL still allows the retry path.
-- Budget block/kill switch (`BudgetExceededError`, `AIKillSwitchError`) are not failures of other capsules: the episode may still be assembled from already-built shared capsules; only the missing paid steps are marked `blocked` (stable code `budget_exceeded`/`ai_paused`, already used by `_BLOCKED_CODES` on that branch).
-- Time-to-first-audio: build order = highest priority first; research phase parallelised per capsule (today it is a sequential loop); voice item 1 immediately, rest in background. Cached capsules make the first item near-instant.
-- Concurrency/idempotency carried over: unique (customer, fecha, path) job stays; add unique (episode_id, position).
+**Execution model (honest)**: there is no queue, and the scheduler runs generation inline on a shared `AsyncSession` that is not concurrency-safe.
+- **Phase 1 is sequential and synchronous**, in the same session, exactly like today but with per-item try/except and per-item commit.
+- Parallel research or background voicing (Phase 2) requires: separate sessions per task (session factory), a named task owner (an in-process worker started in the lifespan, or a Railway worker later), claim rows with heartbeat, and stale-claim reclaim, because a Railway redeploy kills in-flight tasks. Until that exists, Phase 2 sharing is still correct (claims are DB-based) but latency is sequential.
+- Time-to-first-audio: highest-priority item first; new clients start on the first voiced item via the playlist; old clients wait for the file.
 
 ## 9. Data model and migration plan
 
-New tables, created by `create_all` (no `COLUMNAS_ESPERADAS` entry needed): `capsules`, `capsule_audio` (unique capsule_id+voice_key), `episode_items` (unique episode_id+position), `capsule_heard` (customer_id, capsule_id; unique), `transition_clips`, `intro_clips`. Indexes: capsules by (topic_key, scope_key, geography_key, language, valid_until); a partial unique index for in-flight claims. Indexes on these new tables are created by `create_all`; `INDICES_ESPERADOS` in `app/db/migraciones.py` is only needed for an index added to a table that already exists (none planned).
+New tables (`create_all`): `capsules`, `capsule_audio`, `episode_items`, `transition_clips`, `intro_clips`, `capsule_heard` (Phase 3). Each is added to `conftest._FULL_SESSION_TABLES` and, where it holds customer data (`episode_items` via the episode, `intro_clips`, `capsule_heard`), to `account.py`'s explicit deletion and export (there is no `ON DELETE CASCADE` reliance there). Capsule audio and shared capsules contain no customer data.
 
-Columns on existing tables to list in `COLUMNAS_ESPERADAS`:
-- `("episodes", "playlist_version", "INTEGER DEFAULT 1")` (2 = capsule playlist)
-- `("requests", "priority", "INTEGER")` (user ordering; nullable)
-- `("profiles", "voice_key", "VARCHAR(30)")` (derives from `voice_id`, or reuse `voice_id` to hold the key; decide at build)
-- `("blocks", "capsule_id", "UUID")` optional, only if Phase 1 keeps `Block` as the compat view.
-Nothing else; `Episode.audio_url` stays as is.
+Columns on existing tables for `COLUMNAS_ESPERADAS`, each added **in the phase that uses it**:
+- `("blocks", "capsule_id", "UUID")` and `("episodes", "playlist_version", "INTEGER DEFAULT 1")`: Phase 1a.
+- `("profiles", "voice_key", "VARCHAR(30)")`: with the voice picker (Phase 2b/3).
+- `("requests", "priority", "INTEGER")`: Phase 3.
+New tables need no `COLUMNAS_ESPERADAS`; `INDICES_ESPERADOS` only for an index on an existing table (none planned). Old episodes keep `playlist_version=1`; no backfill.
 
-Backfill: none. Old episodes keep `playlist_version=1` and behave as today. `FindingsCache` is untouched (research cache remains the first-level cache; capsule is the second-level cache of the written/voiced product).
+**Storage**: capsule mp3 ~1 MB/min at 128 kbps **(unverified)**, so ~2 MB per voiced capsule per voice. Phase 1 stores per-item audio **and** the concatenated file (double): retention = per-item files for an episode are kept for 14 days then deleted if the concatenated file exists and no new client references them; capsule audio referenced by any history episode is kept, unreferenced stale capsule audio deleted after 14 days (text kept). Size the Railway `/data/media` volume before Phase 1 ships.
 
-Storage: capsule mp3 about 1 MB/min at 128 kbps **(unverified)**, so about 2 MB per voiced capsule on the Railway `/data/media` volume. History means capsules referenced by a published episode are kept; unreferenced stale capsules older than 14 days are deleted (audio only, text kept). Size the volume before Phase 2.
+## 10. Phased rollout and tests
 
-## 10. Phased rollout
+Tests run only in GitHub Actions (`backend-tests.yml`). Every phase also needs the cross-cutting tests in the list below.
 
-**Phase 1: per-capsule audio, playlist API, iOS queue (still per user, no sharing).**
-Backend: voice each block to its own file; add `episode_items` + playlist endpoint; keep the concatenated file for old clients; per-item failure isolation and first-audio-ready. iOS: queue player behind `playlist_version`.
-Acceptance: a 3-topic episode returns 3 playable items; killing TTS for item 2 still yields an episode with items 1 and 3; old iOS build plays the concatenated file unchanged; word timestamps per item verified against audio.
-Tests (pytest, run only in GitHub Actions `backend-tests.yml`): generator tests with a fake `synthesize` that fails for one item; contract tests that `EpisodeOut` existing fields are unchanged (golden JSON); playlist ordering test. iOS: unit test of queue advance plus manual device gapless check.
+**1a: backend per-item voicing, failure isolation, concatenated-file compatibility, told_log fix (no iOS change).** Sequential, per-item voicing/commit, Blocks only for voiced items, real durations for offsets, job stays `voicing` until file exists. Value is *not* cost (Phase 1 does not reduce it): it is failure isolation (a single TTS failure fails the whole job today), time-to-first-audio, and listener control. Acceptance: failing item 2 of 3 yields an episode with items 1 and 3; `EpisodeOut` existing fields unchanged (golden JSON); told_log ignores unvoiced items; `search.py` and Home banner state correct while an episode is partial.
+**1b: iOS queue behind `playlist_version`.** `AVQueuePlayer`, prefetch, resume, Now Playing. Gate: device gapless test.
+**2a: shared capsules (sharing core).** Claim key flow, single-flight with polling and stale reclaim, novelty check, listener-independent writing prompt without `raw_text`/`scope`, lazy per-voice audio with default voice, platform sentinel, **capsule ceiling inside `guard_paid_call`**, **attempts cap + backoff**, **retire action**, per-step guard, authorised reads. Per-customer feature flag with shadow mode. Acceptance: two users on one topic cause exactly one research+write and one voicing; 10 concurrent first requests produce one capsule; a budget-blocked customer plays ready capsules; ceiling hit stops new capsule spend; a failed key stops after 3 attempts.
+**2b: intro and transition library, prosody validator, voice picker + `profiles.voice_key`.** Acceptance: neutral start/end validator passes >= 95% on 50 real capsules; missing transition falls back to none; manual listening review of 20 joins.
+**3: selection.** `requests.priority`, `FeedbackSignal` ordering, time-budget fill, "More for later", `capsule_heard` and `POST /capsules/{id}/heard`, "only what's new".
+**Later**: embeddings (Voyage) with high threshold and exact-key authority; multiple styles; news-slot invalidation; map shared shelves to capsules; retire the concatenated file.
 
-**Phase 2: shared capsules, listener-independent writing, intro and transition library.**
-Backend: `capsules`/`capsule_audio`, key lookup, in-flight claim, new writing prompt (no `previously_told`, no `raw_text`), prosody validator, lazy per-voice synthesis, intro and transition tables, platform-cost attribution. Feature flag per customer (shadow mode first: generate both, compare).
-Acceptance: two users following "premier league" within the window cause exactly one research+write call and one voicing per voice (assert on `AICall` counts); 10 concurrent first requests produce one capsule; a hit costs 0 USD; capsules pass the neutral-start/end validator at >=95% on a sample of 50; missing transition falls back to none without error; budget-blocked user still plays existing capsules.
-Tests: concurrency test with asyncio gather over the claim; cost-attribution tests mirroring `test_ai_budget.py`; prompt snapshot/regex tests on a fixture set of findings; manual listening review of joins (not automatable).
+Test list (all phases as they apply): migration test against a DB created **without** the new columns (conftest uses only `create_all`); told_log with partially voiced episodes; cost ceiling and attribution through the **real** `guard_paid_call` (sentinel cannot bypass); crash plus stale-claim reclaim; fingerprint stability and novelty (same news does not create a new capsule); privacy (no name/`raw_text` in shared scripts, `researched_from` never serialised); capsule read authorisation; feedback through Block id of a capsule item; account deletion and export of every new table; voice endpoint ownership/allowlist/rate limit; length (words per capsule metric, thin-topic acceptance test on real topics); **manual smoke test** (not automatable): real mp3 concatenation, `word_timestamps` offsets and real ElevenLabs durations (the README says live timestamp verification is still outstanding).
 
-**Phase 3: selection by signals and budget, "only what's new".**
-Backend: ordering (priority, `FeedbackSignal`), time-budget fill, `capsule_heard`, "More for later" lazily voiced, `POST /capsules/{id}/heard`. iOS: priority UI, voice picker, update labels.
-Acceptance: a 5-minute budget yields only capsules that fit, none truncated; a second episode the same day omits capsules already heard unless the fingerprint changed; `stop_topic` excludes a topic.
-Tests: pure-function tests for selection (table-driven), told/heard edge cases (heard but not published), budget boundary cases.
+## 11. Risks and open questions (recommendation each)
 
-**Later phases**: (4) embeddings (Voyage AI, account pending) to match free-form questions to existing capsules, with a high similarity threshold and an `exact` fallback so false hits stay rare; (5) multiple styles (Straight news/Story/Conversational) as additional `style_id` values, each fragmenting sharing; (6) stale-on-news-slot invalidation; (7) retire the concatenated file once the old iOS build is gone.
+Founder questions:
+1. **Who bears hot-topic cost spikes, and what is the capsule ceiling?** Recommendation: platform pays shared capsules under a dedicated daily ceiling; start at a number equal to ~(expected shared capsules/day x $0.45) with a 2x headroom, reviewed weekly. The founders set the value.
+2. **"Update" labelling and "heard" definition before iOS reports playback.** Recommendation: "heard" = delivered in a published playlist until Phase 3; label "update" only when the novelty check says the capsule truly differs.
+3. **Per-language voices in the 2-voice allowlist.** Recommendation: one allowlist entry per (language, voice_key); es first, en later; do not share audio across languages.
+4. **Dropping `depth`/`scope`/`raw_text` from the shared path** reduces personalisation of shared content. Recommendation: accept in the pilot; bespoke capsules remain for private niche questions.
+5. **Time-budget regression** (5 min = 1-2 capsules). Recommendation: prominent "More for later", measure completion.
 
-## 11. Risks and open questions (with recommendation)
+Engineering risks:
+6. Length: today's blocks are ~100-140 words; research has `max_uses 3`, `max_tokens 4096` incl. thinking and JSON, findings are "a few plain sentences", so 300-450 words often exceeds what findings support. Recommendation: keep the hard cap, let thin topics be short, add a words-per-capsule metric and an acceptance test on real topics.
+7. Free-form questions rarely share until embeddings. Recommendation: ship, measure hit rate per topic (`capsule_cache_hit`).
+8. Embedding false hits later. Recommendation: conservative threshold, shadow-log near misses, exact key stays authoritative.
+9. Gapless playback (7). Recommendation: device gate, concatenated fallback.
+10. Prompt version bumps cause thundering herd (2.6). Recommendation: per-topic rollout under the ceiling.
+11. Prosody joins are subjective. Recommendation: listening review, transitions as safety net.
+12. Multiple styles multiply capsules. Recommendation: at most 2 styles initially, voice only what is selected.
+13. Execution model (section 8) is the biggest unbuilt dependency for parallelism. Recommendation: ship Phase 1 and 2a sequentially; decide a worker (in-process vs Railway worker) before optimising latency.
+14. Shared wrong content reaches many users. Recommendation: retire action in 2a, `sources` and licences stored as today.
 
-1. **Free-form questions rarely share until embeddings.** Expect long-tail cost like today for them. Recommendation: ship anyway, measure share rate per `topic_key` (event `capsule_cache_hit`), and encourage named topics in onboarding.
-2. **False-hit risk once semantic matching lands.** A wrong capsule served is worse than a miss. Recommendation: conservative threshold, shadow-mode logging of near-misses before enabling, keep `exact` key path authoritative.
-3. **Listener-independent writing loses personal continuity.** Recommendation: accept per decision 3; recover through topic-level lineage and "update" labelling; revisit if retention data says users miss it.
-4. **Longer capsules (2-3 min vs ~45 s blocks today) raise absolute voice spend and may exceed what 3 web searches (`max_uses: 3`, 4096 max tokens) can support.** Recommendation: keep content-driven length with a hard cap (about 450 words) and let thin topics be short; revisit `max_uses`; track words per capsule.
-5. **`depth` setting disappears from capsule writing.** Users who chose "brief"/"deep" lose that control. Recommendation: replace with the time budget now; if needed later add depth as a key component (costly for sharing) or two fixed lengths.
-6. **Platform vs requester cost attribution** for shared capsules (section 6). Recommendation: shared capsules to the platform pool under the global budget, bespoke to the requester. Needs founder sign-off on who bears hot-topic spikes.
-7. **Gapless playback with `AVPlayerItem` queue** is unverified. Recommendation: device test in Phase 1; keep the concatenated "play all" file as a fallback.
-8. **Heard tracking without server playback position** (none exists). Recommendation: "delivered in a published playlist" in Phase 2, real completion telemetry in Phase 3; do not block on it.
-9. **Voice ids and storage**: ElevenLabs ids still TBD; profiles may hold arbitrary `voice_id`. Recommendation: define `voice_key` config now, map unknown ids to a default; size the Railway volume for capsule history (policy in section 9).
-10. **Prosody quality of neutral joins is subjective**; regexes do not guarantee good audio. Recommendation: a listening review of 20 joins before Phase 2 goes broad; transitions are the safety net.
-11. **Multiple styles later** multiply capsule count per topic (styles x voices x languages). Recommendation: cap at 2 styles in the first iteration and only synthesise combinations someone selects; consider whether style should be a voicing-time option (SSML/tone) rather than a script change (**unverified** quality).
-12. **Safety/legal on shared content**: every capsule stores `sources` with licenses, as `Block` does. A shared wrong capsule reaches many users, so corrections matter. Recommendation: an ops "retire capsule" action (mark `status=failed`, next lookup regenerates) in Phase 2.
-13. **Legacy `Block`/`told_log` semantics diverge** during the mixed period (Phase 1-2). Recommendation: keep `told_log` for v1 episodes; do not mix the two for the same user on the same day.
-
-Not verified in this pass: the iOS player behaviour beyond reading the code (no build/run); production data volumes; the $0.11 research/writing split; actual mp3 bitrate; ElevenLabs behaviour for request stitching; feedback API mapping (branch not merged). All numbers in section 6 are estimates from repo comments and README, not measured.
+Not verified in this pass: iOS behaviour beyond reading code; production data volumes; mp3 bitrate; ElevenLabs request stitching; real audio durations vs estimates; the exact per-search surcharge in production. All cost figures are estimates from README and code constants, not measurements.
