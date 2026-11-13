@@ -2,6 +2,11 @@ name: backend-tests
 
 on:
   workflow_dispatch:
+  push:
+    branches: ["feat/news-backend"]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-tests.yml"
   pull_request:
     paths:
       - "backend/**"
@@ -26,7 +31,6 @@ jobs:
           --health-retries 10
     env:
       TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/lucaku_audio_test
-      ANTHROPIC_API_KEY: ""
     defaults:
       run:
         working-directory: backend
