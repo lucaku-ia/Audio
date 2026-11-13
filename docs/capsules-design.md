@@ -151,7 +151,7 @@ Rule: **a capsule is the unit of failure; an episode is a best-effort assembly.*
 
 ## 9. Data model and migration plan
 
-New tables, created by `create_all` (no `COLUMNAS_ESPERADAS` entry needed): `capsules`, `capsule_audio` (unique capsule_id+voice_key), `episode_items` (unique episode_id+position), `capsule_heard` (customer_id, capsule_id; unique), `transition_clips`, `intro_clips`. Indexes: capsules by (topic_key, scope_key, geography_key, language, valid_until); a partial unique index for in-flight claims. **Per `app/db/migraciones.py`, indexes on existing tables and any new unique/partial index need an `INDICES_ESPERADOS` entry only if they target existing tables; for new tables `create_all` creates them.**
+New tables, created by `create_all` (no `COLUMNAS_ESPERADAS` entry needed): `capsules`, `capsule_audio` (unique capsule_id+voice_key), `episode_items` (unique episode_id+position), `capsule_heard` (customer_id, capsule_id; unique), `transition_clips`, `intro_clips`. Indexes: capsules by (topic_key, scope_key, geography_key, language, valid_until); a partial unique index for in-flight claims. Indexes on these new tables are created by `create_all`; `INDICES_ESPERADOS` in `app/db/migraciones.py` is only needed for an index added to a table that already exists (none planned).
 
 Columns on existing tables to list in `COLUMNAS_ESPERADAS`:
 - `("episodes", "playlist_version", "INTEGER DEFAULT 1")` (2 = capsule playlist)
@@ -181,7 +181,7 @@ Backend: ordering (priority, `FeedbackSignal`), time-budget fill, `capsule_heard
 Acceptance: a 5-minute budget yields only capsules that fit, none truncated; a second episode the same day omits capsules already heard unless the fingerprint changed; `stop_topic` excludes a topic.
 Tests: pure-function tests for selection (table-driven), told/heard edge cases (heard but not published), budget boundary cases.
 
-**Later phases**: (4) embeddings (Voyage AI, account pending) to match free-form questions to existing capsules, with a high similarity threshold and an `exact` fallback so false hits stay rare; (5) multiple styles (Straight news/Story/Conversational) as additional `style_id` values, each fragmenting sharing, with the style fan-out rule below; (6) stale-on-news-slot invalidation; (7) retire the concatenated file once the old iOS build is gone.
+**Later phases**: (4) embeddings (Voyage AI, account pending) to match free-form questions to existing capsules, with a high similarity threshold and an `exact` fallback so false hits stay rare; (5) multiple styles (Straight news/Story/Conversational) as additional `style_id` values, each fragmenting sharing; (6) stale-on-news-slot invalidation; (7) retire the concatenated file once the old iOS build is gone.
 
 ## 11. Risks and open questions (with recommendation)
 
