@@ -89,14 +89,15 @@ async def test_logged_call_cost_is_nonzero_with_search_and_tagged_news(full_db_s
     await db.commit()
     row = (await db.execute(select(AICall))).scalar_one()
     expected = 50_000 / 1e6 * 2.00 + 2_000 / 1e6 * 10.00 + 0.03
-    assert cost == pytest.approx(expected) and float(row.cost) == pytest.approx(expected) > 0
+    assert expected > 0
+    assert cost == pytest.approx(expected) and float(row.cost) == pytest.approx(expected)
     assert row.context["source"] == "news"
 
 
 # --- 2a. run cost accumulates and survives failures --------------------------
 
 async def _run_row(db):
-    return (await db.execute(select(NewsRun))).scalar_one()
+    return (await db.execute(select(NewsRun).execution_options(populate_existing=True))).scalar_one()
 
 
 @pytest.mark.asyncio
