@@ -48,13 +48,13 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime
 
 import anthropic
 import httpx
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import clock
 from app.models.instrumentation import AICall
 from app.services import findings_store
 from app.services.events import emitir
@@ -273,7 +273,7 @@ async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, ve
         latency_ms=latency_ms,
         context=context,
         rejected_reason=rejected_reason,
-        creado_en=datetime.utcnow(),
+        creado_en=clock.utcnow(),
     ))
     # The AICall row above is the detailed cost/latency record (System Contracts'
     # own object); the Instrumentation catalogue (§5) additionally lists "ai_call"
@@ -1077,7 +1077,7 @@ async def synthesize(
             context={"customer_id": str(customer_id), "request_id": str(request_id) if request_id else None,
                      "episode_id": str(episode_id) if episode_id else None},
             rejected_reason=reason,
-            creado_en=datetime.utcnow(),
+            creado_en=clock.utcnow(),
         ))
         # Not ai_rejected: this is a technical/provider failure, not a safety
         # rejection — ai_rejected is reserved for structure_request's safety verdict.
@@ -1093,7 +1093,7 @@ async def synthesize(
         latency_ms=latency_ms,
         context={"customer_id": str(customer_id), "request_id": str(request_id) if request_id else None,
                  "episode_id": str(episode_id) if episode_id else None},
-        creado_en=datetime.utcnow(),
+        creado_en=clock.utcnow(),
     ))
     await emitir(db, "ai_call", customer_id=customer_id, source="ai_platform", purpose="synthesize", failed=False)
 

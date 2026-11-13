@@ -7,6 +7,8 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
 
+from app.core import clock
+
 
 class RequestKind(str, enum.Enum):
     standing = "standing"
@@ -56,7 +58,7 @@ class Request(Base):
     pending_version_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("request_versions.id"), nullable=True)
     last_answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fulfilled_episode_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("episodes.id"), nullable=True)
-    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=clock.utcnow)
 
 
 class RequestVersion(Base):
@@ -68,5 +70,5 @@ class RequestVersion(Base):
     structured: Mapped[dict] = mapped_column(JSON, default=lambda: {})
     source: Mapped[VersionSource] = mapped_column(SAEnum(VersionSource, name="request_version_source"))
     status: Mapped[VersionStatus] = mapped_column(SAEnum(VersionStatus, name="request_version_status"), default=VersionStatus.pending)
-    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=clock.utcnow)
     aplicado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

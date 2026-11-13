@@ -31,6 +31,8 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
 
+from app.core import clock
+
 
 class OnboardingStep(str, enum.Enum):
     interests = "interests"
@@ -52,5 +54,5 @@ class OnboardingState(Base):
     consent_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # Ley 1581 de 2012 — PRD §6
     notifications_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # null = not asked yet
     tour_completed: Mapped[bool] = mapped_column(Boolean, default=False)
-    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=clock.utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

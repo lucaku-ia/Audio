@@ -51,6 +51,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
+from app.core import clock
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.episode import Block, Episode
@@ -166,7 +167,7 @@ async def crear_request(
         structured=structured,
         source=VersionSource.create,
         status=VersionStatus.applied,
-        aplicado_en=datetime.utcnow(),
+        aplicado_en=clock.utcnow(),
     )
     db.add(version)
     await db.flush()
@@ -233,7 +234,7 @@ async def active_for_generation(
 
     return {
         "customer_id": str(cliente.id),
-        "at": (at or datetime.utcnow()).isoformat(),
+        "at": (at or clock.utcnow()).isoformat(),
         "standing_requests": [_request_out(r) for r in standing],
         "one_off_requests": [_request_out(r) for r in one_offs],
         "pending_versions_to_apply": [str(r.id) for r in pendientes],
@@ -298,7 +299,7 @@ async def editar_request(
         structured=structured,
         source=VersionSource.edit,
         status=VersionStatus.applied,
-        aplicado_en=datetime.utcnow(),
+        aplicado_en=clock.utcnow(),
     )
     db.add(nueva_version)
     await db.flush()
@@ -437,7 +438,7 @@ async def mark_answered(
 ):
     """Called by the Episode Generator after publishing — doesn't exist yet, but the
     operation is already ready per the contract (System Contracts §2)."""
-    ahora = datetime.utcnow()
+    ahora = clock.utcnow()
     actualizados = []
     for rid in body.request_ids:
         req = await _obtener_request_del_cliente(db, rid, cliente)
@@ -493,7 +494,7 @@ async def calificar_episodio(
 
     signals = dict(perfil.signals or {})
     ratings = dict(signals.get("ratings", {}))
-    ratings[str(episode_id)] = {"rating": body.rating, "rated_at": datetime.utcnow().isoformat()}
+    ratings[str(episode_id)] = {"rating": body.rating, "rated_at": clock.utcnow().isoformat()}
     signals["ratings"] = ratings
     perfil.signals = signals  # reassign the whole dict — JSON columns don't track in-place mutation
 

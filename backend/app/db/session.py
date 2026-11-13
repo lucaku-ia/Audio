@@ -32,67 +32,54 @@ DATABASE_URL = _normalizar_database_url(
 # SHORT pool_timeout so a saturated pool fails fast and visibly instead of
 # hanging every caller for 30s, and pool_recycle to stay under the proxy's
 # idle-connection cutoff.
+
 # Force this PROCESS to UTC, before any connection is made.
 #
-# This codebase stores every timestamp as naive datetime.utcnow() into columns
-# declared DateTime(timezone=True). asyncpg encodes a naive datetime for a
-# timestamptz parameter by assuming it is in the PROCESS's local timezone
+# This is no longer the fix for the timestamp bug — it was, and the record of
+# why it was not enough is worth keeping. asyncpg encodes a NAIVE datetime
+# bound to a timestamptz parameter by assuming the process's local timezone
 # (Python's naive .astimezone() does exactly that), so on a machine running
-# UTC-8 a value meaning 17:20 UTC was written as 01:20 UTC the next day —
-# eight hours in the future. Every age computed against utcnow() then came out
-# negative, and anything time-based silently inverted.
+# UTC-8 a value meaning 17:20 UTC was written as 01:20 UTC the next day:
 #
-# Measured, not assumed:
 #     sent naive : 2026-11-11 17:20:48
 #     echoed     : 2026-11-12 01:20:48+00:00    (TZ unset, machine on Pacific)
 #     echoed     : 2026-11-11 17:20:48+00:00    (TZ=UTC)
 #
-# Note what does NOT fix it: setting the DB session's timezone. That conversion
-# happens client-side in asyncpg, before Postgres sees anything, so the server
-# setting below is powerless over writes. It was the first fix attempted here
-# and it failed this module's own round-trip test.
+# Pinning the process to UTC made the naive values accidentally correct, which
+# is containment, not a cure. It held only inside this process, said nothing
+# about any other consumer of the same database, and the hasattr guard below
+# exists because time.tzset() does not exist on Windows at all — a correctness
+# property that evaporates on an unsupported platform is not a correctness
+# property. Every timestamp this backend writes is now timezone-aware UTC
+# (app/core/clock.py), which removes the ambiguity at the source instead.
 #
-# Why production has not visibly broken: Railway's containers already run UTC,
-# so naive-local happens to equal UTC there. The convention has been correct by
-# luck, not by construction — it would break on any host configured otherwise,
-# and it has been breaking in local development all along.
+# Kept anyway, as belt and braces, for two reasons that are still real:
 #
-# The genuinely correct fix is timezone-aware UTC at all 31 utcnow() call
-# sites. That is a larger, riskier sweep and is listed in the README's next
-# steps; this makes the existing convention correct everywhere in one place
-# meanwhile. app/services/findings_store.py already uses aware UTC of its own
-# and stays correct regardless of this setting.
+#   date.today() is LOCAL. home.py and episode_generator both derive "today"
+#   from it to pick an episode's `fecha`, and nothing about aware datetimes
+#   touches that call. Without this pin, a developer west of Greenwich gets a
+#   different day than production for several hours each evening.
+#
+#   Any naive datetime that slips back in — a dependency's default, a row
+#   written by a script, a line that gets past the guard test — lands on UTC
+#   rather than on whatever the host happens to be set to. That turns a silent
+#   multi-hour shift back into a no-op.
+#
+# What it must NOT be mistaken for again: a reason to write naive timestamps.
+# The conversion happens client-side, in asyncpg, before Postgres is involved;
+# a process-wide setting is the wrong altitude for a per-value property.
 os.environ["TZ"] = "UTC"
 if hasattr(time, "tzset"):  # Unix only; absent on Windows, where this would
     time.tzset()            # raise AttributeError at import and kill the app
 
-# The DB session's timezone still matters for SERVER-side date arithmetic —
-# func.date() on a timestamptz column buckets per this setting, which is what
-# instrumentation's cost-summary and event-count day-bucketing rely on (see the
-# caveat recorded in app/api/routes/instrumentation.py).
+# The DB session's timezone is a separate matter and is genuinely load-bearing:
+# func.date() on a timestamptz column buckets per this setting, server-side,
+# which is what instrumentation's cost-summary and event-count day-bucketing
+# rely on to line up with the UTC cutoffs in the same queries. Aware timestamps
+# do not help there — the bucketing decision is made by Postgres, not by us.
+# See the caveat recorded in app/api/routes/instrumentation.py.
 ENGINE_CONNECT_ARGS = {"server_settings": {"timezone": "UTC"}}
 
-# Pin the DB session's timezone to UTC.
-#
-# This codebase standardizes on naive datetime.utcnow() for every stored
-# timestamp, while the columns themselves are DateTime(timezone=True). Postgres
-# interprets a naive value written to a timestamptz column as the SESSION's
-# timezone and converts it to UTC — so that convention is only correct when the
-# session timezone already IS UTC. It is not, by default: this machine's
-# Postgres reports America/Los_Angeles, which stored a row stamped "now" eight
-# hours in the FUTURE and made every age computed against utcnow() negative.
-#
-# Two places in this repo already carry comments warning about exactly this
-# (episode_generator's check_late_jobs, and instrumentation's day-bucketing
-# caveat). Rather than rewrite 31 call sites and hope none are missed, one line
-# makes the existing convention correct by construction, everywhere, and makes
-# local behaviour match production instead of differing by the developer's
-# machine timezone.
-#
-# Anything comparing a stored time to utcnow() depends on this: the late-job
-# watchdog, token expiry, the login rate limiter, cost day-bucketing and the
-# findings cache's freshness windows. The findings store additionally uses
-# aware UTC of its own, so it stays correct even if this setting is ever lost.
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,

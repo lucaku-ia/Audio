@@ -32,11 +32,12 @@ caching it would turn one malformed model response into everybody's.
 """
 import re
 import unicodedata
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import clock
 from app.models.findings_cache import FindingsCache
 
 # Tunable without a deploy if they turn out wrong — but the ordering between
@@ -71,24 +72,16 @@ def _ttl_for(no_news: bool) -> timedelta:
     return EMPTY_TTL if no_news else FRESH_TTL
 
 
-def _now() -> datetime:
-    """Timezone-AWARE UTC. Deliberately not datetime.utcnow().
-
-    utcnow() returns a naive datetime. Written into a `DateTime(timezone=True)`
-    column, Postgres interprets a naive value as the SESSION's timezone and
-    converts it to UTC — so on a machine running UTC-8, a row stamped "now"
-    comes back 8 hours in the FUTURE. Every freshness check then computes a
-    negative age, every entry looks fresh forever, and the cache quietly
-    stops expiring. That is the worst possible failure for this table: it
-    would serve yesterday's news indefinitely while looking like it worked.
-
-    This was caught by a test asserting stale entries miss, which passed in
-    isolation and failed through the real fixture — the difference being
-    whether the row was re-read from Postgres or served from SQLAlchemy's
-    identity map. Worth remembering: an ORM identity map can hide a
-    timezone bug completely until something forces a reload.
-    """
-    return datetime.now(timezone.utc)
+# Aware UTC, from the one clock the whole backend now shares. This module had
+# its own copy first, because this is the table where the naive-utcnow() bug
+# was found: a row stamped "now" came back hours in the FUTURE, every
+# freshness check computed a negative age, every entry looked fresh forever,
+# and the cache would have served yesterday's news indefinitely while looking
+# like it worked. The sweep that followed made aware UTC the rule everywhere;
+# these two names stay as the local vocabulary of a module that reads better
+# with them. See app/core/clock.py for the mechanism.
+_now = clock.utcnow
+_as_utc = clock.as_utc
 
 
 async def lookup(
@@ -153,13 +146,3 @@ async def store(
         topic_key=topic_key, scope_key=scope_key, geography_key=geography_key,
         payload=payload, no_news=no_news, researched_from=researched_from, original_cost=cost,
     ))
-
-
-def _as_utc(value: datetime) -> datetime:
-    """Coerce a stored timestamp to aware UTC.
-
-    Rows written before _now() existed (or by any other code path still using
-    utcnow()) come back naive. Treating those as UTC is the right reading:
-    utcnow() did mean UTC, it just failed to say so.
-    """
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)

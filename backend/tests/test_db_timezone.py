@@ -1,18 +1,27 @@
 """
-Pins the DB session timezone to UTC.
+Guards the two UTC pins in app/db/session.py.
 
-This codebase stores every timestamp as naive datetime.utcnow() into columns
-declared DateTime(timezone=True). Postgres reads a naive value as the
-SESSION's timezone and converts it to UTC, so that convention is correct only
-while the session timezone IS UTC — and it is not by default. This machine's
-Postgres reports America/Los_Angeles, which stored a row stamped "now" eight
-hours in the future and made every age computed against utcnow() negative.
+Neither pin is the fix for the naive-timestamp bug any more — every timestamp
+this backend writes is timezone-aware UTC now (app/core/clock.py, and
+tests/test_timezone_aware_timestamps.py for the property that actually
+matters). Both pins are still worth holding, for reasons of their own:
 
-Nothing about that failure is loud. A clock that reads eight hours ahead
-doesn't raise; it makes freshness checks, the late-job watchdog, token expiry
-and the login rate limiter quietly wrong in whichever direction the offset
-points, while every test that never round-trips through Postgres keeps
-passing. These tests are the round-trip.
+The DB SESSION timezone decides how server-side func.date() buckets a
+timestamptz column, which instrumentation's cost-summary and event-counts
+depend on to line up with the UTC cutoffs in the same queries. Aware
+timestamps do not help there; Postgres makes that call, not us.
+
+The PROCESS timezone is belt and braces: it makes date.today() mean the UTC
+day, and it means any naive value that slips back in lands on UTC instead of
+on whatever the host is set to — a no-op instead of a silent multi-hour
+shift. The test below deliberately writes a naive datetime to check exactly
+that, and is the one place in this suite where doing so is the point.
+
+Nothing about the original failure was loud. A stored clock that reads five
+hours ahead doesn't raise; it makes freshness checks, the late-job watchdog,
+token expiry and the login rate limiter quietly wrong in whichever direction
+the offset points, while every test that never round-trips through Postgres
+keeps passing. These tests are the round-trip.
 
 Run with (from backend/):
 TEST_DATABASE_URL=postgresql+asyncpg://localhost:5432/lucaku_audio_test pytest tests/test_db_timezone.py
@@ -36,10 +45,11 @@ async def test_the_session_timezone_is_utc(db_session):
 
 @pytest.mark.asyncio
 async def test_a_naive_utcnow_round_trips_to_the_same_instant(full_db_session):
-    """The property that actually matters: what the app writes with utcnow()
-    must come back meaning the same moment, not shifted by the machine's
-    offset. Without the UTC pin this fails by hours, in whichever direction
-    the developer happens to live."""
+    """The safety net, measured. The app no longer writes naive values, so
+    this one is written by hand: if a naive datetime does get back in, the
+    process pin must keep it meaning the same moment rather than shifting it
+    by the machine's offset. Without that pin this fails by hours, in
+    whichever direction the developer happens to live."""
     stamped = datetime.utcnow()
     full_db_session.add(FindingsCache(
         topic_key="tz-probe", scope_key="", geography_key="",

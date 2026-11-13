@@ -6,6 +6,8 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
 
+from app.core import clock
+
 
 class Event(Base):
     """Event envelope — v1 catalog (see Instrumentation & Cost PRD, section 5)."""
@@ -13,7 +15,7 @@ class Event(Base):
 
     event_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), index=True)  # from the Instrumentation catalog
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=clock.utcnow, index=True)
     customer_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)  # anonymized on account deletion
     session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     source: Mapped[str] = mapped_column(String(50))  # app | service name
@@ -38,4 +40,4 @@ class AICall(Base):
     latency_ms: Mapped[int] = mapped_column(Integer)
     context: Mapped[dict] = mapped_column(JSON, default=lambda: {})  # {customer_id, request_id?, episode_id?, job_id?}
     rejected_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=clock.utcnow, index=True)
