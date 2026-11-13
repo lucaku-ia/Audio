@@ -828,6 +828,51 @@ news"`, `"Resumen diario de IA..."`). That follows the backend's default languag
 setting and is not a bug, but nobody has explicitly decided whether Spanish-by-default
 is the intended behaviour for all customers.
 
+## AI budgets and kill switch
+
+Every paid call (Anthropic and ElevenLabs) goes through one guard,
+`ai_platform.guard_paid_call`, **before** money is spent. `AICall.cost` is the only
+ledger: the guard sums today's (UTC day) `AICall` rows for the customer.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `AI_GLOBAL_KILL_SWITCH` | off | `true`/`1`/`yes`/`on` refuses every paid call, news included |
+| `AI_DAILY_BUDGET_PER_CUSTOMER_USD` | `1.50` | per account per UTC day; `0` disables |
+| `AI_DAILY_BUDGET_GLOBAL_USD` | `0` (off) | total across all accounts per UTC day; refuses customer calls only |
+
+All three are read from the environment on every call, so changing one needs no code
+change. News calls (`customer_id` None or the zero-UUID sentinel) are governed by
+`NEWS_DAILY_COST_CEILING_USD`, not the per-customer budget, but they do obey the kill
+switch.
+
+**Why 1.50.** A measured single-request episode is about $0.58 ($0.43 research, $0.15
+voicing); a research+write block is roughly $0.11 and ElevenLabs about $0.18/1k chars,
+so a customer with several requests lands around $0.6 to $1.0 a day. 1.50 leaves room for
+one extra regeneration or a few one-off requests, and still caps a runaway loop at about
+2.5 episodes. (The old per-job empty-day retry cap alone could reach about $1.74.)
+The check is "spent so far >= budget", so a run that starts under the limit may finish
+slightly over it; it is a brake, not an exact meter.
+
+**What happens when a call is refused**
+- `BudgetExceededError` (code `budget_exceeded`) or `AIKillSwitchError` (code
+  `ai_paused`). A `budget_exceeded` event is emitted (scope, purpose, spent_usd,
+  limit_usd; no free text).
+- HTTP routes: budget returns `429` `{"detail": ..., "code": "budget_exceeded"}`; the
+  kill switch returns `503` with `"code": "ai_paused"`.
+- Episode generation: the job ends `failed` with `stages = [{"error": code, "code": code}]`
+  (no exception text). `POST /generation/run` additionally returns an additive
+  `failure_code`. Home still shows the existing `making` state (it never exposes
+  `failed`). Nothing retries in a loop: the failed job is returned as is until the guard
+  would allow it (switch flipped back, limit raised), then it re-runs in place, bounded
+  by the per-day retry cap. A job that already has scripts and only failed in voicing is
+  re-voiced instead of re-researched.
+
+**Flipping the switch in Railway.** Service `Audio` -> Variables -> add
+`AI_GLOBAL_KILL_SWITCH` = `true` -> Deploy (Railway restarts the service with the new
+variable; no code change). Set it to `false` or delete it to resume. To change a limit,
+edit `AI_DAILY_BUDGET_PER_CUSTOMER_USD` the same way. Look for `budget_exceeded` in the
+`events` table (or the Instrumentation dashboard) to see who is hitting the limit.
+
 ## What an episode costs, and the model routing that changed it
 
 Measured against production on 2026-09-24, then re-costed after routing.

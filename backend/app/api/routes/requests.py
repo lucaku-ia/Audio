@@ -121,7 +121,11 @@ def _structured_dict(result: ai_platform.StructuredRequest) -> dict:
 async def _structure_or_reject(
     db: AsyncSession, raw_text: str, customer_id: uuid.UUID, request_id: uuid.UUID | None
 ) -> dict:
-    result = await ai_platform.structure_request(db, raw_text, customer_id, request_id)
+    try:
+        result = await ai_platform.structure_request(db, raw_text, customer_id, request_id)
+    except ai_platform.BudgetExceededError:
+        await db.commit()  # keep the budget_exceeded event; app.main turns the error into a 429
+        raise
     if result.rejected:
         await db.commit()  # persist the AICall log even though the request is rejected — PRD: every call is logged
         raise HTTPException(400, result.rejected_reason or "This request can't be researched as written.")
@@ -353,10 +357,14 @@ async def refinar_request(
     if not block:
         raise HTTPException(404, "Block not found for this request/episode")
 
-    refined = await ai_platform.refine_request(
-        db, req.raw_text, req.structured, body.intent, block.summary, block.script,
-        cliente.id, req.id,
-    )
+    try:
+        refined = await ai_platform.refine_request(
+            db, req.raw_text, req.structured, body.intent, block.summary, block.script,
+            cliente.id, req.id,
+        )
+    except ai_platform.BudgetExceededError:
+        await db.commit()  # keep the budget_exceeded event; app.main turns the error into a 429
+        raise
     structured = {"topic": refined.topic, "scope": refined.scope, "geography": refined.geography, "depth": refined.depth}
 
     if req.pending_version_id:

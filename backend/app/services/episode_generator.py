@@ -421,6 +421,43 @@ async def _promote_pending_version(db: AsyncSession, req: Request) -> None:
     req.pending_version_id = None
 
 
+def _failure_reason(exc: Exception) -> str:
+    """What goes into job.stages for a failure. A spend-guard refusal records
+    its stable, user-safe code ("budget_exceeded" / "ai_paused") instead of an
+    exception string."""
+    return exc.code if isinstance(exc, ai_platform.AIBlocked) else str(exc)
+
+
+def _failure_stage(exc: Exception, **extra) -> dict:
+    stage = {"error": _failure_reason(exc), **extra}
+    if isinstance(exc, ai_platform.AIBlocked):
+        stage["code"] = exc.code
+    return stage
+
+
+_BLOCKED_CODES = ("budget_exceeded", "ai_paused")
+
+
+async def _blocked_job_can_retry(db: AsyncSession, customer_id: uuid.UUID, job: GenerationJob) -> bool:
+    """
+    A job that failed ONLY because the spend guard refused it (daily budget or
+    kill switch) may be re-run in place once the guard would now let it
+    through: the switch was flipped back, the limit raised, or (via a new
+    customer-local day) the budget window moved. Never while the guard still
+    refuses, so repeated polling cannot loop or spend; bounded by the same
+    per-day retry cap as empty days.
+    """
+    if job.status != JobStatus.failed or job.retry_count >= _MAX_EMPTY_RETRIES_PER_DAY:
+        return False
+    if not any(st.get("code") in _BLOCKED_CODES for st in (job.stages or [])):
+        return False
+    try:
+        await ai_platform.guard_paid_call(db, customer_id, "generation_precheck", emit=False)
+    except ai_platform.AIBlocked:
+        return False
+    return True
+
+
 async def _empty_job_can_retry(db: AsyncSession, customer_id: uuid.UUID, job: GenerationJob) -> bool:
     """
     Defect 2 fix: a same-day job that ended in terminal `empty` ("no news
@@ -544,6 +581,12 @@ async def _revoice_failed_job(db: AsyncSession, cliente: Cliente, job: Generatio
     """
     if job.status != JobStatus.failed or not ai_platform.elevenlabs_configured():
         return False
+    # Still over budget / switched off: re-voicing would only fail again (and
+    # pile up stage entries and retry_count), so leave the job as it is.
+    try:
+        await ai_platform.guard_paid_call(db, cliente.id, "generation_precheck", emit=False)
+    except ai_platform.AIBlocked:
+        return False
 
     voicing_stages = [st for st in (job.stages or []) if st.get("stage") == "voicing" and st.get("error")]
     if not voicing_stages:
@@ -590,10 +633,9 @@ async def _revoice_failed_job(db: AsyncSession, cliente: Cliente, job: Generatio
     except Exception as exc:
         cost = getattr(exc, "voicing_cost", 0.0)
         job.status = JobStatus.failed  # still terminal — never back to a non-terminal status
-        job.stages = [*job.stages, {
-            "stage": "revoicing", "error": str(exc), "cost": cost,
-            "latency_ms": int((time.monotonic() - start) * 1000),
-        }]
+        job.stages = [*job.stages, _failure_stage(
+            exc, stage="revoicing", cost=cost, latency_ms=int((time.monotonic() - start) * 1000),
+        )]
         await emitir(db, "job_failed", customer_id=cliente.id, source="episode_generator",
                      job_id=str(job.id), stage="revoicing", episode_id=str(episode.id))
 
@@ -691,7 +733,8 @@ async def run_generation(
         # customer down the full pipeline again — see _revoice_failed_job.
         if await _revoice_failed_job(db, cliente, existing_job):
             return existing_job
-        if not await _empty_job_can_retry(db, cliente.id, existing_job):
+        if not (await _blocked_job_can_retry(db, cliente.id, existing_job)
+                or await _empty_job_can_retry(db, cliente.id, existing_job)):
             existing_job.started_new_run = False
             return existing_job
         # Re-run in place — see _empty_job_can_retry and this function's own
@@ -1001,7 +1044,7 @@ async def run_generation(
                 # problem (quota, 5xx, timeout). An unpublished episode with
                 # finished scripts is exactly the right state to re-voice from.
                 voicing_cost = getattr(exc, "voicing_cost", voicing_cost)
-                job.stages = [*job.stages, {"stage": "voicing", "error": str(exc), "cost": voicing_cost}]
+                job.stages = [*job.stages, _failure_stage(exc, stage="voicing", cost=voicing_cost)]
                 job.status = JobStatus.failed
                 voicing_failed = True
 
@@ -1038,9 +1081,15 @@ async def run_generation(
     except Exception as exc:
         await db.rollback()  # discard any partial episode/block writes — never publish partial results
         job.status = JobStatus.failed
-        job.stages = [{"error": str(exc)}]
+        job.stages = [_failure_stage(exc)]
         await db.commit()
         await db.refresh(job)
+        if isinstance(exc, ai_platform.BudgetExceededError):
+            # The guard's own event was just rolled back with the rest of the
+            # transaction; record the refusal once, here, where it persists.
+            await ai_platform.emit_budget_exceeded(
+                db, scope=exc.scope, spent=exc.spent, limit=exc.limit,
+                customer_id=job.customer_id, purpose=exc.purpose)
         # No free-text error content in the Event payload (PII tenet) — the exception
         # message stays only in job.stages, which is internal-only, not the catalogue.
         # customer_id comes from job (just refreshed), not the `cliente` argument —

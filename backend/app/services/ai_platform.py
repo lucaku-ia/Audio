@@ -6,7 +6,8 @@ Scope note: this implements step 1 of the PRD's own delivery order (§9):
 "Call wrapper with cost telemetry — unblocks Onboarding and Request
 Management." Everything else in the PRD (a full prompt registry, the
 shared semantic index for Home/Search, evals, multi-provider fallback,
-budgets/rate limits) is deliberately deferred — each needs the epic that
+rate limits) is deliberately deferred. (Daily budgets and the global kill switch
+are built: see guard_paid_call.) — each needs the epic that
 consumes it (Home, Search) to exist first.
 
 Also now backs the Episode Generator's research stage (research_topic),
@@ -48,12 +49,15 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import anthropic
 import httpx
 from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core import config as ai_config
 
 from app.models.instrumentation import AICall
 from app.services import findings_store
@@ -78,6 +82,105 @@ class ModelUnavailable(RuntimeError):
     here reaches the customer as `Server error (500): Internal Server Error`,
     which is both frightening and useless. See app/api/routes/requests.py.
     """
+
+
+class AIBlocked(RuntimeError):
+    """
+    A paid model call was refused BEFORE it was made, by our own spend guard.
+    Not a provider failure (that is ModelUnavailable) and not retryable by
+    waiting a few seconds. `code` is a stable, user-safe reason code.
+    """
+    code = "ai_blocked"
+
+
+class BudgetExceededError(AIBlocked):
+    """Today's (UTC) spend reached the per-customer or global daily budget."""
+    code = "budget_exceeded"
+
+    def __init__(self, *, scope: str, spent: float, limit: float, customer_id: uuid.UUID | None = None,
+                 purpose: str = ""):
+        super().__init__(f"AI daily budget exceeded ({scope})")
+        self.scope, self.spent, self.limit = scope, spent, limit
+        self.customer_id, self.purpose = customer_id, purpose
+
+
+class AIKillSwitchError(AIBlocked):
+    """AI_GLOBAL_KILL_SWITCH is on: no paid model calls are being made."""
+    code = "ai_paused"
+
+    def __init__(self, purpose: str = ""):
+        super().__init__("AI generation is paused")
+        self.purpose = purpose
+
+
+# News calls carry no real customer: write_news_items passes None and the news
+# research stage passes this sentinel (news_pipeline.run_news_for_topic). They
+# are governed by NEWS_DAILY_COST_CEILING_USD, not the per-customer budget.
+_NEWS_CUSTOMER_SENTINEL = uuid.UUID(int=0)
+
+
+def _is_news_caller(customer_id: uuid.UUID | None) -> bool:
+    return customer_id is None or customer_id == _NEWS_CUSTOMER_SENTINEL
+
+
+def _utc_day_start(now: datetime | None = None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    return now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+async def spent_today(db: AsyncSession, customer_id: uuid.UUID | None = None, *,
+                      now: datetime | None = None) -> float:
+    """
+    Sum of today's (UTC) AICall.cost, for one customer or (None) everyone.
+    AICall is the single source of truth for spend; there is no second ledger.
+    The customer lives in the JSON `context` (AICall has no customer column).
+    """
+    query = select(func.coalesce(func.sum(AICall.cost), 0)).where(AICall.creado_en >= _utc_day_start(now))
+    if customer_id is not None:
+        query = query.where(AICall.context["customer_id"].as_string() == str(customer_id))
+    return float((await db.execute(query)).scalar_one())
+
+
+async def guard_paid_call(db: AsyncSession, customer_id: uuid.UUID | None, purpose: str, *,
+                          emit: bool = True) -> None:
+    """
+    The single choke point every paid call (Anthropic and ElevenLabs) passes
+    through BEFORE spending. Raises AIKillSwitchError or BudgetExceededError.
+
+    - Kill switch (env, read now): refuses everything, news included.
+    - Per-customer daily budget: customer calls only; news is gated by its own
+      ceiling. A limit of 0 disables the check.
+    - Global daily budget (optional, 0 = off): counts ALL of today's spend,
+      news included, but only ever refuses customer calls.
+    The refusal emits a `budget_exceeded` event (numbers only, no free text).
+    """
+    if ai_config.ai_kill_switch_on():
+        raise AIKillSwitchError(purpose)
+    if _is_news_caller(customer_id):
+        return
+
+    per_customer = ai_config.ai_daily_budget_per_customer_usd()
+    if per_customer > 0:
+        spent = await spent_today(db, customer_id)
+        if spent >= per_customer:
+            await _refuse(db, "customer", spent, per_customer, customer_id, purpose, emit)
+    global_limit = ai_config.ai_daily_budget_global_usd()
+    if global_limit > 0:
+        spent = await spent_today(db, None)
+        if spent >= global_limit:
+            await _refuse(db, "global", spent, global_limit, customer_id, purpose, emit)
+
+
+async def _refuse(db, scope, spent, limit, customer_id, purpose, emit=True):
+    if emit:
+        await emit_budget_exceeded(db, scope=scope, spent=spent, limit=limit, customer_id=customer_id,
+                                   purpose=purpose)
+    raise BudgetExceededError(scope=scope, spent=spent, limit=limit, customer_id=customer_id, purpose=purpose)
+
+
+async def emit_budget_exceeded(db, *, scope, spent, limit, customer_id, purpose) -> None:
+    await emitir(db, "budget_exceeded", customer_id=customer_id, source="ai_platform", scope=scope,
+                 purpose=purpose, spent_usd=round(float(spent), 4), limit_usd=float(limit))
 
 
 # Worth one more attempt: the request never reached a model, or the model was
@@ -336,6 +439,7 @@ async def structure_request(
         fallback_version=STRUCTURE_REQUEST_VERSION, fallback_system_prompt=STRUCTURE_REQUEST_SYSTEM,
     )
 
+    await guard_paid_call(db, customer_id, "structure_request")
     start = time.monotonic()
     response = await _invoke(
         _client.messages.parse,
@@ -704,6 +808,7 @@ async def write_news_items(
     if already_published:
         user_content += "\n\nAlready published:\n" + "\n".join(f"- {t}" for t in already_published)
 
+    await guard_paid_call(db, None, "news_write")
     start = time.monotonic()
     response = await _invoke(
         _client.messages.parse,
@@ -762,6 +867,7 @@ async def _run_with_escalation(db, *, purpose: str, version: str, call, parse,
     costs, so the dashboard shows what escalation actually costs rather than
     hiding the retry inside one row. The returned cost is the sum.
     """
+    await guard_paid_call(db, customer_id, purpose)
     start = time.monotonic()
     # `call` stays an ordinary synchronous function — _invoke is what takes it
     # off the event loop and retries it. Keeping that here rather than inside
@@ -783,6 +889,7 @@ async def _run_with_escalation(db, *, purpose: str, version: str, call, parse,
 
     logger.warning("ai_platform: %s returned unparseable output on %s, retrying on %s",
                    purpose, model_for(purpose), stronger)
+    await guard_paid_call(db, customer_id, purpose)
     start = time.monotonic()
     retry = await _invoke(call, stronger)
     retry_latency_ms = int((time.monotonic() - start) * 1000)
@@ -882,6 +989,7 @@ async def refine_request(
         f"Most recent block summary: {block_summary}\n"
         f"Most recent block script: {block_script}"
     )
+    await guard_paid_call(db, customer_id, "refine_request")
     response = await _invoke(
         _client.messages.parse,
         model=model_for("refine_request"),
@@ -1049,6 +1157,7 @@ async def synthesize(
     if not api_key:
         raise RuntimeError("ELEVENLABS_API_KEY is not set")
 
+    await guard_paid_call(db, customer_id, "synthesize")
     voice_id = voice_id or await _default_voice_id(api_key)
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     if with_timestamps:

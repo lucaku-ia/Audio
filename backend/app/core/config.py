@@ -44,3 +44,36 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# AI spend guards (see README "AI budgets and kill switch"). Deliberately plain
+# functions reading os.environ on EVERY call, not Settings fields: Settings is
+# built once at import, and the point of the kill switch is that flipping a
+# Railway variable takes effect on the next model call without a redeploy.
+DEFAULT_AI_DAILY_BUDGET_PER_CUSTOMER_USD = 1.50
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default  # a typo in an env var must not take the guard down
+    return value if value >= 0 else default
+
+
+def ai_kill_switch_on() -> bool:
+    """AI_GLOBAL_KILL_SWITCH: true/1/yes/on refuses every paid model call."""
+    return os.getenv("AI_GLOBAL_KILL_SWITCH", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def ai_daily_budget_per_customer_usd() -> float:
+    """Per account, per UTC day. 0 disables the per-customer check."""
+    return _env_float("AI_DAILY_BUDGET_PER_CUSTOMER_USD", DEFAULT_AI_DAILY_BUDGET_PER_CUSTOMER_USD)
+
+
+def ai_daily_budget_global_usd() -> float:
+    """Total across all accounts, per UTC day. 0 (default) disables it."""
+    return _env_float("AI_DAILY_BUDGET_GLOBAL_USD", 0.0)

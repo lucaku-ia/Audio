@@ -13,7 +13,7 @@ from app.models import (
     source_catalogue, findings_cache, news,
 )  # noqa: F401
 from app.services.ai_platform import (
-    ModelUnavailable,
+    ModelUnavailable, BudgetExceededError, AIKillSwitchError,
     STRUCTURE_REQUEST_SYSTEM, STRUCTURE_REQUEST_VERSION,
     RESEARCH_TOPIC_SYSTEM, RESEARCH_TOPIC_VERSION,
     WRITE_BLOCK_SYSTEM, WRITE_BLOCK_VERSION,
@@ -106,6 +106,26 @@ async def model_unavailable(request: Request, exc: ModelUnavailable):
     return JSONResponse(
         status_code=503,
         content={"detail": "I could not reach the model just now. Try that again in a moment."},
+    )
+
+
+@app.exception_handler(BudgetExceededError)
+async def budget_exceeded(request: Request, exc: BudgetExceededError):
+    """Daily AI spend limit reached (per-customer or global): a clean 429 with
+    a short message and a stable `code`, never a 500."""
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "You've reached today's limit for AI requests. Please try again tomorrow.",
+                 "code": "budget_exceeded"},
+        headers={"Retry-After": "3600"},
+    )
+
+
+@app.exception_handler(AIKillSwitchError)
+async def ai_paused(request: Request, exc: AIKillSwitchError):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "AI features are paused for a moment. Please try again later.", "code": "ai_paused"},
     )
 
 

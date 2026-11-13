@@ -8,6 +8,7 @@ os.environ.setdefault(
     os.environ.get("TEST_DATABASE_URL", "postgresql+asyncpg://localhost:5432/lucaku_audio_test"),
 )
 
+import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker  # noqa: E402
@@ -96,3 +97,21 @@ async def full_db_session():
         await conn.execute(text(f"TRUNCATE TABLE {', '.join(_FULL_SESSION_TABLES)} RESTART IDENTITY CASCADE"))
     await engine.dispose()
 
+
+
+@pytest.fixture(autouse=True)
+def _spend_guard_off_by_default(request, monkeypatch):
+    """
+    ai_platform.guard_paid_call queries today's AICall spend. The older suites
+    pass db=None (or a session with no ai_calls) to prove prompt/routing
+    behaviour, so the guard is a no-op for them. Tests that exercise the guard
+    itself opt in with @pytest.mark.budget_guard (tests/test_ai_budget.py).
+    """
+    if request.node.get_closest_marker("budget_guard"):
+        return
+    from app.services import ai_platform
+
+    async def _allow(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(ai_platform, "guard_paid_call", _allow)
