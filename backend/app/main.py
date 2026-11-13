@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
+from app.core.i18n import DEFAULT_LANGUAGE, language_from_accept_header, msg
 from app.db.session import engine, Base, AsyncSessionLocal
 from app.db.migraciones import ejecutar_migraciones
 # Import every model so create_all() sees them
@@ -93,6 +94,14 @@ app.include_router(history_routes.router, prefix="/api")
 app.include_router(feedback_routes.router, prefix="/api")
 
 
+def _request_language(request: Request) -> str:
+    """The caller's language: the authenticated customer's setting when the auth
+    dependency ran (request.state.language), else the Accept-Language header, else the default."""
+    return (getattr(request.state, "language", None)
+            or language_from_accept_header(request.headers.get("accept-language"))
+            or DEFAULT_LANGUAGE)
+
+
 @app.exception_handler(ModelUnavailable)
 async def model_unavailable(request: Request, exc: ModelUnavailable):
     """
@@ -106,9 +115,10 @@ async def model_unavailable(request: Request, exc: ModelUnavailable):
     deliberately not in the response, because it is a provider's internal
     error string and means nothing to the person reading it.
     """
+    text = msg("model_unavailable", _request_language(request))
     return JSONResponse(
         status_code=503,
-        content={"detail": "I could not reach the model just now. Try that again in a moment."},
+        content={"detail": text, "message": text, "code": "model_unavailable"},
     )
 
 
@@ -116,19 +126,20 @@ async def model_unavailable(request: Request, exc: ModelUnavailable):
 async def budget_exceeded(request: Request, exc: BudgetExceededError):
     """Daily AI spend limit reached (per-customer or global): a clean 429 with
     a short message and a stable `code`, never a 500."""
+    text = msg("budget_exceeded", _request_language(request))
     return JSONResponse(
         status_code=429,
-        content={"detail": "You've reached today's limit for AI requests. Please try again tomorrow.",
-                 "code": "budget_exceeded"},
+        content={"detail": text, "message": text, "code": "budget_exceeded"},
         headers={"Retry-After": "3600"},
     )
 
 
 @app.exception_handler(AIKillSwitchError)
 async def ai_paused(request: Request, exc: AIKillSwitchError):
+    text = msg("ai_paused", _request_language(request))
     return JSONResponse(
         status_code=503,
-        content={"detail": "AI features are paused for a moment. Please try again later.", "code": "ai_paused"},
+        content={"detail": text, "message": text, "code": "ai_paused"},
     )
 
 

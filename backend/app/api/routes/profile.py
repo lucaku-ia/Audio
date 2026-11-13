@@ -65,11 +65,13 @@ from datetime import datetime, time as time_type, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
+from app.core import voices
+from app.core.i18n import language_for, msg, validate_language
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.profile import Language, NarrationStyle, Profile
@@ -86,6 +88,16 @@ class ProfileBody(BaseModel):
     max_length_minutes: int | None = None  # None = no limit — ceiling, never a target (umbrella §8)
 
 
+def _check_voice(voice_id: str | None, language: str, current: str | None) -> None:
+    """Reject a voice that is not in the allowlist for the customer's language.
+    None clears it; re-sending the value already stored is accepted so a client
+    that echoes the whole profile back never gets stuck on an older value."""
+    if voice_id is None or voice_id == current:
+        return
+    if not voices.is_allowed_voice(language, voice_id):
+        raise HTTPException(422, detail={"code": "voice_not_allowed", "message": msg("voice_not_allowed", language)})
+
+
 class ProfileOut(BaseModel):
     customer_id: str
     voice_id: str | None
@@ -95,6 +107,8 @@ class ProfileOut(BaseModel):
     delivery_timezone: str
     max_length_minutes: int | None
     signals: dict
+    # Additive: the voices selectable in `language` (the same value voice_id must come from).
+    available_voices: list[dict] = Field(default_factory=list)
 
 
 def _out(perfil: Profile) -> ProfileOut:
@@ -107,6 +121,7 @@ def _out(perfil: Profile) -> ProfileOut:
         delivery_timezone=perfil.delivery_timezone,
         max_length_minutes=perfil.max_length_minutes,
         signals=perfil.signals or {},
+        available_voices=voices.catalogue_out(perfil.language),
     )
 
 
@@ -136,10 +151,11 @@ async def update_profile(
     if not perfil:
         perfil = Profile(
             customer_id=cliente.id,
-            language=Language(cliente.idioma),  # inherited from Cliente, not from the body — never re-asked
+            language=Language(language_for(cliente)),  # inherited from Cliente, not from the body — never re-asked
         )
         db.add(perfil)
 
+    _check_voice(body.voice_id, language_for(cliente), perfil.voice_id)
     perfil.voice_id = body.voice_id
     perfil.narration_style = body.narration_style
     perfil.delivery_time = hora
@@ -162,15 +178,31 @@ class SettingsBody(BaseModel):
     """Every field is optional — only the ones present in the request are changed."""
     voice_id: str | None = None
     narration_style: NarrationStyle | None = None
-    language: Language | None = None
+    language: str | None = None  # "es" | "en" (allowlist; anything else is a 422)
     delivery_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")  # "HH:MM"
     delivery_timezone: str | None = None
     max_length_minutes: int | None = None
     clear_max_length: bool = False  # explicit flag — max_length_minutes=None alone is ambiguous with "not sent"
 
 
+    @field_validator("language")
+    @classmethod
+    def _language_allowlist(cls, v):
+        return None if v is None else validate_language(v)
+
+
 class SettingsOut(ProfileOut):
     messages: list[str]
+
+
+_WEEKDAYS_ES = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+
+
+def _weekday_time(at: datetime, language: str) -> str:
+    """'Monday 07:00' / 'lunes 07:00' (strftime's %A is locale-dependent, so not used)."""
+    if language == "es":
+        return f"{_WEEKDAYS_ES[at.weekday()]} {at.strftime('%H:%M')}"
+    return at.strftime("%A %H:%M")
 
 
 def _next_episode_local_time(delivery_time, delivery_timezone: str) -> datetime:
@@ -202,22 +234,28 @@ async def update_settings(
 
     mensajes: list[str] = []
 
+    # Language first: the voice allowlist and every message below follow the NEW language.
+    if "language" in campos and body.language is not None:
+        perfil.language = Language(body.language)
+        cliente.idioma = body.language  # source of truth (language_for) for UI, voices, news and episodes
+        if perfil.voice_id is not None and not voices.is_allowed_voice(body.language, perfil.voice_id):
+            perfil.voice_id = None  # a voice of the other language: back to the new language's default
+            mensajes.append(msg("voice_reset_for_language", body.language))
+        mensajes.append(msg("profile_language_applies", body.language))
+    lang = language_for(cliente)
+
     if "voice_id" in campos:
+        _check_voice(body.voice_id, lang, perfil.voice_id)
         perfil.voice_id = body.voice_id
-        mensajes.append("Voice change applies from your next episode.")
+        mensajes.append(msg("profile_voice_applies", lang))
 
     if "narration_style" in campos and body.narration_style is not None:
         perfil.narration_style = body.narration_style
-        mensajes.append("Narration style change applies from your next episode.")
+        mensajes.append(msg("profile_style_applies", lang))
 
     if "max_length_minutes" in campos or body.clear_max_length:
         perfil.max_length_minutes = None if body.clear_max_length else body.max_length_minutes
-        mensajes.append("Max length change applies from your next episode.")
-
-    if "language" in campos and body.language is not None:
-        perfil.language = body.language
-        cliente.idioma = body.language.value  # source of truth for immediate UI-language reads
-        mensajes.append("Language updated for the app immediately; episodes reflect it from the next one.")
+        mensajes.append(msg("profile_length_applies", lang))
 
     if "delivery_time" in campos or "delivery_timezone" in campos:
         if body.delivery_timezone:
@@ -232,15 +270,13 @@ async def update_settings(
 
         if perfil.delivery_time:
             next_at = _next_episode_local_time(perfil.delivery_time, perfil.delivery_timezone)
-            mensajes.append(
-                f"Delivery time updated — your next episode arrives "
-                f"{next_at.strftime('%A %H:%M')} ({perfil.delivery_timezone})."
-            )
+            mensajes.append(msg("profile_delivery_updated", lang, when=_weekday_time(next_at, lang),
+                                tz=perfil.delivery_timezone))
         else:
-            mensajes.append("Delivery timezone updated.")
+            mensajes.append(msg("profile_timezone_updated", lang))
 
     if not mensajes:
-        raise HTTPException(400, "No settings fields were provided.")
+        raise HTTPException(400, "No settings fields were provided.")  # developer-facing, not shown to the customer
 
     await db.commit()
     await db.refresh(perfil)

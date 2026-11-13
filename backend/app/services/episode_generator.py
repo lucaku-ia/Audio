@@ -210,6 +210,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.requests import active_for_generation
 from app.core.config import settings
+from app.core.i18n import language_for
+from app.core.voices import resolve_voice
 from app.models.cliente import AuthProvider, Cliente
 from app.models.episode import Block, Episode, EpisodePath
 from app.models.generation_job import GenerationJob, InventoryItem, JobStatus
@@ -259,8 +261,10 @@ _MAX_EMPTY_RETRIES_PER_DAY = 2
 SHARED_INVENTORY_EMAIL_DOMAIN = "system.lucaku.internal"
 
 
-def shared_inventory_email(tag: str) -> str:
-    return f"shared-inventory+{tag}@{SHARED_INVENTORY_EMAIL_DOMAIN}"
+def shared_inventory_email(tag: str, language: str = "es") -> str:
+    # Spanish keeps the original address (existing rows); other languages get their own account.
+    suffix = "" if language_for(language) == "es" else f"-{language_for(language)}"
+    return f"shared-inventory+{tag}{suffix}@{SHARED_INVENTORY_EMAIL_DOMAIN}"
 
 
 def _seconds_for_script(script: str) -> float:
@@ -524,6 +528,8 @@ async def _synthesize_episode(
     """
     spent = 0.0
     audio_parts: list[bytes] = []
+    # Logical voice key -> ElevenLabs id, in the language the scripts were written in.
+    voice_id = resolve_voice(episode.language or language_for(cliente), voice_id)
     try:
         for block in block_rows:
             audio_bytes_part, call_cost, word_timestamps = await ai_platform.synthesize(
@@ -795,7 +801,7 @@ async def run_generation(
         result = await db.execute(select(Profile).where(Profile.customer_id == cliente.id))
         perfil = result.scalar_one_or_none()
         style = perfil.narration_style.value if perfil else "news"
-        language = perfil.language.value if perfil else cliente.idioma
+        language = language_for(cliente)  # single source of truth: Cliente.idioma (PATCH /profile keeps Profile.language in step)
         voice_id = perfil.voice_id if perfil else None
         max_length_minutes = perfil.max_length_minutes if perfil else None
 
@@ -1104,23 +1110,24 @@ async def run_generation(
 # ── Shared inventory ─────────────────────────────────────────────────────────
 # See module docstring's "Built: shared inventory" section for the design.
 
-async def _get_or_create_shared_customer(db: AsyncSession, tag: str) -> Cliente:
+async def _get_or_create_shared_customer(db: AsyncSession, tag: str, language: str = "es") -> Cliente:
     """One persistent system Cliente per interest tag, created on first use and
     reused on every later refresh. Never logs in (no hashed_password) and is
     excluded from real customer-facing lists by construction — nothing lists
     Cliente rows generically anywhere in this codebase — and from cost-per-
     customer views by its email pattern (see instrumentation.py)."""
-    result = await db.execute(select(Cliente).where(Cliente.email == shared_inventory_email(tag)))
+    language = language_for(language)
+    result = await db.execute(select(Cliente).where(Cliente.email == shared_inventory_email(tag, language)))
     cliente = result.scalar_one_or_none()
     if cliente is not None:
         return cliente
 
     cliente = Cliente(
-        email=shared_inventory_email(tag),
+        email=shared_inventory_email(tag, language),
         auth_provider=AuthProvider.email,
         hashed_password=None,
         nombre=f"Shared inventory — {tag}",
-        idioma="es",
+        idioma=language,
         onboarding_complete=True,
     )
     db.add(cliente)
@@ -1161,6 +1168,7 @@ async def generate_shared_episode(
     tag: str,
     seed_request_text: str,
     fecha: date | None = None,
+    language: str = "es",
 ) -> GenerationJob:
     """
     Runs the shared pipeline for one interest tag: gets or creates that tag's
@@ -1173,7 +1181,7 @@ async def generate_shared_episode(
     path) uniqueness — calling this twice for the same tag on the same day
     returns the first call's job unchanged rather than generating twice.
     """
-    cliente = await _get_or_create_shared_customer(db, tag)
+    cliente = await _get_or_create_shared_customer(db, tag, language)
     await _get_or_create_shared_request(db, cliente, seed_request_text)
     await db.commit()
     return await run_generation(db, cliente, path=EpisodePath.shared, fecha=fecha, shared_tag=tag)

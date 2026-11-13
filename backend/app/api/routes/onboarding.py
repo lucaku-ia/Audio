@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
 from app.api.routes.home import SharedInventoryOut, _derive_shared_inventory
+from app.core.i18n import language_for, msg
 from app.db.session import AsyncSessionLocal, get_db
 from app.models.cliente import Cliente
 from app.models.episode import EpisodePath
@@ -198,11 +199,11 @@ async def _transition_step(db: AsyncSession, cliente: Cliente, state: Onboarding
 
 
 def _label(interest: dict, idioma: str) -> str:
-    return interest["label_en"] if idioma == "en" else interest["label_es"]
+    return interest["label_en"] if language_for(idioma) == "en" else interest["label_es"]
 
 
 def _seeds(interest: dict, idioma: str) -> list[str]:
-    return interest["seeds_en"] if idioma == "en" else interest["seeds_es"]
+    return interest["seeds_en"] if language_for(idioma) == "en" else interest["seeds_es"]
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -356,12 +357,13 @@ async def confirm(
 
     if minutes_until >= 60:
         path = "scheduled"
-        message = f"Your first episode arrives today at {t_today.strftime('%H:%M')}, and every day after that."
+        message = msg("onboarding_first_episode_scheduled", cliente, time=t_today.strftime('%H:%M'))
         eta = t_today
     else:
         path = "on_demand"
         eta = now_local + timedelta(minutes=60)
-        message = f"Your first episode will be ready by {eta.strftime('%H:%M')} (about an hour from now). From tomorrow, every day at {t_today.strftime('%H:%M')}."
+        message = msg("onboarding_first_episode_on_demand", cliente,
+                      eta=eta.strftime('%H:%M'), time=t_today.strftime('%H:%M'))
 
     await db.commit()
 

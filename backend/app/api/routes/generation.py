@@ -15,6 +15,8 @@ import uuid
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+
+from app.core.i18n import failure_message, language_for
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,6 +53,8 @@ class JobOut(BaseModel):
     # guard refused it ("budget_exceeded" daily limit, "ai_paused" kill
     # switch); null otherwise. Safe to show as a short message.
     failure_code: str | None = None
+    # Additive. `failure_code` as a ready-to-show sentence in the customer's language; null when none.
+    failure_message: str | None = None
 
 
 class BlockOut(BaseModel):
@@ -106,7 +110,7 @@ class EpisodeOut(BaseModel):
     blocks: list[BlockOut]
 
 
-def _job_out(job: GenerationJob, run_started: bool | None = None) -> JobOut:
+def _job_out(job: GenerationJob, run_started: bool | None = None, language: str | None = None) -> JobOut:
     stages = job.stages or []
     failure_code = next(
         (st.get("code") for st in reversed(stages) if isinstance(st, dict) and st.get("code")), None
@@ -114,6 +118,7 @@ def _job_out(job: GenerationJob, run_started: bool | None = None) -> JobOut:
     return JobOut(
         id=str(job.id), fecha=job.fecha, path=job.path.value, status=job.status.value,
         creado_en=job.creado_en, stages=stages, run_started=run_started, failure_code=failure_code,
+        failure_message=failure_message(failure_code, language),
     )
 
 
@@ -137,7 +142,7 @@ async def run(
     cap, rather than permanently final for the day.
     """
     job = await run_generation(db, cliente)
-    return _job_out(job, run_started=getattr(job, "started_new_run", None))
+    return _job_out(job, run_started=getattr(job, "started_new_run", None), language=language_for(cliente))
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
@@ -149,7 +154,7 @@ async def get_job(
     job = await db.get(GenerationJob, job_id)
     if not job or job.customer_id != cliente.id:
         raise HTTPException(404, "Job not found")
-    return _job_out(job)
+    return _job_out(job, language=language_for(cliente))
 
 
 async def _episode_out(db: AsyncSession, episode: Episode) -> EpisodeOut:

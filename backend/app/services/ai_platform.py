@@ -58,6 +58,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import config as ai_config
+from app.core.voices import provider_voice_id
 
 from app.models.instrumentation import AICall
 from app.services import findings_store
@@ -444,6 +445,7 @@ async def structure_request(
     raw_text: str,
     customer_id: uuid.UUID,
     request_id: uuid.UUID | None = None,
+    language: str | None = None,
 ) -> StructuredRequest:
     """
     structure_request — used by Request Management (create/edit) and, by
@@ -456,6 +458,11 @@ async def structure_request(
         db, "structure_request",
         fallback_version=STRUCTURE_REQUEST_VERSION, fallback_system_prompt=STRUCTURE_REQUEST_SYSTEM,
     )
+    if language:
+        # The customer-facing text (rejected_reason) follows the customer's language. Appended
+        # here rather than in the versioned prompt so registry-managed prompts need no edit.
+        system_prompt = (f"{system_prompt}\n\nWrite rejected_reason in "
+                         f"{'Spanish' if language == 'es' else 'English'}.")
 
     await guard_paid_call(db, customer_id, "structure_request")
     start = time.monotonic()
@@ -1177,7 +1184,9 @@ async def synthesize(
         raise RuntimeError("ELEVENLABS_API_KEY is not set")
 
     await guard_paid_call(db, customer_id, "synthesize")
-    voice_id = voice_id or await _default_voice_id(api_key)
+    # A logical catalogue key ("valentina") maps to its configured ElevenLabs id, or to None
+    # while that id is TBD (-> the account's default voice, as before). Anything else passes through.
+    voice_id = provider_voice_id(voice_id) or await _default_voice_id(api_key)
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     if with_timestamps:
         url += "/with-timestamps"

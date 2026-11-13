@@ -78,6 +78,7 @@ from app.api.deps import get_current_cliente
 from app.api.routes.generation import _block_common_fields
 from app.api.routes.news import NewsListOut, fetch_news_page
 from app.api.routes.requests import CrearRequestBody, RequestOut, crear_request
+from app.core.i18n import language_for, msg
 from app.models.profile import Profile
 from app.services.news_pipeline import infer_category, request_topic
 from app.db.session import get_db
@@ -150,6 +151,7 @@ class SharedInventoryOut(BaseModel):
     style: str | None
     reason: str  # e.g. "Because you follow technology" — see module scope note
     tag: str | None = None  # the interest tag this sample belongs to (e.g. "technology")
+    language: str | None = None  # additive: language the sample is narrated in; the caller's own when one exists, else the other
 
 
 class NextDeliveryOut(BaseModel):
@@ -327,32 +329,44 @@ async def _derive_shared_inventory(db: AsyncSession, cliente: Cliente, latest_by
         latest_by_tag = await _latest_shared_by_tag(db)
 
     matched: list[SharedInventoryOut] = []
+    lang = language_for(cliente)
     for tag in interests:
-        hit = latest_by_tag.get(tag)
+        hit = _pick_for_language(latest_by_tag.get(tag), lang)
         if not hit:
             continue
         episode, item = hit
-        reason = (item.reason_template or "Because you follow {tag}").format(tag=tag)
+        # The stored template is English boilerplate; the reason is localized at read time.
+        reason = msg("home_because_you_follow", lang, tag=tag)
         matched.append(SharedInventoryOut(
             episode_id=str(episode.id), headline=episode.headline,
             duration_s=episode.duration_s, style=episode.style, reason=reason, tag=tag,
+            language=episode.language,
         ))
         if len(matched) >= 3:
             break
     return matched
 
 
-async def _latest_shared_by_tag(db: AsyncSession) -> dict[str, tuple[Episode, InventoryItem]]:
+def _pick_for_language(hits: list[tuple[Episode, InventoryItem]] | None, language: str):
+    """Newest shared sample for a tag in the caller's language; if none exists in
+    it yet, the newest in any language (Episode.language / SharedInventoryOut.language say which)."""
+    if not hits:
+        return None
+    return next((h for h in hits if language_for(h[0].language) == language), hits[0])
+
+
+async def _latest_shared_by_tag(db: AsyncSession) -> dict[str, list[tuple[Episode, InventoryItem]]]:
+    """tag -> shared samples newest-first (all languages; callers pick one)."""
     rows_result = await db.execute(
         select(Episode, InventoryItem)
         .join(InventoryItem, InventoryItem.episode_id == Episode.id)
         .where(Episode.shared.is_(True), Episode.published_at.is_not(None))
         .order_by(Episode.fecha.desc(), Episode.published_at.desc())
     )
-    latest_by_tag: dict[str, tuple[Episode, InventoryItem]] = {}
+    latest_by_tag: dict[str, list[tuple[Episode, InventoryItem]]] = {}
     for episode, item in rows_result.all():
         for tag in item.tags:
-            latest_by_tag.setdefault(tag, (episode, item))  # rows are already newest-first
+            latest_by_tag.setdefault(tag, []).append((episode, item))  # rows are already newest-first
     return latest_by_tag
 
 
@@ -370,12 +384,15 @@ async def _derive_explore(db: AsyncSession, cliente: Cliente, latest_by_tag: dic
     explore: list[SharedInventoryOut] = []
     if latest_by_tag is None:
         latest_by_tag = await _latest_shared_by_tag(db)
-    for tag, (episode, _item) in latest_by_tag.items():
+    lang = language_for(cliente)
+    for tag, hits in latest_by_tag.items():
         if tag in followed:
             continue
+        episode, _item = _pick_for_language(hits, lang)
         explore.append(SharedInventoryOut(
             episode_id=str(episode.id), headline=episode.headline,
-            duration_s=episode.duration_s, style=episode.style, reason=f"Explore {tag}", tag=tag,
+            duration_s=episode.duration_s, style=episode.style, reason=msg("home_explore", lang, tag=tag), tag=tag,
+            language=episode.language,
         ))
         if len(explore) >= 6:
             break

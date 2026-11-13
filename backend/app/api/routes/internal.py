@@ -41,6 +41,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_internal_dashboard_key
+from app.core.i18n import normalize_language
 from app.db.session import get_db
 from app.models.prompt_registry import PromptVersion
 from app.models.source_catalogue import SourceCatalogueEntry
@@ -87,6 +88,7 @@ class SharedInventoryResultOut(BaseModel):
 async def generate_shared_inventory(
     tag: str | None = Query(default=None, description="Only this tag — each one takes ~1 min (research + voice), "
                                                        "so running all of them in one call can outlive an HTTP timeout."),
+    language: str = Query(default="es", pattern="^(es|en)$", description="Which language's inventory to refresh."),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -102,7 +104,8 @@ async def generate_shared_inventory(
             raise HTTPException(404, f"Unknown tag '{tag}'")
     results = []
     for seed in seeds:
-        job = await generate_shared_episode(db, tag=seed["tag"], seed_request_text=seed["seed_request_text"])
+        text = seed["seed_request_text_en"] if language == "en" else seed["seed_request_text"]
+        job = await generate_shared_episode(db, tag=seed["tag"], seed_request_text=text, language=language)
         results.append(SharedInventoryResultOut(tag=seed["tag"], job_id=str(job.id), status=job.status.value))
     return results
 
@@ -120,12 +123,17 @@ async def run_news_now(
     topic: str = Query(min_length=1, max_length=300),
     slot: str | None = Query(default=None, description="0500 | 1300 | adhoc. Default: the current local slot band, or adhoc during local quiet hours."),
     timezone: str | None = Query(default=None, description="IANA zone (e.g. America/Bogota) used to pick the default slot and run date; default UTC."),
+    languages: str = Query(default="en", description="Comma-separated news languages to write (es,en). Research runs once whatever the list."),
     db: AsyncSession = Depends(get_db),
 ):
     """Runs the news pipeline for one topic on demand. Idempotent per
-    (topic, date, slot), the date being the local date in `timezone` (UTC by
+    (topic, date, slot, language), the date being the local date in `timezone` (UTC by
     default): a second call for the same key reports 'skipped'."""
     from app.services import news_pipeline as np_
+
+    langs = [normalize_language(x) for x in languages.split(",") if x.strip()]
+    if not langs or None in langs:
+        raise HTTPException(422, "languages must be a comma-separated list of es,en")
 
     now = np_._now()
     due = np_.local_slot(now, timezone)
@@ -133,7 +141,7 @@ async def run_news_now(
     if chosen not in np_.VALID_SLOTS:
         raise HTTPException(422, f"slot must be one of {', '.join(np_.VALID_SLOTS)}")
     run_date = now.astimezone(np_.resolve_tz(timezone)[1]).date()
-    result = await np_.run_news_for_topic(db, topic, slot=chosen, run_date=run_date, now=now)
+    result = await np_.run_news_for_topic(db, topic, slot=chosen, run_date=run_date, now=now, languages=langs)
     return NewsRunOut(topic=topic, slot=chosen, status=result.status, items=len(result.items), cost=result.cost)
 
 

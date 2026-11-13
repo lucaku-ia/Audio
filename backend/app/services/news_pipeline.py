@@ -25,6 +25,7 @@ Source provider note: research uses Claude's web_search tool via ai_platform
 import logging
 import re
 import uuid
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from urllib.parse import urlparse
@@ -35,6 +36,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.i18n import DEFAULT_LANGUAGE, language_for, normalize_language
+from app.models.cliente import Cliente
 from app.models.news import NewsItem, NewsRun
 from app.models.profile import Profile
 from app.models.request import Request, RequestStatus
@@ -212,7 +215,8 @@ def ground_sources(draft_urls: list[str], findings) -> list[dict]:
 # Idempotency
 # ---------------------------------------------------------------------------
 
-async def _claim_run(db: AsyncSession, topic_key: str, run_date: date, slot: str) -> uuid.UUID | None:
+async def _claim_run(db: AsyncSession, topic_key: str, run_date: date, slot: str,
+                     language: str = "en") -> uuid.UUID | None:
     """Returns the NewsRun id this caller now owns, or None.
 
     First run: the unique (topic_key, run_date, slot) insert is the claim.
@@ -221,8 +225,8 @@ async def _claim_run(db: AsyncSession, topic_key: str, run_date: date, slot: str
     MAX_ATTEMPTS claims per key, because a failed research is not cached and
     every retry pays a fresh web search."""
     now = _now()
-    run = NewsRun(topic_key=topic_key, run_date=run_date, slot=slot, status="running", attempts=1,
-                  created_at=now, updated_at=now)
+    run = NewsRun(topic_key=topic_key, run_date=run_date, slot=slot, language=language, status="running",
+                  attempts=1, created_at=now, updated_at=now)
     try:
         async with db.begin_nested():
             db.add(run)
@@ -235,7 +239,7 @@ async def _claim_run(db: AsyncSession, topic_key: str, run_date: date, slot: str
         update(NewsRun)
         .where(
             NewsRun.topic_key == topic_key, NewsRun.run_date == run_date, NewsRun.slot == slot,
-            NewsRun.attempts < MAX_ATTEMPTS,
+            NewsRun.language == language, NewsRun.attempts < MAX_ATTEMPTS,
             or_(
                 and_(NewsRun.status == "failed", NewsRun.updated_at < now - FAILED_BACKOFF),
                 and_(NewsRun.status == "running", NewsRun.updated_at < now - STALE_RUNNING),
@@ -277,85 +281,113 @@ async def run_news_for_topic(
     run_date: date | None = None,
     now: datetime | None = None,
     language: str = "en",
+    languages: Sequence[str] | None = None,
 ) -> NewsRunResult:
+    """One run per (topic_key, date, slot, language). `languages` (default:
+    just `language`) are the languages that have followers of this topic.
+    Research is language-neutral and SHARED, so it is called ONCE whatever the
+    number of languages; only the cheap write step runs per language."""
     now = now or _now()
     run_date = run_date or now.date()
     topic_key = normalize(topic)
     if not topic_key:
         return NewsRunResult("skipped")
 
-    run_id = await _claim_run(db, topic_key, run_date, slot)
-    if run_id is None:
+    wanted: list[str] = []
+    for lang in (languages if languages else [language]):
+        code = normalize_language(lang)
+        if code and code not in wanted:
+            wanted.append(code)
+    if not wanted:
         return NewsRunResult("skipped")
 
-    cost = 0.0  # spend of THIS attempt; recorded on every exit path, success or failure
+    # Claim every language's run; languages another worker already owns (or that
+    # are finished) are simply not ours to do.
+    runs: dict[str, uuid.UUID] = {}
+    for lang in wanted:
+        run_id = await _claim_run(db, topic_key, run_date, slot, lang)
+        if run_id is not None:
+            runs[lang] = run_id
+    if not runs:
+        return NewsRunResult("skipped")
+
+    langs = list(runs)
+    costs = {lang: 0.0 for lang in langs}  # spend of THIS attempt per run; recorded on every exit path
     try:
-        # 1. Research: shared via findings_store, so followers never multiply it.
+        # 1. Research: shared via findings_store, so followers (and languages) never multiply it.
         findings = await ai_platform.research_topic(
             db, f"Latest news about {topic}", topic, "latest news", None,
             None, uuid.UUID(int=0),
         )
-        cost += findings.cost
+        costs[langs[0]] += findings.cost  # booked once, on the first language's run
         if findings.parse_failed:
-            await _finish_run(db, run_id, status="failed", error="research parse failed", cost=cost)
-            return NewsRunResult("failed", cost=cost)
+            for lang in langs:
+                await _finish_run(db, runs[lang], status="failed", error="research parse failed", cost=costs[lang])
+            return NewsRunResult("failed", cost=sum(costs.values()))
         if findings.no_news or not findings.findings:
-            await _finish_run(db, run_id, status="no_news", cost=cost)
-            return NewsRunResult("no_news", cost=cost)
+            for lang in langs:
+                await _finish_run(db, runs[lang], status="no_news", cost=costs[lang])
+            return NewsRunResult("no_news", cost=sum(costs.values()))
 
-        # 2-3. Cluster, then judge novelty against what is already published.
+        # 2. Cluster once (language-neutral).
+        merged_all = [(_merge_cluster(c), uuid.uuid4()) for c in cluster_findings(findings.findings)]
+
         since = now - timedelta(days=NOVELTY_DAYS)
-        existing_titles = list((await db.execute(
-            select(NewsItem.title).where(NewsItem.topic_key == topic_key, NewsItem.published_at >= since)
-        )).scalars().all())
-
-        fresh: list = []
-        cluster_ids: list[uuid.UUID] = []
-        for cluster in cluster_findings(findings.findings):
-            merged = _merge_cluster(cluster)
-            if any(title_similarity(merged.headline, t) >= SIMILARITY_THRESHOLD for t in existing_titles):
+        produced: dict[str, list[NewsItem]] = {}
+        for lang in langs:
+            # 3. Novelty is judged against what is already published IN THIS LANGUAGE.
+            existing_titles = list((await db.execute(
+                select(NewsItem.title).where(
+                    NewsItem.topic_key == topic_key, NewsItem.published_at >= since, NewsItem.language == lang)
+            )).scalars().all())
+            fresh = [(m, cid) for m, cid in merged_all
+                     if not any(title_similarity(m.headline, t) >= SIMILARITY_THRESHOLD for t in existing_titles)]
+            produced[lang] = []
+            if not fresh:
                 continue
-            fresh.append(merged)
-            cluster_ids.append(uuid.uuid4())
-        if not fresh:
-            await _finish_run(db, run_id, status="no_news", cost=cost)
-            return NewsRunResult("no_news", cost=cost)
+            narrowed = findings.model_copy(update={"findings": [m for m, _ in fresh]})
+            cluster_ids = [cid for _, cid in fresh]
 
-        narrowed = findings.model_copy(update={"findings": fresh})
+            # 4. Write (at most MAX_ITEMS), in this language.
+            drafts = await ai_platform.write_news_items(
+                db, narrowed, topic, max_items=MAX_ITEMS, already_published=existing_titles, language=lang,
+            )
+            costs[lang] += drafts.cost
 
-        # 4. Write (at most MAX_ITEMS).
-        drafts = await ai_platform.write_news_items(
-            db, narrowed, topic, max_items=MAX_ITEMS, already_published=existing_titles, language=language,
-        )
-        cost += drafts.cost
+            # 5. Grounding + shape checks; every rejection is silent, never published.
+            items = produced[lang]
+            for draft in drafts.items:
+                if len(items) >= MAX_ITEMS:
+                    break
+                title = (draft.title or "").strip()
+                summary = clamp_summary(draft.summary)
+                sources = ground_sources(draft.source_urls, narrowed)
+                if not title or not summary or not draft.body.strip() or not sources:
+                    logger.info("news: dropped draft %r (missing field or no grounded source)", title)
+                    continue
+                if any(title_similarity(title, t) >= SIMILARITY_THRESHOLD for t in existing_titles + [i.title for i in items]):
+                    continue
+                best = max(range(len(fresh)), key=lambda i: title_similarity(title, fresh[i][0].headline))
+                category = draft.category if draft.category in CATEGORIES else (infer_category(topic) or "world")
+                items.append(NewsItem(
+                    topic_key=topic_key, category=category, title=title[:300], summary=summary,
+                    short_version=draft.short_version.strip(), body=draft.body.strip(), sources=sources,
+                    image_hint=(draft.image_hint or None), published_at=now, slot=slot,
+                    cluster_id=cluster_ids[best], language=lang,
+                ))
 
-        # 5. Grounding + shape checks; every rejection is silent, never published.
-        items: list[NewsItem] = []
-        for draft in drafts.items:
-            if len(items) >= MAX_ITEMS:
-                break
-            title = (draft.title or "").strip()
-            summary = clamp_summary(draft.summary)
-            sources = ground_sources(draft.source_urls, narrowed)
-            if not title or not summary or not draft.body.strip() or not sources:
-                logger.info("news: dropped draft %r (missing field or no grounded source)", title)
-                continue
-            if any(title_similarity(title, t) >= SIMILARITY_THRESHOLD for t in existing_titles + [i.title for i in items]):
-                continue
-            best = max(range(len(fresh)), key=lambda i: title_similarity(title, fresh[i].headline))
-            category = draft.category if draft.category in CATEGORIES else (infer_category(topic) or "world")
-            items.append(NewsItem(
-                topic_key=topic_key, category=category, title=title[:300], summary=summary,
-                short_version=draft.short_version.strip(), body=draft.body.strip(), sources=sources,
-                image_hint=(draft.image_hint or None), published_at=now, slot=slot,
-                cluster_id=cluster_ids[best],
-            ))
-        db.add_all(items)
-        await _finish_run(db, run_id, status="done" if items else "no_news", items_count=len(items), cost=cost)
-        return NewsRunResult("done" if items else "no_news", items, cost)
+        all_items = [i for lang in langs for i in produced[lang]]
+        db.add_all(all_items)
+        statuses = []
+        for lang in langs:
+            status = "done" if produced[lang] else "no_news"
+            statuses.append(status)
+            await _finish_run(db, runs[lang], status=status, items_count=len(produced[lang]), cost=costs[lang])
+        return NewsRunResult("done" if "done" in statuses else "no_news", all_items, sum(costs.values()))
     except Exception as exc:
         await db.rollback()
-        await _finish_run(db, run_id, status="failed", error=str(exc)[:300], cost=cost)
+        for lang in langs:
+            await _finish_run(db, runs[lang], status="failed", error=str(exc)[:300], cost=costs[lang])
         raise
 
 
@@ -403,6 +435,23 @@ async def topics_with_followers(db: AsyncSession) -> list[str]:
         counts[key] = counts.get(key, 0) + 1
         display.setdefault(key, topic)
     return [display[k] for k in sorted(counts, key=lambda k: (-counts[k], k))]
+
+
+async def languages_by_topic(db: AsyncSession) -> dict[str, list[str]]:
+    """{topic_key: sorted languages} of the followers of each active topic
+    (Cliente.idioma, via language_for). Only decides WHICH languages the cheap
+    write step runs in; research is shared."""
+    rows = (await db.execute(
+        select(Request.structured, Cliente.idioma)
+        .join(Cliente, Cliente.id == Request.customer_id)
+        .where(Request.status == RequestStatus.active)
+    )).all()
+    out: dict[str, set[str]] = {}
+    for structured, idioma in rows:
+        key = normalize(request_topic(structured))
+        if key:
+            out.setdefault(key, set()).add(language_for(idioma))
+    return {k: sorted(v) for k, v in out.items()}
 
 
 async def followers_by_timezone(db: AsyncSession) -> dict[str, dict[str, tuple[str, int]]]:
@@ -461,16 +510,19 @@ async def run_scheduled_slot(db: AsyncSession, *, now: datetime | None = None, m
     # Keys that cannot be claimed any more are dropped BEFORE the max_topics cap,
     # so topics ranked beyond the cap are not starved by finished ones.
     blocked = await _unclaimable_keys(db, {d for d, _ in work})
-    candidates = [
-        (run_date, slot, key, display, n)
-        for (run_date, slot), topics in work.items()
-        for key, (display, n) in topics.items()
-        if (key, run_date, slot) not in blocked
-    ]
+    langs_by_topic = await languages_by_topic(db)
+    candidates = []
+    for (run_date, slot), topics in work.items():
+        for key, (display, n) in topics.items():
+            # Only the languages that still need a run for this key.
+            todo = [lang for lang in langs_by_topic.get(key) or [DEFAULT_LANGUAGE]
+                    if (key, run_date, slot, lang) not in blocked]
+            if todo:
+                candidates.append((run_date, slot, key, display, n, todo))
     summary["skipped"] += sum(len(topics) for topics in work.values()) - len(candidates)
     candidates.sort(key=lambda c: (-c[4], c[0], c[1], c[2]))
 
-    for run_date, slot, key, display, _n in candidates[:max_topics]:
+    for run_date, slot, key, display, _n, todo in candidates[:max_topics]:
         # ONE global ceiling: everything spent since UTC midnight, whatever the
         # topic, slot or timezone group that spent it.
         utc_midnight = _now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -483,7 +535,7 @@ async def run_scheduled_slot(db: AsyncSession, *, now: datetime | None = None, m
             return summary
         summary["topics"] += 1
         try:
-            result = await run_news_for_topic(db, display, slot=slot, run_date=run_date, now=now)
+            result = await run_news_for_topic(db, display, slot=slot, run_date=run_date, now=now, languages=todo)
         except Exception:
             logger.exception("news: run failed for topic %r", key)
             summary["failed"] += 1
@@ -493,23 +545,25 @@ async def run_scheduled_slot(db: AsyncSession, *, now: datetime | None = None, m
     return summary
 
 
-async def _unclaimable_keys(db: AsyncSession, run_dates: set[date]) -> set[tuple[str, date, str]]:
-    """(topic_key, run_date, slot) keys _claim_run would refuse right now:
+async def _unclaimable_keys(db: AsyncSession, run_dates: set[date]) -> set[tuple[str, date, str, str]]:
+    """(topic_key, run_date, slot, language) keys _claim_run would refuse right now:
     finished, out of attempts, in failure backoff, or held by a fresh run."""
     if not run_dates:
         return set()
     now = _now()
     rows = (await db.execute(
-        select(NewsRun.topic_key, NewsRun.run_date, NewsRun.slot, NewsRun.status, NewsRun.attempts, NewsRun.updated_at)
+        select(NewsRun.topic_key, NewsRun.run_date, NewsRun.slot, NewsRun.language, NewsRun.status,
+               NewsRun.attempts, NewsRun.updated_at)
         .where(NewsRun.run_date.in_(run_dates))
     )).all()
-    out: set[tuple[str, date, str]] = set()
-    for topic_key, run_date, slot, status, attempts, updated_at in rows:
+    out: set[tuple[str, date, str, str]] = set()
+    for topic_key, run_date, slot, language, status, attempts, updated_at in rows:
+        key = (topic_key, run_date, slot, language)
         updated = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=timezone.utc)
         if status in ("done", "no_news") or attempts >= MAX_ATTEMPTS:
-            out.add((topic_key, run_date, slot))
+            out.add(key)
         elif status == "failed" and updated >= now - FAILED_BACKOFF:
-            out.add((topic_key, run_date, slot))
+            out.add(key)
         elif status == "running" and updated >= now - STALE_RUNNING:
-            out.add((topic_key, run_date, slot))
+            out.add(key)
     return out
