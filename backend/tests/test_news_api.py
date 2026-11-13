@@ -21,7 +21,7 @@ def _item(topic_key="premier league", category="sports", title="T", *, age_h=1):
 
 
 async def _list(db, cliente, **kw):
-    args = dict(day=None, cursor=None, limit=30, scope="followed")
+    args = dict(day=None, tz_offset_minutes=0, cursor=None, limit=30, scope="followed")
     args.update(kw)
     return await news.list_news(cliente=cliente, db=db, **args)
 
@@ -84,7 +84,7 @@ async def test_read_unread_roundtrip_is_per_customer_and_idempotent(full_db_sess
     await news.mark_read(item.id, cliente=a, db=db)  # idempotent, no unique violation
     assert (await _list(db, a)).items[0].read is True
     assert (await _list(db, b)).items[0].read is False  # other customer unaffected
-    assert (await news.get_news(item.id, cliente=a, db=db)).read is True
+    assert (await news.get_news(item.id, tz_offset_minutes=0, cliente=a, db=db)).read is True
 
     assert (await news.mark_unread(item.id, cliente=a, db=db))["read"] is False
     assert (await _list(db, a)).items[0].read is False
@@ -127,3 +127,57 @@ async def test_cursor_pagination_and_day_filter(full_db_session):
     assert titles == ["n0", "n1", "n2", "n3", "n4"] and third.next_cursor is None
 
     assert len((await _list(db, me, day=first.items[0].day)).items) >= 1
+
+
+@pytest.mark.asyncio
+async def test_cursor_pagination_with_identical_published_at(full_db_session):
+    db = full_db_session
+    me = await make_customer(db, topic="Premier League")
+    same = datetime.now(timezone.utc) - timedelta(hours=2)
+    items = [_item(title=f"same{i}") for i in range(5)]
+    for it in items:
+        it.published_at = same
+    db.add_all(items)
+    await db.commit()
+
+    seen, cursor = [], None
+    for _ in range(5):
+        page = await _list(db, me, limit=2, cursor=cursor)
+        seen += [i.id for i in page.items]
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    assert len(seen) == 5 and len(set(seen)) == 5  # tie broken by id: nothing skipped or repeated
+
+
+@pytest.mark.asyncio
+async def test_tz_offset_shifts_day_and_read_minutes(full_db_session):
+    db = full_db_session
+    me = await make_customer(db, topic="Premier League")
+    it = _item()
+    it.published_at = datetime(2026, 11, 12, 2, 0, tzinfo=timezone.utc)  # Nov 11 21:00 in Bogota
+    it.body = " ".join(["word"] * 450)
+    db.add(it)
+    await db.commit()
+    got = await news.get_news(it.id, tz_offset_minutes=0, cliente=me, db=db)
+    local = await news.get_news(it.id, tz_offset_minutes=-300, cliente=me, db=db)
+    assert str(got.day) == "2026-11-12" and str(local.day) == "2026-11-11"
+    assert got.read_minutes == 3
+
+
+@pytest.mark.asyncio
+async def test_internal_news_run_auth_and_bad_slot(monkeypatch):
+    from app.api.routes import internal
+    from app.core.config import settings
+
+    app = FastAPI()
+    app.include_router(internal.router, prefix="/api")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        monkeypatch.setattr(settings, "INTERNAL_DASHBOARD_KEY", None)
+        assert (await c.post("/api/internal/news/run", params={"topic": "x"})).status_code in (401, 404, 503)
+        monkeypatch.setattr(settings, "INTERNAL_DASHBOARD_KEY", "secret")
+        wrong = await c.post("/api/internal/news/run", params={"topic": "x"}, headers={"X-Internal-Dashboard-Key": "nope"})
+        assert wrong.status_code == 401
+        bad = await c.post("/api/internal/news/run", params={"topic": "x", "slot": "9999"},
+                           headers={"X-Internal-Dashboard-Key": "secret"})
+        assert bad.status_code == 422

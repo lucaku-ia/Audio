@@ -50,7 +50,8 @@ class NewsItemOut(BaseModel):
     sources: list[NewsSourceOut]
     image_hint: str | None
     published_at: datetime
-    day: date  # UTC calendar day, for grouping
+    day: date  # calendar day in the caller's tz (tz_offset_minutes, default UTC), for grouping
+    read_minutes: int  # estimate from body word count at ~200 wpm, min 1
     slot: str
     cluster_id: str | None
     read: bool
@@ -66,13 +67,14 @@ class NewsListOut(BaseModel):
     followed_categories: list[str]
 
 
-def _out(item: NewsItem, read_at) -> NewsItemOut:
+def _out(item: NewsItem, read_at, tz_offset_minutes: int = 0) -> NewsItemOut:
     published = item.published_at if item.published_at.tzinfo else item.published_at.replace(tzinfo=timezone.utc)
     return NewsItemOut(
         id=str(item.id), topic_key=item.topic_key, category=item.category, title=item.title,
         summary=item.summary, short_version=item.short_version, body=item.body,
         sources=[NewsSourceOut(**s) for s in (item.sources or [])],
-        image_hint=item.image_hint, published_at=published, day=published.astimezone(timezone.utc).date(),
+        image_hint=item.image_hint, published_at=published, day=(published.astimezone(timezone.utc) + timedelta(minutes=tz_offset_minutes)).date(),
+        read_minutes=max(1, -(-len(item.body.split()) // 200)),
         slot=item.slot, cluster_id=str(item.cluster_id) if item.cluster_id else None,
         read=read_at is not None,
     )
@@ -124,7 +126,8 @@ async def _visible_filters(db: AsyncSession, cliente: Cliente, scope: str):
 
 @router.get("", response_model=NewsListOut)
 async def list_news(
-    day: date | None = Query(default=None, description="Only this UTC day (YYYY-MM-DD)."),
+    day: date | None = Query(default=None, description="Only this day (YYYY-MM-DD) in the caller's tz."),
+    tz_offset_minutes: int = Query(default=0, ge=-840, le=840, description="Caller's UTC offset in minutes (e.g. -300 for Bogota); default UTC."),
     cursor: str | None = None,
     limit: int = Query(default=30, ge=1, le=100),
     scope: str = Query(default="followed", pattern="^(followed|all)$"),
@@ -133,7 +136,7 @@ async def list_news(
 ):
     where, no_match, keys, cats = await _visible_filters(db, cliente, scope)
     if day is not None:
-        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc) - timedelta(minutes=tz_offset_minutes)
         where += [NewsItem.published_at >= start, NewsItem.published_at < start + timedelta(days=1)]
     if cursor:
         ts, item_id = _decode_cursor(cursor)
@@ -148,7 +151,7 @@ async def list_news(
     )).all()
     page = rows[:limit]
     return NewsListOut(
-        items=[_out(item, read_at) for item, read_at in page],
+        items=[_out(item, read_at, tz_offset_minutes) for item, read_at in page],
         next_cursor=_encode_cursor(page[-1][0]) if len(rows) > limit and page else None,
         no_follow_match=no_match,
         followed_topics=sorted(keys),
@@ -187,6 +190,7 @@ async def _get_item(db: AsyncSession, news_id: uuid.UUID) -> NewsItem:
 @router.get("/{news_id}", response_model=NewsItemOut)
 async def get_news(
     news_id: uuid.UUID,
+    tz_offset_minutes: int = Query(default=0, ge=-840, le=840),
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
@@ -194,7 +198,7 @@ async def get_news(
     read_at = (await db.execute(
         select(NewsReadState.read_at).where(NewsReadState.news_id == news_id, NewsReadState.cliente_id == cliente.id)
     )).scalar_one_or_none()
-    return _out(item, read_at)
+    return _out(item, read_at, tz_offset_minutes)
 
 
 @router.put("/{news_id}/read")

@@ -71,6 +71,7 @@ Deferred:
 """
 import asyncio
 import logging
+import os
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -190,12 +191,17 @@ async def _run_forever() -> None:
 _NEWS_TICK_SECONDS = 600
 
 
+def news_scheduler_enabled() -> bool:
+    """Read from the environment on every call (runtime kill switch)."""
+    return os.getenv("NEWS_SCHEDULER_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
 async def _news_tick() -> dict:
     """News feed slots (05:00 and 13:00 UTC bands). Idempotent: the NewsRun
     unique (topic, date, slot) row makes every tick after the first a no-op
     for a topic, and a restart mid-day simply catches up. Cost is per topic,
     never per follower (see app/services/news_pipeline.py)."""
-    if not settings.NEWS_SCHEDULER_ENABLED:
+    if not news_scheduler_enabled():
         return {"enabled": False}
     async with AsyncSessionLocal() as db:
         return await run_scheduled_slot(db, max_topics=settings.NEWS_MAX_TOPICS_PER_SLOT)
@@ -222,8 +228,7 @@ class Scheduler:
         if self._task is not None:
             return
         self._task = asyncio.create_task(_run_forever())
-        if settings.NEWS_SCHEDULER_ENABLED:
-            self._news_task = asyncio.create_task(_run_news_forever())
+        self._news_task = asyncio.create_task(_run_news_forever())  # gated per tick, not here
 
     async def stop(self) -> None:
         for attr in ("_task", "_news_task"):

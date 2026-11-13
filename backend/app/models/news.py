@@ -38,7 +38,7 @@ class NewsItem(Base):
     # [{"name": ..., "url": ...}] — at least one entry, enforced by the pipeline ("no source, no item").
     sources: Mapped[list] = mapped_column(JSON, default=lambda: [])
     image_hint: Mapped[str | None] = mapped_column(String(300), nullable=True)
-    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
     slot: Mapped[str] = mapped_column(String(10))  # "0500" | "1300" | "adhoc"
     cluster_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -70,6 +70,7 @@ class NewsRun(Base):
     slot: Mapped[str] = mapped_column(String(10))
     status: Mapped[str] = mapped_column(String(20), default="running")  # running | done | no_news | failed
     items_count: Mapped[int] = mapped_column(Integer, default=0)
+    attempts: Mapped[int] = mapped_column(Integer, default=1)  # claims so far; capped by news_pipeline.MAX_ATTEMPTS
     cost: Mapped[float] = mapped_column(default=0.0)
     error: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

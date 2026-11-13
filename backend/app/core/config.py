@@ -33,8 +33,10 @@ class Settings(BaseSettings):
 
     # News feed slot runs (05:00 and 13:00 UTC bands). Off switch for the
     # in-process scheduler hook; the internal trigger route works regardless.
-    NEWS_SCHEDULER_ENABLED: bool = os.getenv("NEWS_SCHEDULER_ENABLED", "true").lower() not in ("0", "false", "no")
+    # NEWS_SCHEDULER_ENABLED is re-read from the environment at every tick
+    # (app/services/scheduler.py), so it works as a runtime kill switch.
     NEWS_MAX_TOPICS_PER_SLOT: int = int(os.getenv("NEWS_MAX_TOPICS_PER_SLOT", "60"))
+    NEWS_DAILY_COST_CEILING_USD: float = float(os.getenv("NEWS_DAILY_COST_CEILING_USD", "15"))
 
     class Config:
         env_file = ".env"

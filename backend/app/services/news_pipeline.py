@@ -29,10 +29,11 @@ from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from urllib.parse import urlparse
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.news import NewsItem, NewsRun
 from app.models.request import Request, RequestStatus
 from app.services import ai_platform
@@ -45,6 +46,8 @@ SUMMARY_MAX = 70
 NOVELTY_DAYS = 3
 SIMILARITY_THRESHOLD = 0.6
 STALE_RUNNING = timedelta(minutes=30)
+FAILED_BACKOFF = timedelta(minutes=45)
+MAX_ATTEMPTS = 3
 
 SLOT_MORNING = "0500"
 SLOT_MIDDAY = "1300"
@@ -167,13 +170,16 @@ def _merge_cluster(cluster: list):
 def ground_sources(draft_urls: list[str], findings) -> list[dict]:
     """Keep only URLs the research really returned. Unknown / invented / non-
     http URLs contribute nothing."""
+    # Only the research `sources` list is trusted; a URL a finding mentions
+    # that is not in it is logged and never citable.
     known: dict[str, str | None] = {}
     for s in findings.sources:
         if isinstance(s, dict) and s.get("url"):
             known[s["url"]] = s.get("title") or s.get("name")
     for f in findings.findings:
         for u in f.source_urls:
-            known.setdefault(u, None)
+            if u not in known:
+                logger.warning("news: finding %r cites %s which is not in research sources", f.headline, u)
     out: list[dict] = []
     for url in draft_urls:
         if url in known and _is_http_url(url) and all(o["url"] != url for o in out):
@@ -186,31 +192,39 @@ def ground_sources(draft_urls: list[str], findings) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 async def _claim_run(db: AsyncSession, topic_key: str, run_date: date, slot: str) -> uuid.UUID | None:
-    """Returns the NewsRun id this caller now owns, or None if the run is
-    already done / in flight elsewhere."""
-    now = _now()
-    existing = (await db.execute(
-        select(NewsRun).where(NewsRun.topic_key == topic_key, NewsRun.run_date == run_date, NewsRun.slot == slot)
-    )).scalar_one_or_none()
-    if existing is not None:
-        updated = existing.updated_at if existing.updated_at.tzinfo else existing.updated_at.replace(tzinfo=timezone.utc)
-        if existing.status in ("done", "no_news"):
-            return None
-        if existing.status == "running" and now - updated < STALE_RUNNING:
-            return None
-        existing.status, existing.error, existing.updated_at = "running", None, now
-        await db.commit()
-        return existing.id
+    """Returns the NewsRun id this caller now owns, or None.
 
-    run = NewsRun(topic_key=topic_key, run_date=run_date, slot=slot, status="running", created_at=now, updated_at=now)
+    First run: the unique (topic_key, run_date, slot) insert is the claim.
+    Re-claim (failed after BACKOFF, or running but STALE): ONE conditional
+    UPDATE ... RETURNING, so two replicas can never both win. Capped at
+    MAX_ATTEMPTS claims per key, because a failed research is not cached and
+    every retry pays a fresh web search."""
+    now = _now()
+    run = NewsRun(topic_key=topic_key, run_date=run_date, slot=slot, status="running", attempts=1,
+                  created_at=now, updated_at=now)
     try:
         async with db.begin_nested():
             db.add(run)
         await db.commit()
+        return run.id
     except IntegrityError:
         await db.rollback()
-        return None  # lost the race to another runner
-    return run.id
+
+    claimed = (await db.execute(
+        update(NewsRun)
+        .where(
+            NewsRun.topic_key == topic_key, NewsRun.run_date == run_date, NewsRun.slot == slot,
+            NewsRun.attempts < MAX_ATTEMPTS,
+            or_(
+                and_(NewsRun.status == "failed", NewsRun.updated_at < now - FAILED_BACKOFF),
+                and_(NewsRun.status == "running", NewsRun.updated_at < now - STALE_RUNNING),
+            ),
+        )
+        .values(status="running", attempts=NewsRun.attempts + 1, updated_at=now, error=None)
+        .returning(NewsRun.id)
+    )).scalar_one_or_none()
+    await db.commit()
+    return claimed
 
 
 async def _finish_run(db: AsyncSession, run_id: uuid.UUID, **fields) -> None:
@@ -257,7 +271,7 @@ async def run_news_for_topic(
         cost = findings.cost
         if findings.parse_failed:
             await _finish_run(db, run_id, status="failed", error="research parse failed", cost=cost)
-            return NewsRunResult("skipped", cost=cost)
+            return NewsRunResult("failed", cost=cost)
         if findings.no_news or not findings.findings:
             await _finish_run(db, run_id, status="no_news", cost=cost)
             return NewsRunResult("no_news", cost=cost)
@@ -364,15 +378,24 @@ async def topics_with_followers(db: AsyncSession) -> list[str]:
     return [display[k] for k in sorted(counts, key=lambda k: (-counts[k], k))]
 
 
-async def run_scheduled_slot(db: AsyncSession, *, now: datetime | None = None, max_topics: int = 60) -> dict:
+async def run_scheduled_slot(db: AsyncSession, *, now: datetime | None = None, max_topics: int = 60,
+                             ceiling: float | None = None) -> dict:
     """Runs the current slot for every followed topic. Safe to call as often as
     you like: finished (topic, date, slot) rows are skipped."""
     now = now or _now()
     slot = slot_for(now)
-    summary = {"slot": slot, "topics": 0, "ran": 0, "skipped": 0, "failed": 0}
+    summary = {"slot": slot, "topics": 0, "ran": 0, "skipped": 0, "failed": 0, "ceiling_hit": False}
     if slot is None:
         return summary
+    ceiling = settings.NEWS_DAILY_COST_CEILING_USD if ceiling is None else ceiling
     for topic in (await topics_with_followers(db))[:max_topics]:
+        spent = (await db.execute(
+            select(func.coalesce(func.sum(NewsRun.cost), 0.0)).where(NewsRun.run_date == now.date())
+        )).scalar_one()
+        if spent >= ceiling:
+            logger.warning("news: daily cost ceiling reached (%.2f >= %.2f), stopping slot", spent, ceiling)
+            summary["ceiling_hit"] = True
+            break
         summary["topics"] += 1
         try:
             result = await run_news_for_topic(db, topic, slot=slot, now=now)
@@ -380,5 +403,6 @@ async def run_scheduled_slot(db: AsyncSession, *, now: datetime | None = None, m
             logger.exception("news: run failed for topic %r", topic)
             summary["failed"] += 1
             continue
-        summary["skipped" if result.status == "skipped" else "ran"] += 1
+        key = result.status if result.status in ("skipped", "failed") else "ran"
+        summary[key] += 1
     return summary
