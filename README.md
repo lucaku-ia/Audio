@@ -1299,6 +1299,22 @@ Backs the iOS Home news section (replaces `SampleNewsRepository`). News is **top
 | PUT / DELETE | `/news/{id}/read` | Mark read / unread (idempotent). |
 | POST | `/news/read-all` | Marks the visible feed read (falls back to everything if nothing matches). |
 
+## Feedback and signals
+
+Persists the iOS "Useful / Not quite" ratings (T-402). Code: `app/models/feedback.py`, `app/api/routes/feedback.py`; tables are created by `create_all` (no migration needed).
+
+**Tables**: `feedback` (unique `(cliente_id, target_type, target_id)`, `rating` useful|not_quite, `reasons` JSON, `suggestion`, `effects` JSON, created_at/updated_at), `feedback_signals` (unique `(cliente_id, subject_type, subject_key)`; counters `useful, not_quite, too_long, too_short, not_relevant, needs_more_detail, too_technical, stop_topic` plus `score = useful - not_quite`), `problem_reports`.
+
+**Targets**: `story` = a block id, `episode` = an episode id (both must belong to the caller or be shared; else 404), `news` = a news item id. Signal subjects: a story bumps its block's request, an episode bumps every request that has a block in it, a news item bumps its `topic_key`. Reasons are snake_case: `too_long, too_short, not_relevant, needs_more_detail, too_technical, stop_topic`.
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/feedback` | Body `{target_type, target_id, rating, reasons?, suggestion?}`. Returns `{removed, feedback}`. Upsert; useful and not_quite are exclusive (switching replaces). Sending the identical payload again toggles it OFF (row deleted, signal contribution reversed: `removed: true`). Same rating with different reasons/suggestion updates. Counters change in the same transaction (atomic upsert) and never go below zero. |
+| GET | `/feedback?target_type=&target_ids=a,b,c` | Saved state for up to 100 ids; only the caller's rows. |
+| POST | `/feedback/report` | `{target_type, target_id, text}` -> 201 `{id}`. |
+
+**Generation wiring (minimal)**: `stop_topic` on a story pauses that story's request (status `paused`, same as the pause endpoint); toggling the feedback off or changing it resumes it only if feedback itself paused it. Nothing else changes generation, and no prompts were touched. **Follow-ups**: `too_long`/`too_short` could nudge `profiles.max_length_minutes` or a per-request depth hint, `not_relevant`/`needs_more_detail` could steer the request `structured.depth`, and news `stop_topic` could unfollow the topic; for now they are only stored in `feedback_signals` for the generator to read. Events: `feedback_submitted` (target_type, rating, reasons, has_suggestion, action created|updated|removed; never free text) and `problem_reported`.
+
 ## Suggested next steps
 
 **Status as of 2026-11-11, after the autonomous backend session.** Everything
