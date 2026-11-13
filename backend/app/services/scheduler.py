@@ -71,11 +71,13 @@ Deferred:
 """
 import asyncio
 import logging
+import os
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.cliente import Cliente
 from app.models.episode import EpisodePath
@@ -83,6 +85,7 @@ from app.models.generation_job import GenerationJob
 from app.models.profile import Profile
 from app.models.request import Request, RequestStatus
 from app.services.episode_generator import check_late_jobs, run_generation
+from app.services.news_pipeline import run_scheduled_slot
 
 logger = logging.getLogger(__name__)
 
@@ -185,27 +188,59 @@ async def _run_forever() -> None:
         await asyncio.sleep(_TICK_SECONDS)
 
 
+_NEWS_TICK_SECONDS = 600
+
+
+def news_scheduler_enabled() -> bool:
+    """Read from the environment on every call (runtime kill switch)."""
+    return os.getenv("NEWS_SCHEDULER_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+async def _news_tick() -> dict:
+    """News feed slots (05:00 and 13:00 UTC bands). Idempotent: the NewsRun
+    unique (topic, date, slot) row makes every tick after the first a no-op
+    for a topic, and a restart mid-day simply catches up. Cost is per topic,
+    never per follower (see app/services/news_pipeline.py)."""
+    if not news_scheduler_enabled():
+        return {"enabled": False}
+    async with AsyncSessionLocal() as db:
+        return await run_scheduled_slot(db, max_topics=settings.NEWS_MAX_TOPICS_PER_SLOT)
+
+
+async def _run_news_forever() -> None:
+    while True:
+        try:
+            await _news_tick()
+        except Exception:
+            logger.exception("scheduler: news tick failed")
+        await asyncio.sleep(_NEWS_TICK_SECONDS)
+
+
 class Scheduler:
-    """Owns the background task's lifecycle so app.main's lifespan can start
-    it on startup and cancel it cleanly on shutdown."""
+    """Owns the background tasks' lifecycle so app.main's lifespan can start
+    them on startup and cancel them cleanly on shutdown."""
 
     def __init__(self) -> None:
         self._task: asyncio.Task | None = None
+        self._news_task: asyncio.Task | None = None
 
     def start(self) -> None:
         if self._task is not None:
             return
         self._task = asyncio.create_task(_run_forever())
+        self._news_task = asyncio.create_task(_run_news_forever())  # gated per tick, not here
 
     async def stop(self) -> None:
-        if self._task is None:
-            return
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-        self._task = None
+        for attr in ("_task", "_news_task"):
+            task = getattr(self, attr)
+            if task is None:
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            setattr(self, attr, None)
 
 
 scheduler = Scheduler()

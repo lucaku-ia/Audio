@@ -1260,6 +1260,25 @@ chip surviving the page change, "More ideas" disappearing once all twelve were
 shown, and the failure producing one honest error, a named list of what did not
 save, and an offer to retry.
 
+## News feed
+
+Backs the iOS Home news section (replaces `SampleNewsRepository`). News is **topic-keyed, not customer-keyed**: items are written once per topic and shared by every follower, so cost does not grow with follower count. Only read state is per customer.
+
+**Tables** (`app/models/news.py`, created by `create_all`): `news_items` (topic_key, category, title, `summary` <= 70 chars, short_version, body, `sources` JSON `[{name,url}]`, image_hint, published_at, slot, cluster_id; index `(topic_key, published_at)`), `news_read_states` (unique `(cliente_id, news_id)`), `news_runs` (unique `(topic_key, run_date, slot)`, the idempotency record).
+
+**Pipeline** (`app/services/news_pipeline.py`): research through `ai_platform.research_topic` (web_search + shared `findings_store`) -> cluster near-duplicate headlines -> drop stories already published for the topic in the last 3 days -> `ai_platform.write_news_items` (prompt `news_write` in the prompt registry, max 3 items) -> grounding check: every cited URL must come from the research, and an item with no source URL is never stored. Summaries are clamped to 70 chars. Research uses Claude web search, not a licensed news API.
+
+**Slots**: the scheduler (`NEWS_SCHEDULER_ENABLED`, default on; `NEWS_MAX_TOPICS_PER_SLOT`, default 60) checks every 10 min and runs the current UTC band for each topic with followers: `0500` (05:00-12:59) and `1300` (13:00-23:59); nothing runs 00:00-04:59. A `(topic, date, slot)` runs once, so repeated ticks and restarts are safe. The first claim is the unique insert into `news_runs`; re-claims (a `failed` run after a 45 min backoff, or a `running` run stale for 30 min) are one atomic conditional `UPDATE ... RETURNING`, capped at 3 attempts per key, so two replicas never both run a slot and failures cannot loop on paid searches. A research parse failure is reported as `failed` and is never cached. `NEWS_SCHEDULER_ENABLED` is read at every tick (runtime kill switch) and `NEWS_DAILY_COST_CEILING_USD` (default 15) stops a slot once the day's recorded run cost reaches it. On demand: `POST /api/internal/news/run?topic=...&slot=0500|1300|adhoc` (internal key, same as other internal routes).
+
+**Endpoints** (auth required; `/api` prefix):
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/news?day=YYYY-MM-DD&tz_offset_minutes=&cursor=&limit=&scope=followed\|all` | Last 7 days, newest first. Each item has `day` (calendar day in the caller's tz via `tz_offset_minutes`, default 0 = UTC, e.g. -300 for Bogota; `day=` filters in that same tz), `read_minutes` (body words / 200 wpm, min 1) and `read`. Matches followed topics or their categories. If nothing matches: `items: []` and `no_follow_match: true`; the app then calls `scope=all`. |
+| GET | `/news/{id}` | One item. |
+| PUT / DELETE | `/news/{id}/read` | Mark read / unread (idempotent). |
+| POST | `/news/read-all` | Marks the visible feed read (falls back to everything if nothing matches). |
+
 ## Suggested next steps
 
 **Status as of 2026-11-11, after the autonomous backend session.** Everything

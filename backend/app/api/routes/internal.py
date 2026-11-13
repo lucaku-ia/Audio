@@ -107,6 +107,31 @@ async def generate_shared_inventory(
     return results
 
 
+class NewsRunOut(BaseModel):
+    topic: str
+    slot: str
+    status: str  # skipped (already ran / in flight) | no_news | done
+    items: int
+    cost: float
+
+
+@router.post("/news/run", response_model=NewsRunOut)
+async def run_news_now(
+    topic: str = Query(min_length=1, max_length=300),
+    slot: str | None = Query(default=None, description="0500 | 1300 | adhoc. Default: the current slot band, or adhoc before 05:00 UTC."),
+    db: AsyncSession = Depends(get_db),
+):
+    """Runs the news pipeline for one topic on demand. Idempotent per
+    (topic, UTC date, slot): a second call for the same slot reports 'skipped'."""
+    from app.services import news_pipeline as np_
+
+    chosen = slot or np_.slot_for(np_._now()) or np_.SLOT_ADHOC
+    if chosen not in np_.VALID_SLOTS:
+        raise HTTPException(422, f"slot must be one of {', '.join(np_.VALID_SLOTS)}")
+    result = await np_.run_news_for_topic(db, topic, slot=chosen)
+    return NewsRunOut(topic=topic, slot=chosen, status=result.status, items=len(result.items), cost=result.cost)
+
+
 class SourceCatalogueEntryOut(BaseModel):
     name: str
     domain: str

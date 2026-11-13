@@ -25,6 +25,7 @@ from app.models.generation_job import GenerationJob, InventoryItem  # noqa: E402
 from app.models.episode import Episode, Block  # noqa: E402,F401
 from app.models.instrumentation import Event, AICall  # noqa: E402,F401
 from app.models.findings_cache import FindingsCache  # noqa: E402,F401
+from app.models.news import NewsItem, NewsReadState, NewsRun  # noqa: E402,F401
 
 
 @pytest_asyncio.fixture
@@ -60,6 +61,9 @@ _FULL_SESSION_TABLES = (
     "ai_calls", "events", "inventory_items", "blocks", "episodes",
     "generation_jobs", "request_versions", "requests", "onboarding_states",
     "profiles", "clientes",
+    # News is topic-keyed (not customer-keyed), so these survive the CASCADE
+    # from clientes too, except news_read_states which FKs to both.
+    "news_read_states", "news_items", "news_runs",
     # findings_cache is keyed by topic, NOT by customer, so it survives the
     # CASCADE from clientes that clears everything else here. Left out, a
     # cached topic from one test silently satisfies the next test's lookup —

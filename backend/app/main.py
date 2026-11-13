@@ -10,13 +10,14 @@ from app.db.migraciones import ejecutar_migraciones
 # Import every model so create_all() sees them
 from app.models import (
     cliente, request, profile, episode, generation_job, instrumentation, onboarding, prompt_registry,
-    source_catalogue, findings_cache,
+    source_catalogue, findings_cache, news,
 )  # noqa: F401
 from app.services.ai_platform import (
     ModelUnavailable,
     STRUCTURE_REQUEST_SYSTEM, STRUCTURE_REQUEST_VERSION,
     RESEARCH_TOPIC_SYSTEM, RESEARCH_TOPIC_VERSION,
     WRITE_BLOCK_SYSTEM, WRITE_BLOCK_VERSION,
+    NEWS_WRITE_SYSTEM, NEWS_WRITE_VERSION,
 )
 from app.services.prompt_registry import seed_prompt_registry
 from app.services.source_catalogue import seed_source_catalogue
@@ -24,7 +25,7 @@ from app.api.routes import (
     auth, requests as requests_routes, profile as profile_routes,
     onboarding as onboarding_routes, generation as generation_routes, internal as internal_routes,
     search as search_routes, account as account_routes,
-    home as home_routes, instrumentation as instrumentation_routes,
+    home as home_routes, instrumentation as instrumentation_routes, news as news_routes,
 )
 from app.services.scheduler import scheduler
 
@@ -45,6 +46,7 @@ async def lifespan(app: FastAPI):
             ("structure_request", STRUCTURE_REQUEST_VERSION, STRUCTURE_REQUEST_SYSTEM),
             ("research_topic", RESEARCH_TOPIC_VERSION, RESEARCH_TOPIC_SYSTEM),
             ("write_block", WRITE_BLOCK_VERSION, WRITE_BLOCK_SYSTEM),
+            ("news_write", NEWS_WRITE_VERSION, NEWS_WRITE_SYSTEM),
         ], created_by="seed:ai_platform.py")
 
         # Episode Generator PRD §5's source catalogue (app/models/source_catalogue.py)
@@ -85,6 +87,7 @@ app.include_router(search_routes.router, prefix="/api")
 app.include_router(account_routes.router, prefix="/api")
 app.include_router(home_routes.router, prefix="/api")
 app.include_router(instrumentation_routes.router, prefix="/api")
+app.include_router(news_routes.router, prefix="/api")
 
 
 @app.exception_handler(ModelUnavailable)

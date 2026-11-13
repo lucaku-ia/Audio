@@ -217,6 +217,7 @@ _MODEL_BY_PURPOSE = {
     "write_block": _CHEAP,
     "structure_request": _CHEAP,
     "refine_request": _CHEAP,
+    "news_write": _CHEAP,
 }
 
 # Which model a failed cheap call is retried on. One hop only — if the strong
@@ -640,6 +641,87 @@ async def write_block(
     result.cost = cost
     result.sources = _resolve_sources(result.sources, findings.sources)
     return result
+
+
+class NewsDraft(BaseModel):
+    """One news item as the model writes it. Not yet trusted: the pipeline
+    re-checks sources and length before anything is stored."""
+    category: str
+    title: str
+    summary: str
+    short_version: str
+    body: str
+    source_urls: list[str]
+    image_hint: str | None = None
+
+
+class NewsDrafts(BaseModel):
+    items: list[NewsDraft]
+    # Not model output.
+    cost: float = 0.0
+
+
+NEWS_WRITE_VERSION = "v1"
+
+NEWS_WRITE_SYSTEM = """You write items for a news feed from research findings that were already gathered for you. You have no web access and must use only the findings.
+
+Write AT MOST {max_items} items, one per distinct story. Fewer is better than padding: if nothing in the findings is genuinely new, return an empty list.
+
+For each item:
+- "category": exactly one of: local, politics, world, markets, personalFinance, technology, science, health, climate, sports, entertainment, lifestyle.
+- "title": a plain, specific headline.
+- "summary": ONE sentence, at most 70 characters, written to fit two lines on a phone. No clickbait.
+- "short_version": two or three sentences with the essential facts.
+- "body": the full write-up, 2 short paragraphs, plain and factual. Never state anything the findings do not support.
+- "source_urls": the urls (copied exactly from the findings) that support this item. Every item MUST have at least one. If you cannot cite a source, do not write the item.
+- "image_hint": a few words describing a fitting thumbnail, or null.
+
+Write in {language}. Do not repeat a story listed under "Already published"."""
+
+
+async def write_news_items(
+    db: AsyncSession,
+    findings: Findings,
+    topic: str,
+    *,
+    max_items: int,
+    already_published: list[str],
+    language: str = "en",
+) -> NewsDrafts:
+    """
+    News write stage. Like write_block it has no web access and only sees the
+    (shared, cached) findings, so its cost does not depend on how many people
+    follow the topic: it runs once per (topic, day, slot), and the resulting
+    items are shared. No customer is involved, so nothing here is per listener.
+    """
+    system_template, version = await get_active_prompt(
+        db, "news_write",
+        fallback_version=NEWS_WRITE_VERSION, fallback_system_prompt=NEWS_WRITE_SYSTEM,
+    )
+    system = system_template.format(max_items=max_items, language="Spanish" if language == "es" else "English")
+    findings_json = json.dumps([f.model_dump() for f in findings.findings], ensure_ascii=False, indent=2)
+    user_content = f"Topic: {topic}\n\nFindings:\n{findings_json}"
+    if already_published:
+        user_content += "\n\nAlready published:\n" + "\n".join(f"- {t}" for t in already_published)
+
+    start = time.monotonic()
+    response = await _invoke(
+        _client.messages.parse,
+        model=model_for("news_write"),
+        max_tokens=4096,
+        thinking={"type": "adaptive"},
+        output_config={"effort": "low"},
+        system=system,
+        messages=[{"role": "user", "content": user_content}],
+        output_format=NewsDrafts,
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+    drafts = response.parsed_output or NewsDrafts(items=[])
+    drafts.cost = await _log_call(
+        db, customer_id=None, prompt="news_write", version=version, purpose="news_write",
+        usage=response.usage, latency_ms=latency_ms, context={"topic": topic},
+    )
+    return drafts
 
 
 def _resolve_sources(used: list, available: list[dict]) -> list[dict]:
