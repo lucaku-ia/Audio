@@ -27,6 +27,7 @@ from app.api.deps import get_current_cliente
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.episode import Block, Episode
+from app.services import capsules
 
 router = APIRouter(prefix="/episodes", tags=["History"])
 
@@ -88,7 +89,8 @@ async def list_episodes(
     db: AsyncSession = Depends(get_db),
 ):
     blocks_count = (
-        select(func.count(Block.id)).where(Block.episode_id == Episode.id).correlate(Episode).scalar_subquery()
+        select(func.count(Block.id)).where(Block.episode_id == Episode.id, capsules.delivered_clause())
+        .correlate(Episode).scalar_subquery()
     )
     stmt = select(Episode, blocks_count).where(
         Episode.customer_id == cliente.id, Episode.published_at.is_not(None)

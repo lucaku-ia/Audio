@@ -102,6 +102,16 @@ async def full_db_session():
 
 
 @pytest.fixture(autouse=True)
+def _no_capsule_backoff(monkeypatch):
+    """Capsule voicing retries sleep between tries and late retries wait for a
+    window after publish; neither should slow or gate the suite. Tests that
+    exercise the backoff set these themselves."""
+    from app.services import capsules
+    monkeypatch.setattr(capsules, "VOICE_BACKOFF_S", 0.0)
+    monkeypatch.setattr(capsules, "LATE_REVOICE_BACKOFF_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _spend_guard_off_by_default(request, monkeypatch):
     """
     ai_platform.guard_paid_call queries today's AICall spend. The older suites
