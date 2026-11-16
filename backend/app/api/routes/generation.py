@@ -28,7 +28,7 @@ from app.models.cliente import Cliente
 from app.models.episode import Block, Episode
 from app.models.generation_job import GenerationJob
 from app.services import capsules
-from app.services.episode_generator import run_generation
+from app.services.episode_generator import last_failure_code, run_generation
 
 router = APIRouter(prefix="/generation", tags=["Episode Generator"])
 
@@ -141,9 +141,7 @@ class PlaylistOut(BaseModel):
 
 def _job_out(job: GenerationJob, run_started: bool | None = None, language: str | None = None) -> JobOut:
     stages = job.stages or []
-    failure_code = next(
-        (st.get("code") for st in reversed(stages) if isinstance(st, dict) and st.get("code")), None
-    ) if job.status.value == "failed" else None
+    failure_code = last_failure_code(stages) if job.status.value == "failed" else None
     return JobOut(
         id=str(job.id), fecha=job.fecha, path=job.path.value, status=job.status.value,
         creado_en=job.creado_en, stages=stages, run_started=run_started, failure_code=failure_code,

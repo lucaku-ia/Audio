@@ -368,6 +368,25 @@ def _cost(usage, model: str) -> float:
             + _web_search_requests(usage) * _WEB_SEARCH_USD_PER_REQUEST)
 
 
+async def _persist_ai_call(db: AsyncSession, row: AICall) -> None:
+    """
+    Commits the AICall row in its OWN short transaction, independent of the
+    caller's work transaction. The money is spent the moment the provider
+    answers; if a later step fails and the work transaction rolls back (run_generation
+    does, to discard partial episodes), the spend must still count toward the
+    daily budget (spent_today reads these rows). Falls back to the caller's
+    session if the separate write fails, so a record is never silently lost.
+    """
+    try:
+        from app.db.session import AsyncSessionLocal
+        async with AsyncSessionLocal() as own:
+            own.add(row)
+            await own.commit()
+    except Exception:
+        logger.exception("ai_platform: separate AICall commit failed, falling back to caller session")
+        db.add(AICall(**{c.key: getattr(row, c.key) for c in AICall.__table__.columns}))
+
+
 async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, version: str, purpose: str,
                      usage, latency_ms: int, context: dict, rejected_reason: str | None = None,
                      model: str | None = None) -> float:
@@ -382,7 +401,7 @@ async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, ve
     """
     model = model or model_for(purpose)
     cost = _cost(usage, model)
-    db.add(AICall(
+    await _persist_ai_call(db, AICall(
         call_id=uuid.uuid4(),
         prompt=prompt,
         version=version,
@@ -1203,7 +1222,7 @@ async def synthesize(
         # A timeout or dropped connection may still have been billed by the
         # provider. Record an ESTIMATED cost so the per-customer budget sees
         # it (it would otherwise be invisible: no response, no AICall row).
-        db.add(AICall(
+        await _persist_ai_call(db, AICall(
             call_id=uuid.uuid4(), prompt="synthesize", version="v1", purpose="synthesize",
             model=_ELEVENLABS_MODEL, provider="elevenlabs", characters=len(text),
             cost=(len(text) / 1000) * _ELEVENLABS_PRICE_PER_1K_CHARS,
@@ -1223,7 +1242,7 @@ async def synthesize(
         # just response.text, or the INSERT itself fails (StringDataRightTruncationError)
         # and takes down the caller's transaction along with it.
         reason = f"HTTP {response.status_code}: {response.text}"[:200]
-        db.add(AICall(
+        await _persist_ai_call(db, AICall(
             call_id=uuid.uuid4(), prompt="synthesize", version="v1", purpose="synthesize",
             model=_ELEVENLABS_MODEL, provider="elevenlabs", characters=len(text), cost=0,
             latency_ms=latency_ms,
@@ -1239,7 +1258,7 @@ async def synthesize(
         raise RuntimeError(f"ElevenLabs synthesize failed: {reason}")
 
     cost = (len(text) / 1000) * _ELEVENLABS_PRICE_PER_1K_CHARS
-    db.add(AICall(
+    await _persist_ai_call(db, AICall(
         call_id=uuid.uuid4(), prompt="synthesize", version="v1", purpose="synthesize",
         model=_ELEVENLABS_MODEL, provider="elevenlabs", characters=len(text),
         cost=cost,

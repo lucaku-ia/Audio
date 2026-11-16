@@ -299,3 +299,63 @@ async def test_post_requests_over_budget_is_a_clean_429(full_db_session, monkeyp
     assert r.json()["code"] == "budget_exceeded"
     assert len(r.json()["detail"]) < 100
     assert len(await _events(full_db_session)) == 1  # persisted despite the error
+
+
+# ── follow-ups: rolled-back spend, stale blocked code ───────────────────────
+
+def _usage():
+    return types.SimpleNamespace(input_tokens=1_000_000, output_tokens=1000)
+
+
+async def test_logged_spend_survives_a_rollback_of_the_work_transaction(full_db_session):
+    c = await _customer(full_db_session)
+    cid = c.id
+    await ai_platform._log_call(
+        full_db_session, customer_id=cid, prompt="p", version="v1", purpose="write_block",
+        usage=_usage(), latency_ms=1, context={"customer_id": str(cid)})
+    await full_db_session.rollback()
+    assert await spent_today(full_db_session, cid) > 0
+
+
+async def test_failure_after_paid_research_still_counts_toward_the_budget(full_db_session, monkeypatch):
+    patch_ai_pipeline(monkeypatch)
+    c = await _customer(full_db_session)
+    cid = c.id
+
+    async def paid_research(db, *a, customer_id=None, **kw):
+        await ai_platform._log_call(
+            db, customer_id=customer_id, prompt="p", version="v1", purpose="research_topic",
+            usage=_usage(), latency_ms=1, context={"customer_id": str(customer_id)})
+        return ai_platform.Findings(findings=[ai_platform.Finding(headline="h", detail="d", source_urls=[])],
+                                    sources=[], no_news=False, parse_failed=False, cost=0.3)
+
+    async def broken_write(*a, **kw):
+        raise ai_platform.ModelUnavailable("down")
+
+    monkeypatch.setattr(ai_platform, "research_topic", paid_research)
+    monkeypatch.setattr(ai_platform, "write_block", broken_write)
+
+    job = await _run(full_db_session, c)
+
+    assert job.status == JobStatus.failed
+    assert await spent_today(full_db_session, cid) > 0, "the rollback discarded paid research"
+
+
+def test_failure_code_reads_only_the_last_failing_stage():
+    from app.services.episode_generator import last_failure_code
+    blocked = {"error": "budget_exceeded", "code": "budget_exceeded"}
+    assert last_failure_code([blocked]) == "budget_exceeded"
+    assert last_failure_code([blocked, {"stage": "voicing", "error": "provider boom"}]) is None
+    assert last_failure_code([blocked, {"stage": "voicing", "error": "x"},
+                              {"stage": "voicing", "skipped": False}]) is None
+    assert last_failure_code([]) is None
+
+
+async def test_a_later_provider_failure_clears_the_blocked_retry(full_db_session):
+    from app.services.episode_generator import _blocked_job_can_retry
+    c = await _customer(full_db_session)
+    blocked = {"error": "budget_exceeded", "code": "budget_exceeded"}
+    job = types.SimpleNamespace(status=JobStatus.failed, retry_count=0, stages=[blocked])
+    assert await _blocked_job_can_retry(full_db_session, c.id, job) is True  # guard passes now
+    job.stages = [blocked, {"stage": "voicing", "error": "quota_exceeded"}]
+    assert await _blocked_job_can_retry(full_db_session, c.id, job) is False

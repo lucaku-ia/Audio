@@ -443,6 +443,15 @@ def _failure_stage(exc: Exception, **extra) -> dict:
 
 
 _BLOCKED_CODES = ("budget_exceeded", "ai_paused")
+
+
+def last_failure_code(stages) -> str | None:
+    """Stable code of the LAST failing stage only (a stage carrying "error").
+    An older blocked code must not outlive a later, different failure."""
+    for st in reversed(stages or []):
+        if isinstance(st, dict) and st.get("error"):
+            return st.get("code")
+    return None
 # Job-level re-voice rounds (a job that voiced NOTHING and is `failed`).
 _MAX_REVOICE_ROUNDS = 3
 
@@ -458,7 +467,7 @@ async def _blocked_job_can_retry(db: AsyncSession, customer_id: uuid.UUID, job: 
     """
     if job.status != JobStatus.failed or job.retry_count >= _MAX_EMPTY_RETRIES_PER_DAY:
         return False
-    if not any(st.get("code") in _BLOCKED_CODES for st in (job.stages or [])):
+    if last_failure_code(job.stages) not in _BLOCKED_CODES:
         return False
     try:
         await ai_platform.guard_paid_call(db, customer_id, "generation_precheck", emit=False)

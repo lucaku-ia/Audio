@@ -887,6 +887,17 @@ slightly over it; it is a brake, not an exact meter.
   by the per-day retry cap. A job that already has scripts and only failed in voicing is
   re-voiced instead of re-researched.
 
+**Known limits (by design)**
+- The check is not atomic: it reads today's spend, then the call happens. Concurrent
+  calls for one customer can each pass and overshoot, bounded by the calls in flight.
+- The day boundary is UTC. A customer far from UTC sees the budget reset mid-afternoon
+  or evening local time, not at their midnight.
+- Shared research is booked to whoever misses the findings cache: that customer's
+  budget carries the research cost, and later customers get cache hits at zero cost.
+- Every `AICall` row is committed in its own short transaction at the moment the call
+  is logged, so spend survives a rollback of the surrounding generation work (a failed
+  run still counts toward the budget).
+
 **Flipping the switch in Railway.** Service `Audio` -> Variables -> add
 `AI_GLOBAL_KILL_SWITCH` = `true` -> Deploy (Railway restarts the service with the new
 variable; no code change). Set it to `false` or delete it to resume. To change a limit,
