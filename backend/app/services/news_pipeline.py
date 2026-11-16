@@ -312,6 +312,7 @@ async def run_news_for_topic(
         return NewsRunResult("skipped")
 
     langs = list(runs)
+    finished: set[str] = set()  # languages whose run row already has its final status
     costs = {lang: 0.0 for lang in langs}  # spend of THIS attempt per run; recorded on every exit path
     try:
         # 1. Research: shared via findings_store, so followers (and languages) never multiply it.
@@ -334,61 +335,80 @@ async def run_news_for_topic(
 
         since = now - timedelta(days=NOVELTY_DAYS)
         produced: dict[str, list[NewsItem]] = {}
+        failures: dict[str, Exception] = {}
+        statuses: list[str] = []
         for lang in langs:
-            # 3. Novelty is judged against what is already published IN THIS LANGUAGE.
-            existing_titles = list((await db.execute(
-                select(NewsItem.title).where(
-                    NewsItem.topic_key == topic_key, NewsItem.published_at >= since, NewsItem.language == lang)
-            )).scalars().all())
-            fresh = [(m, cid) for m, cid in merged_all
-                     if not any(title_similarity(m.headline, t) >= SIMILARITY_THRESHOLD for t in existing_titles)]
-            produced[lang] = []
-            if not fresh:
-                continue
-            narrowed = findings.model_copy(update={"findings": [m for m, _ in fresh]})
-            cluster_ids = [cid for _, cid in fresh]
-
-            # 4. Write (at most MAX_ITEMS), in this language.
-            drafts = await ai_platform.write_news_items(
-                db, narrowed, topic, max_items=MAX_ITEMS, already_published=existing_titles, language=lang,
-            )
-            costs[lang] += drafts.cost
-
-            # 5. Grounding + shape checks; every rejection is silent, never published.
-            items = produced[lang]
-            for draft in drafts.items:
-                if len(items) >= MAX_ITEMS:
-                    break
-                title = (draft.title or "").strip()
-                summary = clamp_summary(draft.summary)
-                sources = ground_sources(draft.source_urls, narrowed)
-                if not title or not summary or not draft.body.strip() or not sources:
-                    logger.info("news: dropped draft %r (missing field or no grounded source)", title)
-                    continue
-                if any(title_similarity(title, t) >= SIMILARITY_THRESHOLD for t in existing_titles + [i.title for i in items]):
-                    continue
-                best = max(range(len(fresh)), key=lambda i: title_similarity(title, fresh[i][0].headline))
-                category = draft.category if draft.category in CATEGORIES else (infer_category(topic) or "world")
-                items.append(NewsItem(
-                    topic_key=topic_key, category=category, title=title[:300], summary=summary,
-                    short_version=draft.short_version.strip(), body=draft.body.strip(), sources=sources,
-                    image_hint=(draft.image_hint or None), published_at=now, slot=slot,
-                    cluster_id=cluster_ids[best], language=lang,
-                ))
-
-        all_items = [i for lang in langs for i in produced[lang]]
-        db.add_all(all_items)
-        statuses = []
-        for lang in langs:
-            status = "done" if produced[lang] else "no_news"
-            statuses.append(status)
-            await _finish_run(db, runs[lang], status=status, items_count=len(produced[lang]), cost=costs[lang])
+            # Each language is its own unit: a failure writing 'es' must not undo or fail an
+            # 'en' that already succeeded (a retry would pay every write again).
+            try:
+                items = await _write_language(
+                    db, lang=lang, topic=topic, topic_key=topic_key, slot=slot, now=now, since=since,
+                    findings=findings, merged_all=merged_all, costs=costs,
+                )
+                produced[lang] = items
+                db.add_all(items)
+                status = "done" if items else "no_news"
+                await _finish_run(db, runs[lang], status=status, items_count=len(items), cost=costs[lang])
+                statuses.append(status)
+            except Exception as exc:
+                logger.exception("news: writing %s items for %r failed", lang, topic)
+                await db.rollback()
+                failures[lang] = exc
+                await _finish_run(db, runs[lang], status="failed", error=str(exc)[:300], cost=costs[lang])
+            finished.add(lang)
+        if len(failures) == len(langs):
+            raise next(iter(failures.values()))  # nothing succeeded: same behaviour as before
+        all_items = [i for lang in langs for i in produced.get(lang, [])]
         return NewsRunResult("done" if "done" in statuses else "no_news", all_items, sum(costs.values()))
     except Exception as exc:
         await db.rollback()
         for lang in langs:
-            await _finish_run(db, runs[lang], status="failed", error=str(exc)[:300], cost=costs[lang])
+            if lang not in finished:
+                await _finish_run(db, runs[lang], status="failed", error=str(exc)[:300], cost=costs[lang])
         raise
+
+
+async def _write_language(db, *, lang, topic, topic_key, slot, now, since, findings, merged_all, costs) -> list[NewsItem]:
+    """Steps 3-5 for one language: novelty, write, grounding. Returns the new
+    (not yet added) items; adds this attempt's spend to costs[lang]."""
+    existing_titles = list((await db.execute(
+        select(NewsItem.title).where(
+            NewsItem.topic_key == topic_key, NewsItem.published_at >= since, NewsItem.language == lang)
+    )).scalars().all())
+    fresh = [(m, cid) for m, cid in merged_all
+             if not any(title_similarity(m.headline, t) >= SIMILARITY_THRESHOLD for t in existing_titles)]
+    items: list[NewsItem] = []
+    if not fresh:
+        return items
+    narrowed = findings.model_copy(update={"findings": [m for m, _ in fresh]})
+    cluster_ids = [cid for _, cid in fresh]
+
+    drafts = await ai_platform.write_news_items(
+        db, narrowed, topic, max_items=MAX_ITEMS, already_published=existing_titles, language=lang,
+    )
+    costs[lang] += drafts.cost
+
+    # Grounding + shape checks; every rejection is silent, never published.
+    for draft in drafts.items:
+        if len(items) >= MAX_ITEMS:
+            break
+        title = (draft.title or "").strip()
+        summary = clamp_summary(draft.summary)
+        sources = ground_sources(draft.source_urls, narrowed)
+        if not title or not summary or not draft.body.strip() or not sources:
+            logger.info("news: dropped draft %r (missing field or no grounded source)", title)
+            continue
+        if any(title_similarity(title, t) >= SIMILARITY_THRESHOLD for t in existing_titles + [i.title for i in items]):
+            continue
+        best = max(range(len(fresh)), key=lambda i: title_similarity(title, fresh[i][0].headline))
+        category = draft.category if draft.category in CATEGORIES else (infer_category(topic) or "world")
+        items.append(NewsItem(
+            topic_key=topic_key, category=category, title=title[:300], summary=summary,
+            short_version=draft.short_version.strip(), body=draft.body.strip(), sources=sources,
+            image_hint=(draft.image_hint or None), published_at=now, slot=slot,
+            cluster_id=cluster_ids[best], language=lang,
+        ))
+    return items
 
 
 # ---------------------------------------------------------------------------

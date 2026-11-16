@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
+from app.core.errors import CodedHTTPException
 from app.core.i18n import DEFAULT_LANGUAGE, language_from_accept_header, msg
 from app.db.session import engine, Base, AsyncSessionLocal
 from app.db.migraciones import ejecutar_migraciones
@@ -92,6 +93,12 @@ app.include_router(instrumentation_routes.router, prefix="/api")
 app.include_router(news_routes.router, prefix="/api")
 app.include_router(history_routes.router, prefix="/api")
 app.include_router(feedback_routes.router, prefix="/api")
+
+
+@app.exception_handler(CodedHTTPException)
+async def coded_http_exception(request: Request, exc: CodedHTTPException):
+    """Same body as FastAPI's default ({"detail": <string>}) plus a top-level `code`."""
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "message": exc.detail, "code": exc.code})
 
 
 def _request_language(request: Request) -> str:

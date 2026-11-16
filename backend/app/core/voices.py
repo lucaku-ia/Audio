@@ -33,6 +33,7 @@ class VoiceOption:
     label: str
     detail: str
     language: str
+    placeholder: bool = False  # not offered to customers until its ELEVENLABS_VOICE_ID_<KEY> is set
 
 
 # First entry of each language is that language's default voice.
@@ -43,8 +44,8 @@ VOICE_CATALOGUE: dict[str, tuple[VoiceOption, ...]] = {
     ),
     # PLACEHOLDER keys: names and ElevenLabs ids for English are TBD.
     "en": (
-        VoiceOption("en_voice_female_1", "English voice 1 (placeholder)", "Warm, calm female voice", "en"),
-        VoiceOption("en_voice_male_1", "English voice 2 (placeholder)", "Clear, steady male voice", "en"),
+        VoiceOption("en_voice_female_1", "English voice 1 (placeholder)", "Warm, calm female voice", "en", placeholder=True),
+        VoiceOption("en_voice_male_1", "English voice 2 (placeholder)", "Clear, steady male voice", "en", placeholder=True),
     ),
 }
 
@@ -109,11 +110,19 @@ def provider_voice_id(voice: str | None) -> str | None:
     return _env_id(option.key)
 
 
+def is_known_voice(voice: str | None) -> bool:
+    """A catalogue key (or its configured real id) of ANY language."""
+    return _find(voice) is not None
+
+
 def catalogue_out(language: str | None) -> list[dict]:
-    return [
-        {"id": o.key, "label": o.label, "detail": o.detail, "language": o.language}
-        for o in voices_for(language)
-    ]
+    """Voices to offer in `language`. Placeholder voices are hidden until their
+    real id is configured; if that leaves nothing, the Spanish pair is offered
+    (labelled language "es") rather than an empty list."""
+    offered = [o for o in voices_for(language) if not o.placeholder or _env_id(o.key)]
+    if not offered:
+        offered = [o for o in VOICE_CATALOGUE["es"] if not o.placeholder or _env_id(o.key)]
+    return [{"id": o.key, "label": o.label, "detail": o.detail, "language": o.language} for o in offered]
 
 
 __all__ = [

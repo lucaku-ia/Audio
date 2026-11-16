@@ -56,7 +56,7 @@ from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.episode import Block, Episode
 from app.models.feedback import Feedback
-from app.models.profile import Profile
+from app.models.profile import Language, Profile
 from app.models.request import (
     CreatedFrom, Request, RequestKind, RequestStatus, RequestVersion,
     VersionSource, VersionStatus,
@@ -513,7 +513,7 @@ async def calificar_episodio(
     perfil_result = await db.execute(select(Profile).where(Profile.customer_id == cliente.id))
     perfil = perfil_result.scalar_one_or_none()
     if not perfil:
-        perfil = Profile(customer_id=cliente.id)
+        perfil = Profile(customer_id=cliente.id, language=Language(language_for(cliente)))
         db.add(perfil)
         await db.flush()
 

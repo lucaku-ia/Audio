@@ -51,11 +51,12 @@ COLUMNAS_ESPERADAS: list[tuple[str, str, str]] = [
     ("news_runs", "language", "VARCHAR(5) NOT NULL DEFAULT 'en'"),
 ]
 
-# (table, constraint name) dropped when present, AFTER the columns above exist
-# and BEFORE the indexes below are created. news_runs' old unique key
-# (topic_key, run_date, slot) is replaced by one that includes language.
-CONSTRAINTS_A_ELIMINAR: list[tuple[str, str]] = [
-    ("news_runs", "uq_news_runs_topic_date_slot"),
+# (table, constraint name, replacement index name): the constraint is dropped
+# AFTER the indexes are created, and only if the replacement index exists.
+# news_runs' old unique key (topic_key, run_date, slot) is replaced by one
+# that includes language.
+CONSTRAINTS_A_ELIMINAR: list[tuple[str, str, str]] = [
+    ("news_runs", "uq_news_runs_topic_date_slot", "uq_news_runs_topic_date_slot_lang"),
 ]
 
 # (table, index name, "CREATE [UNIQUE] INDEX ... ON ..." statement, without "IF NOT EXISTS")
@@ -141,12 +142,6 @@ async def ejecutar_migraciones(engine: AsyncEngine):
                 logger.info("Adding column %s to %s", columna, tabla)
                 await conn.execute(text(f"ALTER TABLE {tabla} ADD COLUMN {columna} {tipo}"))
 
-        for tabla, constraint in CONSTRAINTS_A_ELIMINAR:
-            if await _tabla_existe(conn, tabla):
-                # Only the old key goes; if the new key's index fails to build below, the
-                # app still boots (uniqueness per language is then enforced by claim logic only).
-                await conn.execute(text(f"ALTER TABLE {tabla} DROP CONSTRAINT IF EXISTS {constraint}"))
-
         for tabla, indice, sql_create in INDICES_ESPERADOS:
             if not await _tabla_existe(conn, tabla):
                 continue  # new table — create_all() already created it with this index
@@ -173,3 +168,9 @@ async def ejecutar_migraciones(engine: AsyncEngine):
                 # docstring. The app runs without this index's guarantee until the
                 # next successful deploy retries it.
                 logger.exception("Failed to add index %s on %s — continuing without it", indice, tabla)
+
+        # Retire an old constraint only once its replacement index exists, so a failed
+        # build above can never leave the table without uniqueness (_claim_run relies on it).
+        for tabla, constraint, reemplazo in CONSTRAINTS_A_ELIMINAR:
+            if await _tabla_existe(conn, tabla) and await _indice_existe(conn, tabla, reemplazo):
+                await conn.execute(text(f"ALTER TABLE {tabla} DROP CONSTRAINT IF EXISTS {constraint}"))

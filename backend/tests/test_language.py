@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 
 from app.api.routes import home, news, onboarding, profile
 from app.core import i18n, voices
@@ -68,7 +69,9 @@ def test_voice_allowlist_per_language_and_resolution(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_profile_patch_rejects_unknown_voice_and_follows_language(full_db_session):
+async def test_profile_patch_rejects_unknown_voice_and_follows_language(full_db_session, monkeypatch):
+    for key in ("EN_VOICE_FEMALE_1", "EN_VOICE_MALE_1"):
+        monkeypatch.delenv(f"ELEVENLABS_VOICE_ID_{key}", raising=False)
     db = full_db_session
     me = await make_customer(db, topic="x")
     me.idioma = "es"
@@ -77,9 +80,8 @@ async def test_profile_patch_rejects_unknown_voice_and_follows_language(full_db_
 
     with pytest.raises(HTTPException) as e:
         await profile.update_settings(profile.SettingsBody(voice_id="not-in-allowlist"), me, db)
-    assert e.value.status_code == 422 and e.value.detail["code"] == "voice_not_allowed"
-    with pytest.raises(HTTPException):  # an English voice is not allowed for an es customer
-        await profile.update_settings(profile.SettingsBody(voice_id="en_voice_male_1"), me, db)
+    assert e.value.status_code == 422 and e.value.code == "voice_not_allowed"
+    assert isinstance(e.value.detail, str)  # the shipped iOS decodes `detail` as String
 
     out = await profile.update_settings(profile.SettingsBody(voice_id="andres"), me, db)
     assert out.voice_id == "andres" and "próximo episodio" in out.messages[0]
@@ -88,13 +90,49 @@ async def test_profile_patch_rejects_unknown_voice_and_follows_language(full_db_
     out = await profile.update_settings(profile.SettingsBody(language="en"), me, db)
     assert out.language == "en" and me.idioma == "en" and out.voice_id is None
     assert any("voice was reset" in m for m in out.messages)
-    assert {v["id"] for v in out.available_voices} == {"en_voice_female_1", "en_voice_male_1"}
+    # English voices are placeholders (no env id yet): not offered, the es pair is shown instead.
+    assert {v["id"] for v in out.available_voices} == {"valentina", "andres"}
+    monkeypatch.setenv("ELEVENLABS_VOICE_ID_EN_VOICE_MALE_1", "real-en-2")
     out = await profile.update_settings(profile.SettingsBody(voice_id="en_voice_male_1"), me, db)
-    assert out.voice_id == "en_voice_male_1"
+    assert out.voice_id == "en_voice_male_1" and [v["id"] for v in out.available_voices] == ["en_voice_male_1"]
 
     # PUT is validated too.
     with pytest.raises(HTTPException):
         await profile.update_profile(profile.ProfileBody(voice_id="nope", delivery_time="07:00"), me, db)
+
+
+@pytest.mark.asyncio
+async def test_english_customer_can_send_the_shipped_ios_voice_keys(full_db_session):
+    """Transitional: the shipped picker hardcodes valentina/andres for everyone."""
+    db = full_db_session
+    me = await make_customer(db, topic="x")  # idioma "en"
+    db.add(Profile(customer_id=me.id, language=Language.en))
+    await db.commit()
+    out = await profile.update_settings(profile.SettingsBody(voice_id="valentina"), me, db)
+    assert out.voice_id == "valentina"
+    assert voices.resolve_voice("en", "valentina") is None or voices.resolve_voice("en", "valentina")  # en default
+
+
+@pytest.mark.asyncio
+async def test_coded_error_keeps_detail_a_plain_string():
+    from app.core.errors import CodedHTTPException
+    from app.main import coded_http_exception
+    import json
+
+    resp = await coded_http_exception(None, CodedHTTPException(422, "texto", "voice_not_allowed"))
+    body = json.loads(resp.body)
+    assert resp.status_code == 422 and body["detail"] == "texto" and body["code"] == "voice_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_profile_language_follows_cliente_not_profile_column(full_db_session):
+    db = full_db_session
+    me = await make_customer(db, topic="x")  # Cliente.idioma == "en"
+    db.add(Profile(customer_id=me.id))  # column default would be es
+    await db.commit()
+    out = await profile.get_profile(me, db)
+    assert out.language == "en"
+    assert (await db.get(Profile, me.id)).language == Language.en  # drift repaired
 
 
 # --- news per language -----------------------------------------------------------
@@ -125,6 +163,33 @@ async def test_research_once_and_one_write_per_language(full_db_session, monkeyp
     # Idempotent per language: the same call again is a no-op; a new language only writes that one.
     again = await np_.run_news_for_topic(db, "Premier League", slot="0500", now=NOW, languages=["es", "en"])
     assert again.status == "skipped" and len(rec.research_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_one_language_failing_does_not_undo_the_other(full_db_session, monkeypatch):
+    db = full_db_session
+    rec = patch_news_ai(monkeypatch)
+    inner = ai_platform.write_news_items
+
+    async def _write(db_, narrowed, topic, **kw):
+        if kw["language"] == "es":
+            raise RuntimeError("es writer down")
+        return await inner(db_, narrowed, topic, **kw)
+
+    monkeypatch.setattr(ai_platform, "write_news_items", _write)
+    result = await np_.run_news_for_topic(db, "Premier League", slot="0500", now=NOW, languages=["en", "es"])
+    assert result.status == "done" and len(rec.research_calls) == 1
+    assert [r for r in (await db.execute(select(NewsItem.language))).scalars().all()] == ["en"]
+    runs = dict((await db.execute(select(NewsRun.language, NewsRun.status))).all())
+    assert runs == {"en": "done", "es": "failed"}
+
+    # All languages failing still raises, like before.
+    async def _boom(*a, **k):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(ai_platform, "write_news_items", _boom)
+    with pytest.raises(RuntimeError):
+        await np_.run_news_for_topic(db, "Other topic", slot="0500", now=NOW, languages=["en", "es"])
 
 
 @pytest.mark.asyncio
@@ -216,6 +281,11 @@ async def test_migration_adds_news_language_with_default_en(full_db_session):
             await conn.execute(text(
                 "INSERT INTO news_runs (id, topic_key, run_date, slot, language) "
                 f"VALUES ('{uuid.uuid4()}', 't', current_date, '0500', 'es')"))
+        with pytest.raises(IntegrityError):  # the same key in the same language is still rejected
+            async with engine.begin() as conn:
+                await conn.execute(text(
+                    "INSERT INTO news_runs (id, topic_key, run_date, slot, language) "
+                    f"VALUES ('{uuid.uuid4()}', 't', current_date, '0500', 'es')"))
     finally:
         async with engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS news_read_states, news_items, news_runs CASCADE"))

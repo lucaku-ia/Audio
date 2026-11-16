@@ -1766,3 +1766,15 @@ old "UI is English only" rule is superseded.)
 Real ElevenLabs voice ids/names for both languages; whether existing English-only news should be kept for Spanish users
 (today it is served as a flagged fallback until Spanish items exist); whether to generate English shared inventory now (extra cost per tag per day);
 when to split audio language from UI language.
+
+### Language (es/en): review follow-ups
+- **Voice validation is transitional.** `PUT/PATCH /profile` accept a catalogue key of EITHER language (the shipped iOS picker hardcodes
+  `valentina`/`andres` and a free-text field exists); a key of the other language is mapped to the customer's language default at
+  synthesis. Unknown values get 422 with a plain-string `detail` plus top-level `code: "voice_not_allowed"` (and `message`). Tighten
+  once iOS builds its picker from `available_voices`.
+- **Before release set the voice env vars:** `ELEVENLABS_VOICE_ID_VALENTINA`, `..._ANDRES`, `..._EN_VOICE_FEMALE_1`, `..._EN_VOICE_MALE_1`.
+  Until then all voices sound the same (account default). English placeholders are hidden from `available_voices` until their id is set
+  (an English customer then sees the Spanish pair, each entry carrying `language`).
+- `Cliente.idioma` always wins: `GET/PUT/PATCH /profile` report `language` from it and repair a drifted `Profile.language`.
+- News runs are per language: one language failing marks only its own run failed; the others are kept.
+- iOS follow-up (pre-existing): onboarding does not persist the chosen voice (`selectedVoice` is display-only); it should send `voice_id` via PUT/PATCH /profile.

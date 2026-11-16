@@ -71,6 +71,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
 from app.core import voices
+from app.core.errors import CodedHTTPException
 from app.core.i18n import language_for, msg, validate_language
 from app.db.session import get_db
 from app.models.cliente import Cliente
@@ -89,13 +90,19 @@ class ProfileBody(BaseModel):
 
 
 def _check_voice(voice_id: str | None, language: str, current: str | None) -> None:
-    """Reject a voice that is not in the allowlist for the customer's language.
-    None clears it; re-sending the value already stored is accepted so a client
-    that echoes the whole profile back never gets stuck on an older value."""
+    """Reject a voice that is not in the catalogue. None clears it; re-sending the
+    value already stored is accepted so a client that echoes the whole profile back
+    never gets stuck on an older value.
+
+    TRANSITIONAL: a key of EITHER language is accepted, because the shipped iOS
+    picker hardcodes the es keys and an 'en' customer must not get a 422. The
+    other language's key is mapped to this language's default voice at synthesis
+    (voices.resolve_voice). Tighten to the customer's language once iOS builds
+    its picker from `available_voices`."""
     if voice_id is None or voice_id == current:
         return
-    if not voices.is_allowed_voice(language, voice_id):
-        raise HTTPException(422, detail={"code": "voice_not_allowed", "message": msg("voice_not_allowed", language)})
+    if not voices.is_known_voice(voice_id):
+        raise CodedHTTPException(422, msg("voice_not_allowed", language), "voice_not_allowed")
 
 
 class ProfileOut(BaseModel):
@@ -111,17 +118,18 @@ class ProfileOut(BaseModel):
     available_voices: list[dict] = Field(default_factory=list)
 
 
-def _out(perfil: Profile) -> ProfileOut:
+def _out(perfil: Profile, cliente: Cliente) -> ProfileOut:
+    lang = language_for(cliente)  # single source of truth, never Profile.language
     return ProfileOut(
         customer_id=str(perfil.customer_id),
         voice_id=perfil.voice_id,
         narration_style=perfil.narration_style.value,
-        language=perfil.language.value,
+        language=lang,
         delivery_time=perfil.delivery_time.strftime("%H:%M") if perfil.delivery_time else None,
         delivery_timezone=perfil.delivery_timezone,
         max_length_minutes=perfil.max_length_minutes,
         signals=perfil.signals or {},
-        available_voices=voices.catalogue_out(perfil.language),
+        available_voices=voices.catalogue_out(lang),
     )
 
 
@@ -133,7 +141,10 @@ async def get_profile(
     perfil = await db.get(Profile, cliente.id)
     if not perfil:
         raise HTTPException(404, "Profile not set up yet (Onboarding incomplete)")
-    return _out(perfil)
+    if perfil.language.value != language_for(cliente):  # repair drift (e.g. a Profile created with the column default)
+        perfil.language = Language(language_for(cliente))
+        await db.commit()
+    return _out(perfil, cliente)
 
 
 @router.put("", response_model=ProfileOut)
@@ -171,7 +182,7 @@ async def update_profile(
                  has_voice_id=perfil.voice_id is not None)
     await db.commit()
     await db.refresh(perfil)
-    return _out(perfil)
+    return _out(perfil, cliente)
 
 
 class SettingsBody(BaseModel):
@@ -280,6 +291,6 @@ async def update_settings(
 
     await db.commit()
     await db.refresh(perfil)
-    out = _out(perfil).model_dump()
+    out = _out(perfil, cliente).model_dump()
     out["messages"] = mensajes
     return SettingsOut(**out)
