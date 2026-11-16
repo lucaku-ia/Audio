@@ -66,7 +66,8 @@ PRD's own open question #9 ("Does Recent show the empty-day entries or only
 real episodes?") and the "Home is never empty" tenet — this is our choice,
 not a settled PRD requirement.
 """
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -75,7 +76,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
 from app.api.routes.generation import _block_common_fields
+from app.api.routes.news import NewsListOut, fetch_news_page
 from app.api.routes.requests import CrearRequestBody, RequestOut, crear_request
+from app.models.profile import Profile
+from app.services.news_pipeline import infer_category, request_topic
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.episode import Block, Episode
@@ -148,6 +152,20 @@ class SharedInventoryOut(BaseModel):
     tag: str | None = None  # the interest tag this sample belongs to (e.g. "technology")
 
 
+class NextDeliveryOut(BaseModel):
+    at: datetime  # timezone-aware ISO datetime (UTC) of the next scheduled episode
+    local_time: str  # "HH:MM" in `timezone`, label-friendly ("Ready at 07:00")
+    timezone: str  # IANA name from the profile's delivery_timezone
+    is_today: bool  # true when the next delivery is later today in `timezone`, false when tomorrow
+
+
+class FollowedTopicOut(BaseModel):
+    id: str  # Request id
+    topic: str  # structured topic, falling back to the raw text
+    category: str | None = None  # inferred like the news feed; null when not derivable
+    icon: str  # icon hint for the client: the category, or "topic" when none
+
+
 class HomeOut(BaseModel):
     banner: BannerOut
     recent: list[RecentEpisodeOut]
@@ -158,6 +176,10 @@ class HomeOut(BaseModel):
     # rule stays intact: shared_inventory's reason is a real match to their interests,
     # this list's reason honestly says it's an exploration ("Explore {tag}"), not a match.
     explore: list[SharedInventoryOut] = Field(default_factory=list)
+    # Additive (iOS Home in one call): next episode time, followed topics, news page 1.
+    next_delivery: NextDeliveryOut | None = None  # null until a delivery time is set
+    followed_topics: list[FollowedTopicOut] = Field(default_factory=list)
+    news: NewsListOut | None = None  # same shape/order as GET /news (scope followed, else all)
 
 
 class RequestTodayBody(BaseModel):
@@ -280,7 +302,7 @@ async def _derive_recent(db: AsyncSession, cliente: Cliente) -> list[RecentEpiso
 
 # ── Shared inventory derivation ──────────────────────────────────────────────
 
-async def _derive_shared_inventory(db: AsyncSession, cliente: Cliente) -> list[SharedInventoryOut]:
+async def _derive_shared_inventory(db: AsyncSession, cliente: Cliente, latest_by_tag: dict | None = None) -> list[SharedInventoryOut]:
     """
     Matches the customer's OnboardingState.selected_interests against tags on
     shared Episodes — see app/services/episode_generator.py's "Built: shared
@@ -301,7 +323,8 @@ async def _derive_shared_inventory(db: AsyncSession, cliente: Cliente) -> list[S
     if not interests:
         return []
 
-    latest_by_tag = await _latest_shared_by_tag(db)
+    if latest_by_tag is None:
+        latest_by_tag = await _latest_shared_by_tag(db)
 
     matched: list[SharedInventoryOut] = []
     for tag in interests:
@@ -333,7 +356,7 @@ async def _latest_shared_by_tag(db: AsyncSession) -> dict[str, tuple[Episode, In
     return latest_by_tag
 
 
-async def _derive_explore(db: AsyncSession, cliente: Cliente) -> list[SharedInventoryOut]:
+async def _derive_explore(db: AsyncSession, cliente: Cliente, latest_by_tag: dict | None = None) -> list[SharedInventoryOut]:
     """
     Shared samples for tags the customer does NOT follow — Home's "Explore" shelf,
     the "other episodes I might like" the customer asked for. Deliberately a
@@ -345,7 +368,9 @@ async def _derive_explore(db: AsyncSession, cliente: Cliente) -> list[SharedInve
     followed = set(state.selected_interests) if state and state.selected_interests else set()
 
     explore: list[SharedInventoryOut] = []
-    for tag, (episode, _item) in (await _latest_shared_by_tag(db)).items():
+    if latest_by_tag is None:
+        latest_by_tag = await _latest_shared_by_tag(db)
+    for tag, (episode, _item) in latest_by_tag.items():
         if tag in followed:
             continue
         explore.append(SharedInventoryOut(
@@ -357,6 +382,57 @@ async def _derive_explore(db: AsyncSession, cliente: Cliente) -> list[SharedInve
     return explore
 
 
+# ── Next delivery / followed topics / news ───────────────────────────────────
+
+def _safe_zone(name: str | None) -> ZoneInfo:
+    try:
+        return ZoneInfo(name or "UTC")
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def compute_next_delivery(perfil: Profile | None, now: datetime | None = None) -> NextDeliveryOut | None:
+    if perfil is None or perfil.delivery_time is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    zone = _safe_zone(perfil.delivery_timezone)
+    local_now = now.astimezone(zone)
+    candidate = local_now.replace(hour=perfil.delivery_time.hour, minute=perfil.delivery_time.minute,
+                                  second=0, microsecond=0)
+    is_today = candidate > local_now
+    if not is_today:
+        # Rebuild from the date so DST shifts land on the right wall-clock time.
+        next_day = (local_now + timedelta(days=1)).date()
+        candidate = datetime(next_day.year, next_day.month, next_day.day, perfil.delivery_time.hour,
+                             perfil.delivery_time.minute, tzinfo=zone)
+    return NextDeliveryOut(at=candidate.astimezone(timezone.utc), local_time=candidate.strftime("%H:%M"),
+                           timezone=zone.key, is_today=is_today)
+
+
+async def _derive_followed_topics(db: AsyncSession, cliente: Cliente) -> list[FollowedTopicOut]:
+    rows = (await db.execute(
+        select(Request.id, Request.structured, Request.raw_text)
+        .where(Request.customer_id == cliente.id, Request.kind == RequestKind.standing,
+               Request.status == RequestStatus.active)
+        .order_by(Request.creado_en, Request.id)
+    )).all()
+    out = []
+    for rid, structured, raw_text in rows:
+        topic = request_topic(structured) or (raw_text or "").strip()
+        category = infer_category(topic or raw_text)
+        out.append(FollowedTopicOut(id=str(rid), topic=topic, category=category, icon=category or "topic"))
+    return out
+
+
+async def _derive_news(db: AsyncSession, cliente: Cliente, perfil: Profile | None) -> NewsListOut:
+    # No fixed offset: fetch_news_page resolves the profile's IANA zone per item
+    # day (DST-aware), exactly like GET /news without tz_offset_minutes.
+    page = await fetch_news_page(db, cliente, scope="followed", limit=30)
+    if page.no_follow_match:
+        page = await fetch_news_page(db, cliente, scope="all", limit=30)
+    return page
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=HomeOut)
@@ -366,10 +442,15 @@ async def home(
 ):
     banner = await _derive_banner(db, cliente)
     recent = await _derive_recent(db, cliente)
-    shared_inventory = await _derive_shared_inventory(db, cliente)
-    explore = await _derive_explore(db, cliente)
+    latest_by_tag = await _latest_shared_by_tag(db)  # one query shared by both shelves
+    shared_inventory = await _derive_shared_inventory(db, cliente, latest_by_tag)
+    explore = await _derive_explore(db, cliente, latest_by_tag)
+    perfil = await db.get(Profile, cliente.id)
+    followed_topics = await _derive_followed_topics(db, cliente)
+    news = await _derive_news(db, cliente, perfil)
     return HomeOut(
         banner=banner, recent=recent, suggestions=[], shared_inventory=shared_inventory, explore=explore,
+        next_delivery=compute_next_delivery(perfil), followed_topics=followed_topics, news=news,
     )
 
 

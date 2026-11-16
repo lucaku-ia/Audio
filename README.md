@@ -300,6 +300,26 @@ Deferred, and why (see the relevant module's own docstring for detail):
 - **Real, team-curated shared-inventory content** — the pipeline and seed-list
   infrastructure exist; the actual content is still a placeholder (see above).
 
+### Home in one call, and episode history
+
+`GET /api/home` is purely additive for the iOS Home: besides `banner`, `recent`,
+`shared_inventory` and `explore` it now also returns
+`next_delivery` (`{at, local_time, timezone, is_today}`: next episode time from
+the profile's `delivery_time` + `delivery_timezone`, `at` is an aware UTC ISO
+datetime, null until a delivery time is set), `followed_topics`
+(`[{id, topic, category, icon}]`: the active standing requests; `icon` is the
+inferred category or `"topic"`) and `news` (page 1 of `GET /news`, same shape
+and ordering, scope followed with a fallback to all when nothing matches; the
+day grouping uses the profile's timezone). The query count is constant (guarded
+by a test).
+
+`GET /api/episodes?before=&q=&limit=20` lists the caller's own published
+episodes, newest first, with keyset pagination (`next_cursor`; `before` takes
+that cursor, a `YYYY-MM-DD` date or an ISO datetime). `q` is a case-insensitive
+search over the headline and block summaries. Items:
+`{id, date, headline, duration_s, style, state, blocks_count, published_at}`.
+The detail endpoint already exists: `GET /api/generation/episodes/{id}`.
+
 ### Notifications & Settings scope
 
 Built: `PATCH /api/profile` (Settings CRUD — partial updates to voice_id,
@@ -1268,16 +1288,32 @@ Backs the iOS Home news section (replaces `SampleNewsRepository`). News is **top
 
 **Pipeline** (`app/services/news_pipeline.py`): research through `ai_platform.research_topic` (web_search + shared `findings_store`) -> cluster near-duplicate headlines -> drop stories already published for the topic in the last 3 days -> `ai_platform.write_news_items` (prompt `news_write` in the prompt registry, max 3 items) -> grounding check: every cited URL must come from the research, and an item with no source URL is never stored. Summaries are clamped to 70 chars. Research uses Claude web search, not a licensed news API.
 
-**Slots**: the scheduler (`NEWS_SCHEDULER_ENABLED`, default on; `NEWS_MAX_TOPICS_PER_SLOT`, default 60) checks every 10 min and runs the current UTC band for each topic with followers: `0500` (05:00-12:59) and `1300` (13:00-23:59); nothing runs 00:00-04:59. A `(topic, date, slot)` runs once, so repeated ticks and restarts are safe. The first claim is the unique insert into `news_runs`; re-claims (a `failed` run after a 45 min backoff, or a `running` run stale for 30 min) are one atomic conditional `UPDATE ... RETURNING`, capped at 3 attempts per key, so two replicas never both run a slot and failures cannot loop on paid searches. A research parse failure is reported as `failed` and is never cached. `NEWS_SCHEDULER_ENABLED` is read at every tick (runtime kill switch) and `NEWS_DAILY_COST_CEILING_USD` (default 15) stops a slot once the day's recorded run cost reaches it. On demand: `POST /api/internal/news/run?topic=...&slot=0500|1300|adhoc` (internal key, same as other internal routes).
+**Slots (per customer timezone)**: the scheduler (`NEWS_SCHEDULER_ENABLED`, default on; `NEWS_MAX_TOPICS_PER_SLOT`, default 60 per `(date, slot)`) checks every 10 min. For each distinct follower timezone (`Profile.delivery_timezone`, an IANA name; a customer with no profile or an invalid zone counts as UTC) it finds the slot open in that zone's local time: `0500` (local 05:00-12:59) and `1300` (local 13:00-23:59); local 00:00-04:59 is quiet and schedules nothing. The unit of work stays `(topic_key, date, slot)` where `date` is the local date in the zone that opened the slot. Zones landing on the same `(date, slot)` are merged, so a topic followed by 50 customers in Bogota is researched once, and a topic followed in Bogota and Madrid runs once per distinct `(local date, slot)`, never per customer. A `(topic, date, slot)` runs once, so repeated ticks and restarts are safe. The first claim is the unique insert into `news_runs`; re-claims (a `failed` run after a 45 min backoff, or a `running` run stale for 30 min) are one atomic conditional `UPDATE ... RETURNING`, capped at 3 attempts per key, so two replicas never both run a slot and failures cannot loop on paid searches. A research parse failure is reported as `failed` and is never cached. `NEWS_SCHEDULER_ENABLED` is read at every tick (runtime kill switch) and `NEWS_DAILY_COST_CEILING_USD` (default 15) stops a slot once the day's recorded run cost reaches it. On demand: `POST /api/internal/news/run?topic=...&slot=0500|1300|adhoc&timezone=America/Bogota` (internal key, same as other internal routes; `timezone` picks the default slot and run date, UTC if omitted).
 
 **Endpoints** (auth required; `/api` prefix):
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/news?day=YYYY-MM-DD&tz_offset_minutes=&cursor=&limit=&scope=followed\|all` | Last 7 days, newest first. Each item has `day` (calendar day in the caller's tz via `tz_offset_minutes`, default 0 = UTC, e.g. -300 for Bogota; `day=` filters in that same tz), `read_minutes` (body words / 200 wpm, min 1) and `read`. Matches followed topics or their categories. If nothing matches: `items: []` and `no_follow_match: true`; the app then calls `scope=all`. |
+| GET | `/news?day=YYYY-MM-DD&tz_offset_minutes=&cursor=&limit=&scope=followed\|all` | Last 7 days, newest first. Each item has `day` (calendar day in the caller's tz via `tz_offset_minutes`, e.g. -300 for Bogota; when the param is absent the stored profile timezone is used, UTC if none; `day=` filters in that same tz), `read_minutes` (body words / 200 wpm, min 1) and `read`. Matches followed topics or their categories. If nothing matches: `items: []` and `no_follow_match: true`; the app then calls `scope=all`. |
 | GET | `/news/{id}` | One item. |
 | PUT / DELETE | `/news/{id}/read` | Mark read / unread (idempotent). |
 | POST | `/news/read-all` | Marks the visible feed read (falls back to everything if nothing matches). |
+
+## Feedback and signals
+
+Persists the iOS "Useful / Not quite" ratings (T-402). Code: `app/models/feedback.py`, `app/api/routes/feedback.py`; tables are created by `create_all` (no migration needed).
+
+**Tables**: `feedback` (unique `(cliente_id, target_type, target_id)`, `rating` useful|not_quite, `reasons` JSON, `suggestion`, `effects` JSON, created_at/updated_at), `feedback_signals` (unique `(cliente_id, subject_type, subject_key)`; counters `useful, not_quite, too_long, too_short, not_relevant, needs_more_detail, too_technical, stop_topic` plus `score = useful - not_quite`), `problem_reports`.
+
+**Targets**: `story` = a block id, `episode` = an episode id (both must belong to the caller or be shared; else 404), `news` = a news item id. Signal subjects: a story bumps its block's request, an episode bumps every request that has a block in it, a news item bumps its `topic_key`. Reasons are snake_case: `too_long, too_short, not_relevant, needs_more_detail, too_technical, stop_topic`.
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/feedback` | Body `{target_type, target_id, rating, reasons?, suggestion?}`. Returns `{removed, feedback}`. Upsert; useful and not_quite are exclusive (switching replaces). Sending the identical payload again toggles it OFF (row deleted, signal contribution reversed: `removed: true`). Same rating with different reasons/suggestion updates. Counters change in the same transaction (atomic upsert) and never go below zero. |
+| GET | `/feedback?target_type=&target_ids=a,b,c` | Saved state for up to 100 ids; only the caller's rows. |
+| POST | `/feedback/report` | `{target_type, target_id, text}` -> 201 `{id}`. |
+
+**Generation wiring (minimal)**: `stop_topic` on a story pauses that story's request (status `paused`, same as the pause endpoint); toggling the feedback off or changing it resumes it only if feedback itself paused it. Nothing else changes generation, and no prompts were touched. **Follow-ups**: `too_long`/`too_short` could nudge `profiles.max_length_minutes` or a per-request depth hint, `not_relevant`/`needs_more_detail` could steer the request `structured.depth`, and news `stop_topic` could unfollow the topic; for now they are only stored in `feedback_signals` for the generator to read. Events: `feedback_submitted` (target_type, rating, reasons, has_suggestion, action created|updated|removed; never free text) and `problem_reported`.
 
 ## Suggested next steps
 
