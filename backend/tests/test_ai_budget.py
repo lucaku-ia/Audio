@@ -314,6 +314,8 @@ async def test_logged_spend_survives_a_rollback_of_the_work_transaction(full_db_
         full_db_session, customer_id=cid, prompt="p", version="v1", purpose="write_block",
         usage=_usage(), latency_ms=1, context={"customer_id": str(cid)})
     await full_db_session.rollback()
+    assert await ai_platform.rescue_ai_rows(full_db_session) == 1
+    await full_db_session.commit()
     assert await spent_today(full_db_session, cid) > 0
 
 

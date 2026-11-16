@@ -905,6 +905,7 @@ async def run_generation(
         await db.commit()
 
     job.started_new_run = True
+    db.info.pop("ai_rows", None)  # earlier runs on this session are committed; track only this run
 
     try:
         research_start = time.monotonic()
@@ -1209,6 +1210,8 @@ async def run_generation(
 
     except Exception as exc:
         await db.rollback()  # discard any partial episode/block writes — never publish partial results
+        # ...but not the paid-call records: that money is spent and must count toward the budget.
+        await ai_platform.rescue_ai_rows(db)
         job.status = JobStatus.failed
         job.stages = [_failure_stage(exc)]
         await db.commit()

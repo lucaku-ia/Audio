@@ -370,28 +370,29 @@ def _cost(usage, model: str) -> float:
 
 async def _persist_ai_call(db: AsyncSession, row: AICall) -> None:
     """
-    Commits the AICall row in its OWN short transaction, independent of the
-    caller's work transaction. The money is spent the moment the provider
-    answers; if a later step fails and the work transaction rolls back (run_generation
-    does, to discard partial episodes), the spend must still count toward the
-    daily budget (spent_today reads these rows). Falls back to the caller's
-    session if the separate write fails, so a record is never silently lost.
+    Adds the AICall row to the caller's session (no extra awaits or
+    connections on the happy path) and remembers it in `db.info["ai_rows"]`.
+    If the work transaction is later rolled back (run_generation does, to
+    discard partial episodes), `rescue_ai_rows` re-inserts the rows that the
+    rollback discarded: the money was spent when the provider answered, so it
+    must still count toward the daily budget.
     """
-    try:
-        # Same engine as the caller's session (not the module-global pool), so
-        # tests that run on their own engine/event loop stay isolated.
-        bind = getattr(db, "bind", None)
-        if bind is None:
-            from app.db.session import AsyncSessionLocal
-            own_ctx = AsyncSessionLocal()
-        else:
-            own_ctx = AsyncSession(bind=bind, expire_on_commit=False)
-        async with own_ctx as own:
-            own.add(row)
-            await own.commit()
-    except Exception:
-        logger.exception("ai_platform: separate AICall commit failed, falling back to caller session")
-        db.add(AICall(**{c.key: getattr(row, c.key) for c in AICall.__table__.columns}))
+    db.add(row)
+    db.info.setdefault("ai_rows", []).append((row.call_id, row))
+
+
+async def rescue_ai_rows(db: AsyncSession) -> int:
+    """Call right AFTER db.rollback(): re-adds (without committing) tracked
+    AICall rows the rollback discarded. The caller's next commit persists them."""
+    tracked = db.info.pop("ai_rows", [])
+    if not tracked:
+        return 0
+    ids = [cid for cid, _ in tracked]
+    existing = set((await db.execute(select(AICall.call_id).where(AICall.call_id.in_(ids)))).scalars())
+    lost = [row for cid, row in tracked if cid not in existing]
+    for row in lost:
+        db.add(row)
+    return len(lost)
 
 
 async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, version: str, purpose: str,
