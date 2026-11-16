@@ -75,6 +75,10 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var downloadedEpisodeIds: Set<String> = []
     /// Local-only per-story rating (Useful / Not quite), keyed by block id.
     @Published private var ratings: [String: AnswerRating] = [:]
+    /// What the server holds per block id (needed to toggle a rating off).
+    private var savedFeedback: [String: SavedFeedback] = [:]
+    /// Session token, remembered from the last load for feedback calls.
+    private var token: String?
 
     // MARK: Real audio engine
 
@@ -179,6 +183,8 @@ final class PlayerViewModel: ObservableObject {
     // MARK: Loading
 
     func load(token: String) async {
+        self.token = token
+        defer { Task { await loadSavedFeedback() } }
         loadState = .loading
         async let episodeResult: Result<EpisodeOut, Error> = fetchEpisode(token: token)
         async let historyResult: Result<HistoryOut, Error> = fetchHistory(token: token)
@@ -233,6 +239,7 @@ final class PlayerViewModel: ObservableObject {
     /// couldn't be fetched, so the caller can leave the UI alone.
     @discardableResult
     func loadEpisode(id: String, token: String, autoplay: Bool, coverSeed: String? = nil) async -> Bool {
+        self.token = token
         if episode?.id == id, hasEpisode {
             if autoplay { selectBlock(0, autoplay: true) }
             return true
@@ -247,6 +254,7 @@ final class PlayerViewModel: ObservableObject {
             self.coverSeed = coverSeed ?? fetched.headline ?? "lucaku"
             audioUnavailableMessage = nil
             loadState = .loaded
+            Task { await loadSavedFeedback() }
             if autoplay { selectBlock(0, autoplay: true) }
             return true
         } catch {
@@ -405,8 +413,7 @@ final class PlayerViewModel: ObservableObject {
     /// Useful chip — toggles.
     func toggleUseful() {
         guard let id = currentBlock?.id else { return }
-        ratings[id] = ratings[id] == .up ? nil : .up
-        // TODO(backend): POST story rating once a feedback endpoint exists.
+        syncRating(ratings[id] == .up ? nil : .up, id: id)
     }
 
     /// Not quite chip — a second tap clears it; otherwise opens the shared
@@ -414,23 +421,91 @@ final class PlayerViewModel: ObservableObject {
     func tapNotQuite() {
         guard let id = currentBlock?.id else { return }
         if ratings[id] == .down {
-            ratings[id] = nil
+            syncRating(nil, id: id)
         } else {
             isFeedbackSheetOpen = true
         }
     }
 
-    /// Sheet "Send feedback". TODO(backend): no feedback endpoint exists; the
-    /// options and text are dropped after marking the story "Not quite".
+    /// Sheet "Send feedback": "Not quite" with the chosen reasons and text.
     func submitFeedback(options: [String], text: String) {
-        if let id = currentBlock?.id { ratings[id] = .down }
+        if let id = currentBlock?.id {
+            syncRating(.down, id: id, reasons: FeedbackMapping.codes(for: options), suggestion: text)
+        }
         isFeedbackSheetOpen = false
     }
 
-    /// Sheet "Report a problem". TODO(backend): should open a support ticket.
+    /// Sheet "Report a problem": files the report (POST /feedback/report) and
+    /// keeps the "Not quite" mark the chips showed before.
     func reportProblem() {
-        if let id = currentBlock?.id { ratings[id] = .down }
+        if let id = currentBlock?.id {
+            if let token, FeedbackMapping.isSendable(id) {
+                let body = FeedbackReportBody(
+                    targetType: FeedbackTarget.story.rawValue, targetId: id,
+                    text: "Reported from the player: \(currentBlock?.summary ?? "story")"
+                )
+                Task { _ = try? await APIClient.shared.reportProblem(body, token: token) }
+            }
+            if ratings[id] != .down { syncRating(.down, id: id) }
+        }
         isFeedbackSheetOpen = false
+    }
+
+    /// Optimistic: the chip flips immediately, the server call follows, and the
+    /// previous state is restored if it fails. Clearing (`nil`) re-sends the
+    /// stored payload, which the backend treats as "toggle off".
+    private func syncRating(_ rating: AnswerRating?, id: String, reasons: [String] = [], suggestion: String? = nil) {
+        let previous = ratings[id]
+        let previousSaved = savedFeedback[id]
+        ratings[id] = rating
+        guard let token, FeedbackMapping.isSendable(id) else { return }
+
+        let body: FeedbackBody
+        if let rating {
+            body = FeedbackBody(
+                targetType: FeedbackTarget.story.rawValue, targetId: id,
+                rating: rating == .up ? "useful" : "not_quite",
+                reasons: reasons, suggestion: FeedbackMapping.suggestion(suggestion)
+            )
+        } else if let saved = previousSaved {
+            body = FeedbackBody(
+                targetType: FeedbackTarget.story.rawValue, targetId: id, rating: saved.rating,
+                reasons: saved.reasons, suggestion: saved.suggestion
+            )
+        } else if let previous {
+            body = FeedbackBody(
+                targetType: FeedbackTarget.story.rawValue, targetId: id,
+                rating: previous == .up ? "useful" : "not_quite", reasons: [], suggestion: nil
+            )
+        } else {
+            return
+        }
+        Task {
+            do {
+                let result = try await APIClient.shared.submitFeedback(body, token: token)
+                applyServerFeedback(result.removed ? nil : result.feedback, id: id)
+            } catch {
+                ratings[id] = previous
+                savedFeedback[id] = previousSaved
+            }
+        }
+    }
+
+    private func applyServerFeedback(_ feedback: FeedbackOut?, id: String) {
+        savedFeedback[id] = feedback.map { SavedFeedback(rating: $0.rating, reasons: $0.reasons, suggestion: $0.suggestion) }
+        ratings[id] = feedback.map { $0.rating == "useful" ? AnswerRating.up : .down }
+    }
+
+    /// Loads the saved Useful / Not quite state of the loaded episode's stories.
+    private func loadSavedFeedback() async {
+        guard let token else { return }
+        let ids = blocks.map(\.id).filter(FeedbackMapping.isSendable)
+        guard !ids.isEmpty,
+              let saved = try? await APIClient.shared.feedback(targetType: .story, targetIds: ids, token: token)
+        else { return }
+        for item in saved where ratings[item.targetId] == nil && savedFeedback[item.targetId] == nil {
+            applyServerFeedback(item, id: item.targetId)
+        }
     }
 
     /// Seeks within the current block — used by the transcript panel's "tap

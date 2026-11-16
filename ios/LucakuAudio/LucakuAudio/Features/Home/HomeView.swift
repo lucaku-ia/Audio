@@ -66,7 +66,9 @@ struct HomeView: View {
                 NewsDetailView(story: story, store: news)
             }
             .task { await refresh() }
-            .task { await news.load(token: session.accessToken) }
+            // With a session, news loads from refresh() (it reuses home.news);
+            // without one, this shows the sample feed.
+            .task { if session.accessToken == nil { await news.load(token: nil) } }
             .task(id: viewModel.topics.count) {
                 news.setFollowedTopics(viewModel.topics.map { $0.structured.topic })
             }
@@ -234,7 +236,11 @@ struct HomeView: View {
 
     private var topicLabels: [String] {
         var seen = Set<String>()
-        var labels = viewModel.topics.map { $0.structured.topic }.filter { seen.insert($0).inserted }
+        // Prefer the server's followed topics (GET /home); fall back to the requests list.
+        let source = viewModel.followedTopics.isEmpty
+            ? viewModel.topics.map { $0.structured.topic }
+            : viewModel.followedTopics.map(\.topic)
+        var labels = source.filter { seen.insert($0).inserted }
         if labels.isEmpty, debugState != nil {
             labels = ["Interest rates & savings", "Artificial intelligence", "Arsenal FC", "Space exploration"]
         }
@@ -361,6 +367,10 @@ struct HomeView: View {
     private func refresh(showSpinner: Bool = true) async {
         guard let token = session.accessToken else { return }
         await viewModel.load(token: token, showSpinner: showSpinner)
+        // Page 1 of the news rides along with /home; when it is absent (older
+        // backend) or Home failed, the store fetches /news itself.
+        // (Quiet background polls skip it.)
+        if showSpinner { await news.load(token: token, firstPage: loadedHome?.news) }
 
         guard !playerViewModel.hasEpisode, case .loaded(let home) = viewModel.state else { return }
         let episodeId: String?

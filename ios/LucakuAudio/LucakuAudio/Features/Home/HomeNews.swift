@@ -123,6 +123,9 @@ struct NewsStory: Identifiable, Hashable {
 /// when it fails or returns nothing.
 protocol NewsRepository {
     func stories(token: String?) async throws -> [NewsStory]
+    /// Like `stories(token:)`, but reuses page 1 already delivered by GET /home
+    /// (`home.news`) instead of fetching it again.
+    func stories(token: String?, firstPage: NewsListOut?) async throws -> [NewsStory]
     /// True when the server filters by follows and owns the read state.
     var isLive: Bool { get }
     func setRead(id: String, read: Bool, token: String) async throws
@@ -131,6 +134,9 @@ protocol NewsRepository {
 
 extension NewsRepository {
     var isLive: Bool { false }
+    func stories(token: String?, firstPage: NewsListOut?) async throws -> [NewsStory] {
+        try await stories(token: token)
+    }
     func setRead(id: String, read: Bool, token: String) async throws {}
     func markAllRead(token: String) async throws {}
 }
@@ -274,9 +280,11 @@ final class NewsStore: ObservableObject {
         }
     }
 
-    func load(token: String?) async {
+    /// `firstPage` is `home.news` from GET /home when present: it replaces the
+    /// first /news request so Home does not fetch page 1 twice.
+    func load(token: String?, firstPage: NewsListOut? = nil) async {
         self.token = token
-        if token != nil, let live = try? await repository.stories(token: token), !live.isEmpty {
+        if token != nil, let live = try? await repository.stories(token: token, firstPage: firstPage), !live.isEmpty {
             stories = live
             isLive = true
             readIDs = Set(live.filter(\.serverRead).map(\.id))
@@ -353,7 +361,82 @@ final class NewsStore: ObservableObject {
 
     func rating(for story: NewsStory) -> StoryRating? { ratings[story.id] }
 
-    func setRating(_ rating: StoryRating?, for story: NewsStory) { ratings[story.id] = rating }
+    /// Optimistic: the chip flips immediately, the server call follows, and the
+    /// previous state is restored if it fails. Clearing (`nil`) re-sends the
+    /// stored payload, which the backend treats as "toggle off".
+    func setRating(_ rating: StoryRating?, for story: NewsStory, reasons: [String] = [], suggestion: String? = nil) {
+        let id = story.id
+        let previous = ratings[id]
+        let previousSaved = savedFeedback[id]
+        ratings[id] = rating
+        guard isLive, let token, FeedbackMapping.isSendable(id) else { return }
+
+        let body: FeedbackBody
+        if let rating {
+            body = FeedbackBody(
+                targetType: FeedbackTarget.news.rawValue, targetId: id,
+                rating: rating == .up ? "useful" : "not_quite",
+                reasons: reasons, suggestion: FeedbackMapping.suggestion(suggestion)
+            )
+        } else if let saved = previousSaved {
+            body = FeedbackBody(
+                targetType: FeedbackTarget.news.rawValue, targetId: id, rating: saved.rating,
+                reasons: saved.reasons, suggestion: saved.suggestion
+            )
+        } else if let previous {
+            body = FeedbackBody(
+                targetType: FeedbackTarget.news.rawValue, targetId: id,
+                rating: previous == .up ? "useful" : "not_quite", reasons: [], suggestion: nil
+            )
+        } else {
+            return
+        }
+        Task {
+            do {
+                let result = try await APIClient.shared.submitFeedback(body, token: token)
+                applyServer(result.removed ? nil : result.feedback, id: id)
+            } catch {
+                ratings[id] = previous
+                savedFeedback[id] = previousSaved
+            }
+        }
+    }
+
+    /// Sheet "Send feedback": "Not quite" with the chosen reasons and suggestion.
+    func submitFeedback(options: [String], suggestion: String, for story: NewsStory) {
+        setRating(.down, for: story, reasons: FeedbackMapping.codes(for: options), suggestion: suggestion)
+    }
+
+    /// Sheet "Report a problem": files the report and keeps the "Not quite"
+    /// mark the chips showed before.
+    func reportProblem(for story: NewsStory) {
+        if isLive, let token, FeedbackMapping.isSendable(story.id) {
+            let body = FeedbackReportBody(
+                targetType: FeedbackTarget.news.rawValue, targetId: story.id,
+                text: "Reported from the story: \(story.title)"
+            )
+            Task { _ = try? await APIClient.shared.reportProblem(body, token: token) }
+        }
+        if ratings[story.id] != .down { setRating(.down, for: story) }
+    }
+
+    /// Loads the saved rating when a story opens (live feed only).
+    func loadFeedback(for story: NewsStory) async {
+        guard isLive, let token, FeedbackMapping.isSendable(story.id),
+              let saved = try? await APIClient.shared.feedback(targetType: .news, targetIds: [story.id], token: token)
+        else { return }
+        // Don't override a tap made while the request was in flight.
+        guard savedFeedback[story.id] == nil, ratings[story.id] == nil else { return }
+        applyServer(saved.first, id: story.id)
+    }
+
+    private func applyServer(_ feedback: FeedbackOut?, id: String) {
+        savedFeedback[id] = feedback.map { SavedFeedback(rating: $0.rating, reasons: $0.reasons, suggestion: $0.suggestion) }
+        ratings[id] = feedback.map { $0.rating == "useful" ? StoryRating.up : .down }
+    }
+
+    /// Last payload the server holds per story id (needed to toggle it off).
+    private var savedFeedback: [String: SavedFeedback] = [:]
 
     func toggleCollapsed(_ day: Int) {
         if collapsedDays.contains(day) { collapsedDays.remove(day) } else { collapsedDays.insert(day) }

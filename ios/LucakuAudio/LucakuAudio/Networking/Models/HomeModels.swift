@@ -86,7 +86,8 @@ struct RecentEpisodeOut: Decodable, Identifiable {
     /// nil for a synthesized "no news that day" entry — nothing to play.
     let episodeId: String?
 
-    var id: String { date }
+    /// Episode id when there is one (two episodes can share a day in History).
+    var id: String { episodeId ?? date }
 
     enum CodingKeys: String, CodingKey {
         case date, headline
@@ -128,11 +129,19 @@ struct HomeOut: Decodable {
     /// Shared samples for topics the customer does NOT follow yet — Home's
     /// "Explore" shelf. Honestly labelled as exploration, never as a match.
     let explore: [SharedInventoryOut]
+    /// Additive fields: absent on older backends (all decode to nil/empty).
+    let nextDelivery: NextDeliveryOut?
+    let followedTopics: [FollowedTopicOut]
+    /// Same shape as GET /news page 1 (followed scope, else all).
+    let news: NewsListOut?
 
     enum CodingKeys: String, CodingKey {
         case banner, recent, suggestions
         case sharedInventory = "shared_inventory"
         case explore
+        case nextDelivery = "next_delivery"
+        case followedTopics = "followed_topics"
+        case news
     }
 
     init(from decoder: Decoder) throws {
@@ -142,6 +151,63 @@ struct HomeOut: Decodable {
         suggestions = try container.decodeIfPresent([JSONValue].self, forKey: .suggestions) ?? []
         sharedInventory = try container.decodeIfPresent([SharedInventoryOut].self, forKey: .sharedInventory) ?? []
         explore = try container.decodeIfPresent([SharedInventoryOut].self, forKey: .explore) ?? []
+        // `try?` so a malformed additive field never fails the whole Home load.
+        nextDelivery = (try? container.decodeIfPresent(NextDeliveryOut.self, forKey: .nextDelivery)) ?? nil
+        followedTopics = (try? container.decodeIfPresent([FollowedTopicOut].self, forKey: .followedTopics)) ?? []
+        news = (try? container.decodeIfPresent(NewsListOut.self, forKey: .news)) ?? nil
+    }
+}
+
+/// home.py's `NextDeliveryOut`.
+struct NextDeliveryOut: Decodable {
+    let at: Date
+    /// "HH:MM" in `timezone`.
+    let localTime: String
+    let timezone: String
+    /// True when the next delivery is later today in `timezone`.
+    let isToday: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case at
+        case localTime = "local_time"
+        case timezone
+        case isToday = "is_today"
+    }
+}
+
+/// home.py's `FollowedTopicOut`.
+struct FollowedTopicOut: Decodable, Identifiable {
+    let id: String
+    let topic: String
+    let category: String?
+    let icon: String
+}
+
+/// history.py's `HistoryEpisodeOut`.
+struct EpisodeHistoryItem: Decodable {
+    let id: String
+    let date: String
+    let headline: String?
+    let durationS: Int?
+    let style: String?
+    let state: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, date, headline
+        case durationS = "duration_s"
+        case style, state
+    }
+}
+
+/// history.py's `HistoryOut` (GET /episodes). Named differently from the
+/// search endpoint's `HistoryOut`.
+struct EpisodeHistoryPage: Decodable {
+    let items: [EpisodeHistoryItem]
+    let nextCursor: String?
+
+    enum CodingKeys: String, CodingKey {
+        case items
+        case nextCursor = "next_cursor"
     }
 }
 
