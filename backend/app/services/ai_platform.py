@@ -378,8 +378,15 @@ async def _persist_ai_call(db: AsyncSession, row: AICall) -> None:
     session if the separate write fails, so a record is never silently lost.
     """
     try:
-        from app.db.session import AsyncSessionLocal
-        async with AsyncSessionLocal() as own:
+        # Same engine as the caller's session (not the module-global pool), so
+        # tests that run on their own engine/event loop stay isolated.
+        bind = getattr(db, "bind", None)
+        if bind is None:
+            from app.db.session import AsyncSessionLocal
+            own_ctx = AsyncSessionLocal()
+        else:
+            own_ctx = AsyncSession(bind=bind, expire_on_commit=False)
+        async with own_ctx as own:
             own.add(row)
             await own.commit()
     except Exception:
