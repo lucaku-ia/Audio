@@ -400,6 +400,7 @@ async def test_overlapping_passes_pay_once_per_capsule(full_db_session, monkeypa
 
     assert sorted(tts.calls) == sorted(TOPICS)  # exactly one paid synthesis per capsule
     await db.rollback()
+    await db.refresh(ep)
     blocks = await _blocks(db, ep)
     assert [x.audio_status for x in blocks] == ["voiced"] * 3
     assert all(x.voice_attempts == 1 and x.audio_url for x in blocks)
@@ -428,6 +429,7 @@ async def test_overlapping_run_generation_revoices_a_failed_job_once(full_db_ses
     assert sorted(tts.calls) == sorted(TOPICS)
     assert {r1.id, r2.id} == {job.id}
     await db.rollback()
+    await db.refresh(c)
     await db.refresh(job)
     assert job.status == JobStatus.ready and job.retry_count == 1
     ep = await _episode(db, c)
