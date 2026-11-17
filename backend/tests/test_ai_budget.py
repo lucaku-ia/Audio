@@ -361,3 +361,22 @@ async def test_a_later_provider_failure_clears_the_blocked_retry(full_db_session
     assert await _blocked_job_can_retry(full_db_session, c.id, job) is True  # guard passes now
     job.stages = [blocked, {"stage": "voicing", "error": "quota_exceeded"}]
     assert await _blocked_job_can_retry(full_db_session, c.id, job) is False
+
+
+async def test_a_failing_rescue_does_not_mask_the_job_failure(full_db_session, monkeypatch):
+    patch_ai_pipeline(monkeypatch)
+    c = await _customer(full_db_session)
+
+    async def broken_write(*a, **kw):
+        raise ai_platform.ModelUnavailable("down")
+
+    async def broken_rescue(db):
+        raise RuntimeError("rescue blew up")
+
+    monkeypatch.setattr(ai_platform, "write_block", broken_write)
+    monkeypatch.setattr(ai_platform, "rescue_ai_rows", broken_rescue)
+
+    job = await _run(full_db_session, c)
+
+    assert job.status == JobStatus.failed
+    assert len(await _events(full_db_session, "job_failed")) == 1

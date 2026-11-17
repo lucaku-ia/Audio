@@ -606,6 +606,12 @@ async def _mark_answered(db: AsyncSession, cliente: Cliente, blocks: list[Block]
     except Exception:  # noqa: BLE001
         logger.exception("could not mark requests answered; episode stays published")
         await db.rollback()
+        try:
+            if await ai_platform.rescue_ai_rows(db):
+                await db.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("could not rescue AICall rows")
+            await db.rollback()
 
 
 async def _revoice_late_capsules(db: AsyncSession, cliente: Cliente, job: GenerationJob) -> None:
@@ -1211,7 +1217,10 @@ async def run_generation(
     except Exception as exc:
         await db.rollback()  # discard any partial episode/block writes — never publish partial results
         # ...but not the paid-call records: that money is spent and must count toward the budget.
-        await ai_platform.rescue_ai_rows(db)
+        try:
+            await ai_platform.rescue_ai_rows(db)
+        except Exception:  # noqa: BLE001 - must never mask the job failure below
+            logger.exception("generation: could not rescue AICall rows")
         job.status = JobStatus.failed
         job.stages = [_failure_stage(exc)]
         await db.commit()

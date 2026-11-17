@@ -382,17 +382,30 @@ async def _persist_ai_call(db: AsyncSession, row: AICall) -> None:
 
 
 async def rescue_ai_rows(db: AsyncSession) -> int:
-    """Call right AFTER db.rollback(): re-adds (without committing) tracked
-    AICall rows the rollback discarded. The caller's next commit persists them."""
+    """Call right AFTER db.rollback(): re-adds tracked AICall rows the rollback
+    discarded. The caller's next commit persists them. Never raises: a failure
+    here must not mask the failure being handled; a row that cannot be
+    re-added is skipped (each goes in its own SAVEPOINT)."""
     tracked = db.info.pop("ai_rows", [])
     if not tracked:
         return 0
-    ids = [cid for cid, _ in tracked]
-    existing = set((await db.execute(select(AICall.call_id).where(AICall.call_id.in_(ids)))).scalars())
-    lost = [row for cid, row in tracked if cid not in existing]
-    for row in lost:
-        db.add(row)
-    return len(lost)
+    rescued = 0
+    try:
+        ids = [cid for cid, _ in tracked]
+        existing = set((await db.execute(select(AICall.call_id).where(AICall.call_id.in_(ids)))).scalars())
+        for cid, row in tracked:
+            if cid in existing:
+                continue
+            try:
+                async with db.begin_nested():
+                    db.add(row)
+                    await db.flush()
+                rescued += 1
+            except Exception:
+                logger.exception("ai_platform: could not rescue AICall row %s", cid)
+    except Exception:
+        logger.exception("ai_platform: rescuing AICall rows failed")
+    return rescued
 
 
 async def _log_call(db: AsyncSession, *, customer_id: uuid.UUID, prompt: str, version: str, purpose: str,

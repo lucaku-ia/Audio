@@ -894,9 +894,11 @@ slightly over it; it is a brake, not an exact meter.
   or evening local time, not at their midnight.
 - Shared research is booked to whoever misses the findings cache: that customer's
   budget carries the research cost, and later customers get cache hits at zero cost.
-- Every `AICall` row is committed in its own short transaction at the moment the call
-  is logged, so spend survives a rollback of the surrounding generation work (a failed
-  run still counts toward the budget).
+- `AICall` rows are added to the work session as usual. When generation, a news run or
+  `_mark_answered` rolls back, the discarded rows are re-inserted right after the
+  rollback (`ai_platform.rescue_ai_rows`, best effort, never masks the original
+  failure), so a failed run still counts toward the budget. Other routes that roll back
+  (for example a failed `POST /requests`) do not rescue.
 
 **Flipping the switch in Railway.** Service `Audio` -> Variables -> add
 `AI_GLOBAL_KILL_SWITCH` = `true` -> Deploy (Railway restarts the service with the new

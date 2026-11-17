@@ -353,6 +353,7 @@ async def run_news_for_topic(
             except Exception as exc:
                 logger.exception("news: writing %s items for %r failed", lang, topic)
                 await db.rollback()
+                await ai_platform.rescue_ai_rows(db)  # paid calls stay on the books; _finish_run commits them
                 failures[lang] = exc
                 await _finish_run(db, runs[lang], status="failed", error=str(exc)[:300], cost=costs[lang])
             finished.add(lang)
@@ -362,10 +363,15 @@ async def run_news_for_topic(
         return NewsRunResult("done" if "done" in statuses else "no_news", all_items, sum(costs.values()))
     except Exception as exc:
         await db.rollback()
-        for lang in langs:
-            if lang not in finished:
-                await _finish_run(db, runs[lang], status="failed", error=str(exc)[:300], cost=costs[lang])
+        rescued = await ai_platform.rescue_ai_rows(db)
+        unfinished = [lang for lang in langs if lang not in finished]
+        for lang in unfinished:
+            await _finish_run(db, runs[lang], status="failed", error=str(exc)[:300], cost=costs[lang])
+        if rescued and not unfinished:
+            await db.commit()
         raise
+    finally:
+        db.info.pop("ai_rows", None)  # everything is committed by now; don't accumulate across a long pass
 
 
 async def _write_language(db, *, lang, topic, topic_key, slot, now, since, findings, merged_all, costs) -> list[NewsItem]:
