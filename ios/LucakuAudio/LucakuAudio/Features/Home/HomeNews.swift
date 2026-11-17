@@ -361,44 +361,27 @@ final class NewsStore: ObservableObject {
 
     func rating(for story: NewsStory) -> StoryRating? { ratings[story.id] }
 
-    /// Optimistic: the chip flips immediately, the server call follows, and the
-    /// previous state is restored if it fails. Clearing (`nil`) re-sends the
-    /// stored payload, which the backend treats as "toggle off".
+    /// Optimistic: the chip flips immediately and the write goes through the
+    /// per-story queue (see `FeedbackSyncQueue`), which restores the confirmed
+    /// server state if it fails. Clearing (`nil`) toggles the stored rating off.
     func setRating(_ rating: StoryRating?, for story: NewsStory, reasons: [String] = [], suggestion: String? = nil) {
         let id = story.id
         let previous = ratings[id]
-        let previousSaved = savedFeedback[id]
         ratings[id] = rating
         guard isLive, let token, FeedbackMapping.isSendable(id) else { return }
 
-        let body: FeedbackBody
+        func body(_ kind: String, _ reasons: [String], _ suggestion: String?) -> FeedbackBody {
+            FeedbackBody(targetType: FeedbackTarget.news.rawValue, targetId: id, rating: kind,
+                         reasons: reasons, suggestion: suggestion)
+        }
         if let rating {
-            body = FeedbackBody(
-                targetType: FeedbackTarget.news.rawValue, targetId: id,
-                rating: rating == .up ? "useful" : "not_quite",
-                reasons: reasons, suggestion: FeedbackMapping.suggestion(suggestion)
-            )
-        } else if let saved = previousSaved {
-            body = FeedbackBody(
-                targetType: FeedbackTarget.news.rawValue, targetId: id, rating: saved.rating,
-                reasons: saved.reasons, suggestion: saved.suggestion
+            feedbackQueue.set(
+                id: id,
+                body: body(rating == .up ? "useful" : "not_quite", reasons, FeedbackMapping.suggestion(suggestion)),
+                token: token
             )
         } else if let previous {
-            body = FeedbackBody(
-                targetType: FeedbackTarget.news.rawValue, targetId: id,
-                rating: previous == .up ? "useful" : "not_quite", reasons: [], suggestion: nil
-            )
-        } else {
-            return
-        }
-        Task {
-            do {
-                let result = try await APIClient.shared.submitFeedback(body, token: token)
-                applyServer(result.removed ? nil : result.feedback, id: id)
-            } catch {
-                ratings[id] = previous
-                savedFeedback[id] = previousSaved
-            }
+            feedbackQueue.clear(id: id, fallback: body(previous == .up ? "useful" : "not_quite", [], nil), token: token)
         }
     }
 
@@ -425,18 +408,13 @@ final class NewsStore: ObservableObject {
         guard isLive, let token, FeedbackMapping.isSendable(story.id),
               let saved = try? await APIClient.shared.feedback(targetType: .news, targetIds: [story.id], token: token)
         else { return }
-        // Don't override a tap made while the request was in flight.
-        guard savedFeedback[story.id] == nil, ratings[story.id] == nil else { return }
-        applyServer(saved.first, id: story.id)
+        // Ids with a tap in flight or already confirmed are left alone.
+        feedbackQueue.adopt(ids: [story.id], items: saved)
     }
 
-    private func applyServer(_ feedback: FeedbackOut?, id: String) {
-        savedFeedback[id] = feedback.map { SavedFeedback(rating: $0.rating, reasons: $0.reasons, suggestion: $0.suggestion) }
-        ratings[id] = feedback.map { $0.rating == "useful" ? StoryRating.up : .down }
+    private lazy var feedbackQueue = FeedbackSyncQueue(targetType: .news) { [weak self] id, state in
+        self?.ratings[id] = state.map { $0.rating == "useful" ? StoryRating.up : .down }
     }
-
-    /// Last payload the server holds per story id (needed to toggle it off).
-    private var savedFeedback: [String: SavedFeedback] = [:]
 
     func toggleCollapsed(_ day: Int) {
         if collapsedDays.contains(day) { collapsedDays.remove(day) } else { collapsedDays.insert(day) }

@@ -17,10 +17,13 @@ final class ProfileStore: ObservableObject {
     /// Cursor for the next History page; nil when there is no more.
     private var historyCursor: String?
     private var isLoadingMoreHistory = false
+    /// Bumped by every reload so a late "load more" response is ignored.
+    private var historyGeneration = 0
 
     /// GET /api/episodes (cursor-paginated). Falls back to the Home `recent`
     /// window when the endpoint is unavailable (older backend / offline).
     func loadHistory(token: String) async {
+        historyGeneration += 1
         if let page = try? await APIClient.shared.episodeHistory(token: token) {
             history = page.items.map(Self.row(from:))
             historyCursor = page.nextCursor
@@ -37,7 +40,9 @@ final class ProfileStore: ObservableObject {
               history.last?.id == episode.id else { return }
         isLoadingMoreHistory = true
         defer { isLoadingMoreHistory = false }
-        guard let page = try? await APIClient.shared.episodeHistory(before: cursor, token: token) else { return }
+        let generation = historyGeneration
+        guard let page = try? await APIClient.shared.episodeHistory(before: cursor, token: token),
+              generation == historyGeneration else { return } // list was reset meanwhile
         let known = Set(history.map(\.id))
         history += page.items.map(Self.row(from:)).filter { !known.contains($0.id) }
         historyCursor = page.nextCursor

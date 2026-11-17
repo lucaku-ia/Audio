@@ -40,7 +40,7 @@ struct ProfileHistoryPage: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 28)
             } else {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     ForEach(Array(store.history.enumerated()), id: \.element.id) { index, episode in
                         if index > 0 { ProfileSeparator() }
                         historyRow(episode)

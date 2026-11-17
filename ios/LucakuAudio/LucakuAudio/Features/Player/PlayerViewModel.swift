@@ -75,8 +75,6 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var downloadedEpisodeIds: Set<String> = []
     /// Local-only per-story rating (Useful / Not quite), keyed by block id.
     @Published private var ratings: [String: AnswerRating] = [:]
-    /// What the server holds per block id (needed to toggle a rating off).
-    private var savedFeedback: [String: SavedFeedback] = [:]
     /// Session token, remembered from the last load for feedback calls.
     private var token: String?
 
@@ -451,49 +449,31 @@ final class PlayerViewModel: ObservableObject {
         isFeedbackSheetOpen = false
     }
 
-    /// Optimistic: the chip flips immediately, the server call follows, and the
-    /// previous state is restored if it fails. Clearing (`nil`) re-sends the
-    /// stored payload, which the backend treats as "toggle off".
+    /// Optimistic: the chip flips immediately and the write goes through the
+    /// per-story queue (see `FeedbackSyncQueue`), which restores the confirmed
+    /// server state if it fails. Clearing (`nil`) toggles the stored rating off.
     private func syncRating(_ rating: AnswerRating?, id: String, reasons: [String] = [], suggestion: String? = nil) {
         let previous = ratings[id]
-        let previousSaved = savedFeedback[id]
         ratings[id] = rating
         guard let token, FeedbackMapping.isSendable(id) else { return }
 
-        let body: FeedbackBody
+        func body(_ kind: String, _ reasons: [String], _ suggestion: String?) -> FeedbackBody {
+            FeedbackBody(targetType: FeedbackTarget.story.rawValue, targetId: id, rating: kind,
+                         reasons: reasons, suggestion: suggestion)
+        }
         if let rating {
-            body = FeedbackBody(
-                targetType: FeedbackTarget.story.rawValue, targetId: id,
-                rating: rating == .up ? "useful" : "not_quite",
-                reasons: reasons, suggestion: FeedbackMapping.suggestion(suggestion)
-            )
-        } else if let saved = previousSaved {
-            body = FeedbackBody(
-                targetType: FeedbackTarget.story.rawValue, targetId: id, rating: saved.rating,
-                reasons: saved.reasons, suggestion: saved.suggestion
+            feedbackQueue.set(
+                id: id,
+                body: body(rating == .up ? "useful" : "not_quite", reasons, FeedbackMapping.suggestion(suggestion)),
+                token: token
             )
         } else if let previous {
-            body = FeedbackBody(
-                targetType: FeedbackTarget.story.rawValue, targetId: id,
-                rating: previous == .up ? "useful" : "not_quite", reasons: [], suggestion: nil
-            )
-        } else {
-            return
-        }
-        Task {
-            do {
-                let result = try await APIClient.shared.submitFeedback(body, token: token)
-                applyServerFeedback(result.removed ? nil : result.feedback, id: id)
-            } catch {
-                ratings[id] = previous
-                savedFeedback[id] = previousSaved
-            }
+            feedbackQueue.clear(id: id, fallback: body(previous == .up ? "useful" : "not_quite", [], nil), token: token)
         }
     }
 
-    private func applyServerFeedback(_ feedback: FeedbackOut?, id: String) {
-        savedFeedback[id] = feedback.map { SavedFeedback(rating: $0.rating, reasons: $0.reasons, suggestion: $0.suggestion) }
-        ratings[id] = feedback.map { $0.rating == "useful" ? AnswerRating.up : .down }
+    private lazy var feedbackQueue = FeedbackSyncQueue(targetType: .story) { [weak self] id, state in
+        self?.ratings[id] = state.map { $0.rating == "useful" ? AnswerRating.up : .down }
     }
 
     /// Loads the saved Useful / Not quite state of the loaded episode's stories.
@@ -503,9 +483,14 @@ final class PlayerViewModel: ObservableObject {
         guard !ids.isEmpty,
               let saved = try? await APIClient.shared.feedback(targetType: .story, targetIds: ids, token: token)
         else { return }
-        for item in saved where ratings[item.targetId] == nil && savedFeedback[item.targetId] == nil {
-            applyServerFeedback(item, id: item.targetId)
-        }
+        feedbackQueue.adopt(ids: ids, items: saved)
+    }
+
+    /// Forgets the session's feedback state (sign-out).
+    func reset() {
+        token = nil
+        ratings = [:]
+        feedbackQueue.reset()
     }
 
     /// Seeks within the current block — used by the transcript panel's "tap

@@ -370,7 +370,11 @@ struct HomeView: View {
         // Page 1 of the news rides along with /home; when it is absent (older
         // backend) or Home failed, the store fetches /news itself.
         // (Quiet background polls skip it.)
-        if showSpinner { await news.load(token: token, firstPage: loadedHome?.news) }
+        // Runs concurrently so it never delays loading the mini player below.
+        if showSpinner {
+            let firstPage = loadedHome?.news
+            Task { await news.load(token: token, firstPage: firstPage) }
+        }
 
         guard !playerViewModel.hasEpisode, case .loaded(let home) = viewModel.state else { return }
         let episodeId: String?

@@ -51,7 +51,16 @@ final class HomeViewModel: ObservableObject {
         let clock = deliveryClock
         guard todayIsReady else { return ("Then, every day", "At \(clock)") }
         let now = Calendar.current.dateComponents([.hour, .minute], from: Date())
-        let later = nextDelivery?.isToday ?? (hour * 60 + minute > (now.hour ?? 0) * 60 + (now.minute ?? 0))
+        let localLater = hour * 60 + minute > (now.hour ?? 0) * 60 + (now.minute ?? 0)
+        let later: Bool
+        if let next = nextDelivery, Date() < next.at {
+            // Live check against the delivery's own timezone, not the fetch-time flag.
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: next.timezone) ?? .current
+            later = calendar.isDate(next.at, inSameDayAs: Date())
+        } else {
+            later = localLater
+        }
         return ("Next episode", "\(later ? "Today" : "Tomorrow") at \(clock)")
     }
 
