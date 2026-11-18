@@ -216,7 +216,6 @@ async def request_audio(db: AsyncSession, cliente: Cliente, item: NewsItem, key:
 
     reason = await _blocked_reason(db, cliente, item, now)
     if reason is not None:
-        await db.rollback()  # nothing was written; end the read transaction
         return done(row, BLOCKED, reason[0], None)
 
     await db.execute(pg_insert(NewsItemAudio).values(

@@ -91,7 +91,7 @@ def _own_sessions_for_background(full_db_session, monkeypatch, tmp_path):
 
 async def _setup(db, n_items=1, **item_kw):
     me = await make_customer(db, topic="Premier League")
-    items = [_item(title=f"Story {i}", **item_kw) for i in range(n_items)]
+    items = [_item(**{"title": f"Story {i}", **item_kw}) for i in range(n_items)]
     db.add_all(items)
     await db.commit()
     return me, items
