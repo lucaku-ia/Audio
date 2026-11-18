@@ -1,0 +1,42 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NSMicrophoneUsageDescription" : {
+      "comment" : "Info.plist. Microphone permission prompt.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucaku uses your microphone so you can answer onboarding questions by speaking instead of typing."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucaku usa tu micrófono para que puedas responder hablando en vez de escribir."
+          }
+        }
+      }
+    },
+    "NSSpeechRecognitionUsageDescription" : {
+      "comment" : "Info.plist. Speech recognition permission prompt.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucaku turns your spoken answers into text on-device, only while you're answering an onboarding question."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucaku convierte tus respuestas habladas en texto en tu dispositivo, solo mientras respondes una pregunta."
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}
