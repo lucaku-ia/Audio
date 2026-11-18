@@ -1389,6 +1389,35 @@ Design: `docs/capsules-design.md` (rev 3, branch `docs/capsules-design`). Phase 
 - **Not in 1a:** the 3 h research-age rule (design 3.1), `episode_items`, intro/transitions, priority ordering, `POST /blocks/{id}/voice`, retention of per-capsule files, deleting media files on account deletion.
 - **Tests:** `backend/tests/test_capsules.py`, `test_capsule_migration.py` (fakes only; the migration test drops the new columns from a legacy-populated DB and runs `ejecutar_migraciones`). Still manual: real mp3 concatenation drift and real ElevenLabs durations.
 
+## Discovery audio and news<->capsule link (capsules Phase 2)
+
+Design: `docs/capsules-design.md` rev 3 sections 8.2/9 and `docs/cx-decisions.md`. All additive; the shipped iOS build ignores the new fields.
+
+**Endpoints** (auth required, 401 otherwise; 404 unknown item)
+- `POST /api/news/{id}/audio` body `{"voice": "<key>"}` optional. Voices the item's own text (title + short_version) once per (item, voice) and shares the file. The voice must be in the allowlist of the language the ITEM is written in (else 422, `code: voice_not_allowed`); default is the profile voice if allowed there, else that language's default voice.
+- `GET /api/news/{id}/audio?voice=` status/url only. Never spends, never starts anything. Use it to poll.
+- Response (both): `{news_id, status, url, duration_s, voice, language, code, message, retry_after_s}`.
+
+**Status contract.** HTTP 200 unless voicing; every "not now" is a body state, not an HTTP error.
+- `voiced` (200): play `url` (mp3, random file name). Free and unlimited for everyone, no guards.
+- `voicing` (202): being made. Poll `GET` every `retry_after_s` (3 s). The paid call runs in a background task, so the POST returns immediately; typical voicing takes a few seconds. One voicing per (item, voice) no matter how many users tap at once (atomic claim).
+- `failed` (200): `code: discovery_failed`, localized `message`. `retry_after_s` = seconds until a new POST may retry (45 min backoff); `null` means no more retries (3 attempts lifetime). A POST inside the backoff does not spend.
+- `blocked` (200): nothing was started. `code` is one of `discovery_rate_limited` (default 10 new voicings per user per UTC day), `discovery_too_old` (item older than 48 h and not voiced yet), `discovery_ceiling` (platform discovery spend of the UTC day reached $10), `ai_paused` (global kill switch). `message` is localized (es/en by the caller's language).
+- `none` (GET only): nothing voiced yet; a POST would start it.
+
+**News fields** (`GET /api/news`, `GET /api/news/{id}`, `GET /api/home` news page; both optional, `null` when absent)
+- `audio`: `{status, url, duration_s, voice, ...}` for the caller's voice, present only when a row exists (voicing/voiced/failed/blocked). No spend.
+- `related_capsule`: `{episode_id, block_id, audio_status, audio_url}`: the caller's OWN capsule (published episode, last 2 days) on the same topic. Matching is the request's structured `topic` normalised like `findings_store.normalize` against the item's `topic_key`; a secondary hint is another item of the same `cluster_id`. A miss gives `null` (no guessing). `audio_status` is `voiced|voicing|pending|failed|blocked`, or `legacy` (the block is only inside the episode file: play the episode at that block's offset). `audio_url` is present when the capsule has its own file. Client rule: `related_capsule` set -> play/jump to it; else Listen = `POST /news/{id}/audio`, poll, play.
+- Both are computed with a constant number of queries per page (no N+1).
+
+**`GET /api/home?include_news=false`** returns `news: null` and skips the news queries, for the 10-second polls. Default true.
+
+**Server config (env):** `DISCOVERY_DAILY_CEILING_USD` (10), `DISCOVERY_MAX_VOICINGS_PER_USER_DAY` (10), `DISCOVERY_ITEM_MAX_AGE_HOURS` (48). Kill switch `AI_GLOBAL_KILL_SWITCH` applies. Spend is attributed to `DISCOVERY_SENTINEL` (`UUID(int=2)`), a distinct branch of `ai_platform.guard_paid_call` (kill switch + ceiling summed from the committed `discovery_voicing_log.cost`), not the news sentinel and not a customer.
+
+**Data.** New tables via `create_all` (no new column on an existing table, nothing in `COLUMNAS_ESPERADAS`): `news_item_audio` (shared, no user data, unique (news_item_id, voice_key), lease 30 min, attempts cap 3) and `discovery_voicing_log` (customer_id, news_item_id, voice_key, cost, created_at: rate-limit counter and spend ledger). Account export lists the caller's `discovery_voicings`; deletion sets the ledger's `customer_id` to NULL (the cost stays so the ceiling is honest); shared audio is not deleted.
+
+**Tests:** `backend/tests/test_discovery.py` (fakes only).
+
 ## Suggested next steps
 
 **Status as of 2026-11-11, after the autonomous backend session.** Everything

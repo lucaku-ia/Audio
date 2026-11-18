@@ -69,7 +69,7 @@ not a settled PRD requirement.
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -455,6 +455,7 @@ async def _derive_news(db: AsyncSession, cliente: Cliente, perfil: Profile | Non
 
 @router.get("", response_model=HomeOut)
 async def home(
+    include_news: bool = Query(default=True, description="false skips the news page (news=null): for frequent polls."),
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
@@ -465,7 +466,7 @@ async def home(
     explore = await _derive_explore(db, cliente, latest_by_tag)
     perfil = await db.get(Profile, cliente.id)
     followed_topics = await _derive_followed_topics(db, cliente)
-    news = await _derive_news(db, cliente, perfil)
+    news = await _derive_news(db, cliente, perfil) if include_news else None
     return HomeOut(
         banner=banner, recent=recent, suggestions=[], shared_inventory=shared_inventory, explore=explore,
         next_delivery=compute_next_delivery(perfil), followed_topics=followed_topics, news=news,

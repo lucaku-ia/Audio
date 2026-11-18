@@ -83,3 +83,18 @@ def ai_daily_budget_per_customer_usd() -> float:
 def ai_daily_budget_global_usd() -> float:
     """Total across all accounts, per UTC day. 0 (default) disables it."""
     return _env_float("AI_DAILY_BUDGET_GLOBAL_USD", 0.0)
+
+
+def discovery_daily_ceiling_usd() -> float:
+    """Platform-wide discovery (news-item audio) spend per UTC day. 0 = nothing may be voiced."""
+    return _env_float("DISCOVERY_DAILY_CEILING_USD", 10.0)
+
+
+def discovery_max_voicings_per_user_day() -> int:
+    """New discovery voicings one customer may trigger per UTC day (playing voiced audio is free)."""
+    return int(_env_float("DISCOVERY_MAX_VOICINGS_PER_USER_DAY", 10))
+
+
+def discovery_item_max_age_hours() -> float:
+    """News items older than this can no longer be voiced on tap (already voiced ones still play)."""
+    return _env_float("DISCOVERY_ITEM_MAX_AGE_HOURS", 48.0)

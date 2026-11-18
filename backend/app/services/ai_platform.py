@@ -120,6 +120,30 @@ class AIKillSwitchError(AIBlocked):
 _NEWS_CUSTOMER_SENTINEL = uuid.UUID(int=0)
 
 
+# Discovery audio (a news item voiced on tap, paid by the platform) is attributed to
+# this DISTINCT sentinel. It is NOT a news caller: guard_paid_call gives it its own
+# branch (kill switch + a daily ceiling summed from the committed discovery ledger).
+DISCOVERY_SENTINEL = uuid.UUID(int=2)
+
+
+class DiscoveryCeilingError(AIBlocked):
+    """Today's (UTC) discovery voicing spend reached DISCOVERY_DAILY_CEILING_USD."""
+    code = "discovery_ceiling"
+
+    def __init__(self, *, spent: float, limit: float, purpose: str = ""):
+        super().__init__("Discovery daily ceiling reached")
+        self.spent, self.limit, self.purpose = spent, limit, purpose
+
+
+async def discovery_spent_today(db: AsyncSession, *, now: datetime | None = None) -> float:
+    """Today's (UTC) committed discovery spend. Read from the ledger table, NOT from
+    AICall rows (those roll back with a failed caller's transaction)."""
+    from app.models.discovery import DiscoveryVoicingLog
+    query = select(func.coalesce(func.sum(DiscoveryVoicingLog.cost), 0)).where(
+        DiscoveryVoicingLog.created_at >= _utc_day_start(now))
+    return float((await db.execute(query)).scalar_one())
+
+
 def _is_news_caller(customer_id: uuid.UUID | None) -> bool:
     return customer_id is None or customer_id == _NEWS_CUSTOMER_SENTINEL
 
@@ -157,6 +181,15 @@ async def guard_paid_call(db: AsyncSession, customer_id: uuid.UUID | None, purpo
     """
     if ai_config.ai_kill_switch_on():
         raise AIKillSwitchError(purpose)
+    if customer_id == DISCOVERY_SENTINEL:
+        limit = ai_config.discovery_daily_ceiling_usd()
+        spent = await discovery_spent_today(db)
+        if spent >= limit:
+            if emit:
+                await emit_budget_exceeded(db, scope="discovery", spent=spent, limit=limit,
+                                           customer_id=None, purpose=purpose)
+            raise DiscoveryCeilingError(spent=spent, limit=limit, purpose=purpose)
+        return
     if _is_news_caller(customer_id):
         return
 

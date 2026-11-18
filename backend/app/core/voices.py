@@ -129,3 +129,10 @@ __all__ = [
     "VoiceOption", "VOICE_CATALOGUE", "voices_for", "is_allowed_voice", "default_voice_key",
     "resolve_voice", "provider_voice_id", "catalogue_out", "DEFAULT_LANGUAGE", "normalize_language",
 ]
+
+
+def canonical_key(language: str | None, voice: str | None) -> str | None:
+    """The catalogue KEY for `voice` (a key, or the real id configured for one)
+    within `language`'s allowlist, or None when it is not allowed there."""
+    option = _find(voice, language_for(language))
+    return option.key if option else None

@@ -27,6 +27,7 @@ from app.models.episode import Episode, Block  # noqa: E402,F401
 from app.models.instrumentation import Event, AICall  # noqa: E402,F401
 from app.models.findings_cache import FindingsCache  # noqa: E402,F401
 from app.models.news import NewsItem, NewsReadState, NewsRun  # noqa: E402,F401
+from app.models.discovery import NewsItemAudio, DiscoveryVoicingLog  # noqa: E402,F401
 from app.models.feedback import Feedback, FeedbackSignal, ProblemReport  # noqa: E402,F401
 
 
@@ -65,7 +66,7 @@ _FULL_SESSION_TABLES = (
     "profiles", "clientes",
     # News is topic-keyed (not customer-keyed), so these survive the CASCADE
     # from clientes too, except news_read_states which FKs to both.
-    "news_read_states", "news_items", "news_runs",
+    "news_read_states", "news_items", "news_runs", "news_item_audio", "discovery_voicing_log",
     "feedback", "feedback_signals", "problem_reports",
     # findings_cache is keyed by topic, NOT by customer, so it survives the
     # CASCADE from clientes that clears everything else here. Left out, a

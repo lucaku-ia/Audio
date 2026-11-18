@@ -84,6 +84,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_cliente
 from app.db.session import get_db
 from app.models.cliente import Cliente
+from app.models.discovery import DiscoveryVoicingLog
 from app.models.episode import Block, Episode
 from app.models.generation_job import GenerationJob, InventoryItem, JobStatus
 from app.models.instrumentation import AICall, Event
@@ -149,12 +150,19 @@ class EpisodeExport(BaseModel):
     blocks: list[BlockExport]
 
 
+class DiscoveryVoicingExport(BaseModel):
+    news_item_id: str
+    voice_key: str
+    created_at: datetime
+
+
 class AccountExportOut(BaseModel):
     customer_id: str
     email: str
     exported_at: datetime
     requests: list[RequestExport]
     episodes: list[EpisodeExport]
+    discovery_voicings: list[DiscoveryVoicingExport] = []
 
 
 @router.get("/export", response_model=AccountExportOut)
@@ -217,6 +225,11 @@ async def export_account_data(
         exported_at=datetime.utcnow(),
         requests=requests_export,
         episodes=episodes_export,
+        discovery_voicings=[
+            DiscoveryVoicingExport(news_item_id=str(r.news_item_id), voice_key=r.voice_key, created_at=r.created_at)
+            for r in (await db.execute(select(DiscoveryVoicingLog).where(
+                DiscoveryVoicingLog.customer_id == cliente.id).order_by(DiscoveryVoicingLog.created_at))).scalars().all()
+        ],
     )
 
 
@@ -314,6 +327,11 @@ async def delete_account(
 
     # 10. Anonymize Events instead of deleting them.
     await db.execute(update(Event).where(Event.customer_id == customer_id).values(customer_id=None))
+
+    # 10b. Discovery ledger: the row stays (its cost keeps the platform daily ceiling honest) but
+    # loses the customer id, so nothing personal remains. news_item_audio is shared, not user data.
+    await db.execute(update(DiscoveryVoicingLog).where(DiscoveryVoicingLog.customer_id == customer_id)
+                     .values(customer_id=None))
 
     # 11. Anonymize AICall.context's customer_id — same identity, different
     # table, plain JSON (not JSONB) so this goes through a jsonb cast rather

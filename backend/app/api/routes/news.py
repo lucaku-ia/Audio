@@ -17,7 +17,7 @@ import base64
 import uuid
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy import and_, delete, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -29,6 +29,8 @@ from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.news import NewsItem, NewsReadState
 from app.models.profile import Profile
+from app.services import discovery
+from app.services.discovery import NewsAudioOut, NewsAudioStatusOut, RelatedCapsuleOut
 from app.services.news_pipeline import followed_topics_for, resolve_tz
 
 router = APIRouter(prefix="/news", tags=["News"])
@@ -58,6 +60,10 @@ class NewsItemOut(BaseModel):
     cluster_id: str | None
     read: bool
     language: str = "en"  # the language this item is written in ("es" | "en")
+    # Additive. The shared discovery audio for the caller's voice (null until someone asked
+    # for it) and the caller's OWN capsule on the same topic (null when there is none).
+    audio: NewsAudioOut | None = None
+    related_capsule: RelatedCapsuleOut | None = None
 
 
 class NewsListOut(BaseModel):
@@ -84,7 +90,7 @@ async def _caller_tz(db: AsyncSession, cliente: Cliente, tz_offset_minutes: int 
     return resolve_tz(name)[1]
 
 
-def _out(item: NewsItem, read_at, tz: tzinfo = timezone.utc) -> NewsItemOut:
+def _out(item: NewsItem, read_at, tz: tzinfo = timezone.utc, audio=None, related=None) -> NewsItemOut:
     published = item.published_at if item.published_at.tzinfo else item.published_at.replace(tzinfo=timezone.utc)
     return NewsItemOut(
         id=str(item.id), topic_key=item.topic_key, category=item.category, title=item.title,
@@ -94,6 +100,7 @@ def _out(item: NewsItem, read_at, tz: tzinfo = timezone.utc) -> NewsItemOut:
         read_minutes=max(1, -(-len(item.body.split()) // 200)),
         slot=item.slot, cluster_id=str(item.cluster_id) if item.cluster_id else None,
         read=read_at is not None, language=item.language or "en",
+        audio=audio, related_capsule=related,
     )
 
 
@@ -204,8 +211,9 @@ async def fetch_news_page(
         .limit(limit + 1)
     )).all()
     page = rows[:limit]
+    audio, related = await discovery.enrich(db, cliente, [item for item, _ in page])
     return NewsListOut(
-        items=[_out(item, read_at, tz) for item, read_at in page],
+        items=[_out(item, read_at, tz, audio.get(item.id), related.get(item.id)) for item, read_at in page],
         next_cursor=_encode_cursor(page[-1][0]) if len(rows) > limit and page else None,
         language=served, language_fallback=fallback,
         no_follow_match=no_match,
@@ -253,7 +261,43 @@ async def get_news(
     read_at = (await db.execute(
         select(NewsReadState.read_at).where(NewsReadState.news_id == news_id, NewsReadState.cliente_id == cliente.id)
     )).scalar_one_or_none()
-    return _out(item, read_at, await _caller_tz(db, cliente, tz_offset_minutes))
+    audio, related = await discovery.enrich(db, cliente, [item])
+    return _out(item, read_at, await _caller_tz(db, cliente, tz_offset_minutes),
+                audio.get(item.id), related.get(item.id))
+
+
+class AudioRequestBody(BaseModel):
+    voice: str | None = None  # a voice key from GET /profile's available_voices; default: the profile voice
+
+
+@router.post("/{news_id}/audio", response_model=NewsAudioStatusOut)
+async def request_news_audio(
+    news_id: uuid.UUID,
+    response: Response,
+    body: AudioRequestBody | None = None,
+    cliente: Cliente = Depends(get_current_cliente),
+    db: AsyncSession = Depends(get_db),
+):
+    """Voice a news item on tap (idempotent). 200 + url when voiced; 202 + status 'voicing' while it
+    is being made (poll GET); 200 + status failed/blocked + code + localized message otherwise."""
+    item = await _get_item(db, news_id)
+    key = await discovery.resolve_voice_key(db, cliente, item, body.voice if body else None)
+    out, http_status = await discovery.request_audio(db, cliente, item, key)
+    response.status_code = http_status
+    return out
+
+
+@router.get("/{news_id}/audio", response_model=NewsAudioStatusOut)
+async def get_news_audio(
+    news_id: uuid.UUID,
+    voice: str | None = Query(default=None),
+    cliente: Cliente = Depends(get_current_cliente),
+    db: AsyncSession = Depends(get_db),
+):
+    """Status/url of the item's audio for the caller's voice. Never spends, never starts anything."""
+    item = await _get_item(db, news_id)
+    key = await discovery.resolve_voice_key(db, cliente, item, voice)
+    return await discovery.get_status(db, cliente, item, key)
 
 
 @router.put("/{news_id}/read")

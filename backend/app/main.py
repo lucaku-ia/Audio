@@ -12,7 +12,7 @@ from app.db.migraciones import ejecutar_migraciones
 # Import every model so create_all() sees them
 from app.models import (
     cliente, request, profile, episode, generation_job, instrumentation, onboarding, prompt_registry,
-    source_catalogue, findings_cache, news, feedback,
+    source_catalogue, findings_cache, news, feedback, discovery,
 )  # noqa: F401
 from app.services.ai_platform import (
     ModelUnavailable, BudgetExceededError, AIKillSwitchError,

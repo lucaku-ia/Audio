@@ -101,6 +101,27 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "That voice is not available for your language.",
         "es": "Esa voz no está disponible para tu idioma.",
     },
+    # Discovery audio (a news item voiced on tap)
+    "discovery_voicing": {
+        "en": "Preparing the audio. Check back in a few seconds.",
+        "es": "Preparando el audio. Vuelve a consultar en unos segundos.",
+    },
+    "discovery_failed": {
+        "en": "We could not prepare this audio. Please try again later.",
+        "es": "No pudimos preparar este audio. Inténtalo de nuevo más tarde.",
+    },
+    "discovery_rate_limited": {
+        "en": "You've reached today's limit for new audio on news. Stories already voiced still play.",
+        "es": "Llegaste al límite de hoy para audio nuevo de noticias. Las historias ya narradas se siguen reproduciendo.",
+    },
+    "discovery_too_old": {
+        "en": "This story is too old to be turned into audio.",
+        "es": "Esta noticia es demasiado antigua para convertirla en audio.",
+    },
+    "discovery_ceiling": {
+        "en": "New news audio is paused for today. Please try again tomorrow.",
+        "es": "El audio nuevo de noticias está en pausa por hoy. Inténtalo de nuevo mañana.",
+    },
     "language_not_supported": {
         "en": "Unsupported language. Use 'es' or 'en'.",
         "es": "Idioma no compatible. Usa 'es' o 'en'.",
