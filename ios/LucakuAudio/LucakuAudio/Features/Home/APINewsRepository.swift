@@ -21,6 +21,25 @@ final class APINewsRepository: NewsRepository {
 
     var isLive: Bool { true }
 
+    func stories(token: String?, firstPage: NewsListOut?) async throws -> [NewsStory] {
+        guard let token else { throw APIError.notAuthenticated }
+        // Page 1 came with GET /home (followed scope, else all): only the
+        // remaining pages are fetched. An empty page takes the normal path.
+        guard let firstPage, !firstPage.items.isEmpty else { return try await stories(token: token) }
+        let scope = firstPage.noFollowMatch ? "all" : "followed"
+        var all = firstPage.items
+        var cursor = firstPage.nextCursor
+        var page = 1
+        while let next = cursor, page < maxPages {
+            let result = try await client.news(scope: scope, cursor: next, limit: pageSize, token: token)
+            all += result.items
+            cursor = result.nextCursor
+            page += 1
+        }
+        lastScope = scope
+        return all.map { Self.story(from: $0) }
+    }
+
     func stories(token: String?) async throws -> [NewsStory] {
         guard let token else { throw APIError.notAuthenticated }
         var scope = "followed"

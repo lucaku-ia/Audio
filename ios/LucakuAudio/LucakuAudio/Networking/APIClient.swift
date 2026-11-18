@@ -228,6 +228,41 @@ actor APIClient {
         )
     }
 
+    // MARK: - Feedback (backend/app/api/routes/feedback.py)
+
+    /// POST /feedback. Re-sending the identical payload toggles the rating off.
+    func submitFeedback(_ body: FeedbackBody, token: String) async throws -> FeedbackResult {
+        try await send(path: "/feedback", method: "POST", jsonBody: body, token: token)
+    }
+
+    /// GET /feedback: saved state for up to 100 targets of one type.
+    func feedback(targetType: FeedbackTarget, targetIds: [String], token: String) async throws -> [FeedbackOut] {
+        try await send(
+            path: "/feedback", method: "GET",
+            query: [
+                URLQueryItem(name: "target_type", value: targetType.rawValue),
+                URLQueryItem(name: "target_ids", value: targetIds.prefix(100).joined(separator: ",")),
+            ],
+            token: token
+        )
+    }
+
+    /// POST /feedback/report ("Report a problem").
+    func reportProblem(_ body: FeedbackReportBody, token: String) async throws -> FeedbackReportOut {
+        try await send(path: "/feedback/report", method: "POST", jsonBody: body, token: token)
+    }
+
+    // MARK: - Episode history (backend/app/api/routes/history.py)
+
+    /// GET /episodes: the caller's past episodes, newest first, keyset-paginated
+    /// (`before` is the previous page's `next_cursor`).
+    func episodeHistory(before: String? = nil, query: String? = nil, limit: Int = 20, token: String) async throws -> EpisodeHistoryPage {
+        var items = [URLQueryItem(name: "limit", value: "\(limit)")]
+        if let before { items.append(URLQueryItem(name: "before", value: before)) }
+        if let query, !query.isEmpty { items.append(URLQueryItem(name: "q", value: query)) }
+        return try await send(path: "/episodes", method: "GET", query: items, token: token)
+    }
+
     // MARK: - Request Management (backend/app/api/routes/requests.py)
 
     /// GET /requests?status=... — used by Search to check which topics

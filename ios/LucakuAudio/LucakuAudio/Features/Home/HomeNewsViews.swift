@@ -361,15 +361,16 @@ struct NewsDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .tint(LucakuColor.textPrimary)
         .onAppear { store.markRead(story) } // 3.7: opening clears the dot
+        .task { await store.loadFeedback(for: story) }
         .sheet(isPresented: $showFeedback) {
             FeedbackSheet(
                 subject: story.title,
-                onSend: { _, _ in
-                    store.setRating(.down, for: story)
+                onSend: { options, text in
+                    store.submitFeedback(options: options, suggestion: text, for: story)
                     showToast("Thanks. Lucaku will use this to write your news.")
                 },
                 onReport: {
-                    store.setRating(.down, for: story)
+                    store.reportProblem(for: story)
                     showReported = true
                 }
             )

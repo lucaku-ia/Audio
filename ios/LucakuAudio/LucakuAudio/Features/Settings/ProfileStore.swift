@@ -14,15 +14,45 @@ final class ProfileStore: ObservableObject {
         history.filter { $0.episodeId != nil && $0.state == "completed" }
     }
 
-    /// GET /api/home already returns the last two weeks of episodes in `recent`,
-    /// so History reuses it instead of a dedicated endpoint.
-    /// TODO(backend): a dedicated paginated GET /api/episodes/history if History
-    /// should ever go beyond the Home window.
+    /// Cursor for the next History page; nil when there is no more.
+    private var historyCursor: String?
+    private var isLoadingMoreHistory = false
+    /// Bumped by every reload so a late "load more" response is ignored.
+    private var historyGeneration = 0
+
+    /// GET /api/episodes (cursor-paginated). Falls back to the Home `recent`
+    /// window when the endpoint is unavailable (older backend / offline).
     func loadHistory(token: String) async {
-        if let home = try? await APIClient.shared.home(token: token) {
+        historyGeneration += 1
+        if let page = try? await APIClient.shared.episodeHistory(token: token) {
+            history = page.items.map(Self.row(from:))
+            historyCursor = page.nextCursor
+        } else if let home = try? await APIClient.shared.home(token: token) {
             history = home.recent
+            historyCursor = nil
         }
         historyLoaded = true
+    }
+
+    /// Loads the next page when `episode` is the last row shown.
+    func loadMoreHistoryIfNeeded(after episode: RecentEpisodeOut, token: String) async {
+        guard let cursor = historyCursor, !isLoadingMoreHistory,
+              history.last?.id == episode.id else { return }
+        isLoadingMoreHistory = true
+        defer { isLoadingMoreHistory = false }
+        let generation = historyGeneration
+        guard let page = try? await APIClient.shared.episodeHistory(before: cursor, token: token),
+              generation == historyGeneration else { return } // list was reset meanwhile
+        let known = Set(history.map(\.id))
+        history += page.items.map(Self.row(from:)).filter { !known.contains($0.id) }
+        historyCursor = page.nextCursor
+    }
+
+    private static func row(from item: EpisodeHistoryItem) -> RecentEpisodeOut {
+        RecentEpisodeOut(
+            date: item.date, headline: item.headline, durationS: item.durationS,
+            style: item.style, state: item.state, episodeId: item.id
+        )
     }
 
     func refreshPushStatus() async {

@@ -27,8 +27,15 @@ final class HomeViewModel: ObservableObject {
     /// "HH:mm" delivery time from the profile (best effort); nil falls back to 7:00 AM.
     @Published private(set) var deliveryTime: String?
 
+    /// Server-computed next delivery from GET /home (nil on older backends or
+    /// before a delivery time is set: the profile-based logic then applies).
+    @Published private(set) var nextDelivery: NextDeliveryOut?
+
+    /// Topics the customer follows, from GET /home (chips for "Your Lucaku").
+    @Published private(set) var followedTopics: [FollowedTopicOut] = []
+
     private var deliveryHourMinute: (hour: Int, minute: Int) {
-        let parts = (deliveryTime ?? "07:00").split(separator: ":").compactMap { Int($0) }
+        let parts = (nextDelivery?.localTime ?? deliveryTime ?? "07:00").split(separator: ":").compactMap { Int($0) }
         return (parts.first ?? 7, parts.count > 1 ? parts[1] : 0)
     }
 
@@ -44,7 +51,16 @@ final class HomeViewModel: ObservableObject {
         let clock = deliveryClock
         guard todayIsReady else { return ("Then, every day", "At \(clock)") }
         let now = Calendar.current.dateComponents([.hour, .minute], from: Date())
-        let later = hour * 60 + minute > (now.hour ?? 0) * 60 + (now.minute ?? 0)
+        let localLater = hour * 60 + minute > (now.hour ?? 0) * 60 + (now.minute ?? 0)
+        let later: Bool
+        if let next = nextDelivery, Date() < next.at {
+            // Live check against the delivery's own timezone, not the fetch-time flag.
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: next.timezone) ?? .current
+            later = calendar.isDate(next.at, inSameDayAs: Date())
+        } else {
+            later = localLater
+        }
         return ("Next episode", "\(later ? "Today" : "Tomorrow") at \(clock)")
     }
 
@@ -80,6 +96,8 @@ final class HomeViewModel: ObservableObject {
             if let options = await optionsTask {
                 interestLabels = Dictionary(options.map { ($0.id, $0.label) }, uniquingKeysWith: { first, _ in first })
             }
+            nextDelivery = home.nextDelivery
+            followedTopics = home.followedTopics
             state = .loaded(home)
         } catch {
             if !alreadyLoaded || showSpinner {

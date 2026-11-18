@@ -304,6 +304,7 @@ struct SettingsView: View {
         if let token = session.accessToken {
             try? await APIClient.shared.logout(token: token)
         }
+        player.reset()
         session.clear()
     }
 }
