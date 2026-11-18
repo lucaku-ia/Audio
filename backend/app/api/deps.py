@@ -1,12 +1,13 @@
 import secrets
 import uuid
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.i18n import language_for
 from app.core.security import decode_token
 from app.db.session import get_db
 from app.models.cliente import Cliente
@@ -34,6 +35,7 @@ async def require_internal_dashboard_key(x_internal_key: str | None = Header(def
 
 
 async def get_current_cliente(
+    request: Request,
     token: str = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> Cliente:
@@ -58,6 +60,9 @@ async def get_current_cliente(
     if cliente.token_version != token_version:
         # the token was issued before the last logout — Login PRD: "logout revokes it"
         raise credentials_exception
+    # Lets app-level exception handlers (budget / AI paused / model unavailable) answer in
+    # the customer's language without a DB lookup.
+    request.state.language = language_for(cliente)
     return cliente
 
 

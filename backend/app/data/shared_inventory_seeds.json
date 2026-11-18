@@ -3,47 +3,58 @@
   "shared_seeds": [
     {
       "tag": "markets",
-      "seed_request_text": "Resumen diario de los movimientos más importantes en tasas de interés, el dólar y las principales bolsas del mundo."
+      "seed_request_text": "Resumen diario de los movimientos más importantes en tasas de interés, el dólar y las principales bolsas del mundo.",
+      "seed_request_text_en": "Daily summary of the most important moves in interest rates, the dollar and the world's major stock markets."
     },
     {
       "tag": "technology",
-      "seed_request_text": "Últimos desarrollos importantes en inteligencia artificial y tecnología."
+      "seed_request_text": "Últimos desarrollos importantes en inteligencia artificial y tecnología.",
+      "seed_request_text_en": "Latest important developments in artificial intelligence and technology."
     },
     {
       "tag": "world",
-      "seed_request_text": "Resumen diario de las noticias internacionales más relevantes."
+      "seed_request_text": "Resumen diario de las noticias internacionales más relevantes.",
+      "seed_request_text_en": "Daily summary of the most relevant international news."
     },
     {
       "tag": "local",
-      "seed_request_text": "Resumen diario de las noticias nacionales de Colombia y las decisiones de gobierno más relevantes."
+      "seed_request_text": "Resumen diario de las noticias nacionales de Colombia y las decisiones de gobierno más relevantes.",
+      "seed_request_text_en": "Daily summary of Colombia's national news and the most relevant government decisions."
     },
     {
       "tag": "sports",
-      "seed_request_text": "Resumen diario de los resultados y noticias deportivas más importantes."
+      "seed_request_text": "Resumen diario de los resultados y noticias deportivas más importantes.",
+      "seed_request_text_en": "Daily summary of the most important sports results and news."
     },
     {
       "tag": "health",
-      "seed_request_text": "Novedades relevantes de investigación en salud y bienestar de la última semana."
+      "seed_request_text": "Novedades relevantes de investigación en salud y bienestar de la última semana.",
+      "seed_request_text_en": "Relevant health and wellness research developments from the past week."
     },
     {
       "tag": "science",
-      "seed_request_text": "Descubrimientos científicos y avances de exploración espacial más importantes de la semana."
+      "seed_request_text": "Descubrimientos científicos y avances de exploración espacial más importantes de la semana.",
+      "seed_request_text_en": "The week's most important scientific discoveries and space exploration advances."
     },
     {
       "tag": "entertainment",
-      "seed_request_text": "Resumen diario de las noticias más relevantes de cine, música y entretenimiento."
+      "seed_request_text": "Resumen diario de las noticias más relevantes de cine, música y entretenimiento.",
+      "seed_request_text_en": "Daily summary of the most relevant film, music and entertainment news."
     },
     {
       "tag": "politics",
-      "seed_request_text": "Resumen diario de las decisiones políticas más relevantes en Colombia y el mundo."
+      "seed_request_text": "Resumen diario de las decisiones políticas más relevantes en Colombia y el mundo.",
+      "seed_request_text_en": "Daily summary of the most relevant political decisions in Colombia and around the world."
     },
     {
       "tag": "climate",
-      "seed_request_text": "Novedades relevantes sobre cambio climático y medio ambiente de la última semana."
+      "seed_request_text": "Novedades relevantes sobre cambio climático y medio ambiente de la última semana.",
+      "seed_request_text_en": "Relevant developments on climate change and the environment from the past week."
     },
     {
       "tag": "personal_finance",
-      "seed_request_text": "Consejos prácticos y noticias relevantes sobre finanzas personales y ahorro."
+      "seed_request_text": "Consejos prácticos y noticias relevantes sobre finanzas personales y ahorro.",
+      "seed_request_text_en": "Practical tips and relevant news on personal finance and saving."
     }
   ]
 }

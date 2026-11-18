@@ -40,6 +40,9 @@ class NewsItem(Base):
     image_hint: Mapped[str | None] = mapped_column(String(300), nullable=True)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
     slot: Mapped[str] = mapped_column(String(10))  # "0500" | "1300" | "adhoc"
+    # "es" | "en": the language the item is WRITTEN in. Rows that predate this
+    # column are English (the pipeline was English-only); the migration adds it with default 'en'.
+    language: Mapped[str] = mapped_column(String(5), default="en", server_default="en")
     cluster_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
@@ -57,17 +60,20 @@ class NewsReadState(Base):
 
 
 class NewsRun(Base):
-    """One row per (topic_key, run_date, slot): the idempotency record. The
-    unique constraint is what makes "claim the run" race-safe."""
+    """One row per (topic_key, run_date, slot, language): the idempotency
+    record. The unique constraint is what makes "claim the run" race-safe.
+    Language is part of the key because the write step runs once per
+    language; research is shared and cached, so it is never repeated."""
     __tablename__ = "news_runs"
     __table_args__ = (
-        UniqueConstraint("topic_key", "run_date", "slot", name="uq_news_runs_topic_date_slot"),
+        UniqueConstraint("topic_key", "run_date", "slot", "language", name="uq_news_runs_topic_date_slot_lang"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     topic_key: Mapped[str] = mapped_column(String(300))
     run_date: Mapped[date] = mapped_column(Date)
     slot: Mapped[str] = mapped_column(String(10))
+    language: Mapped[str] = mapped_column(String(5), default="en", server_default="en")
     status: Mapped[str] = mapped_column(String(20), default="running")  # running | done | no_news | failed
     items_count: Mapped[int] = mapped_column(Integer, default=0)
     attempts: Mapped[int] = mapped_column(Integer, default=1)  # claims so far; capped by news_pipeline.MAX_ATTEMPTS

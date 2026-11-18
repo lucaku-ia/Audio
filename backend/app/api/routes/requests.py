@@ -51,11 +51,12 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
+from app.core.i18n import language_for, msg
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.episode import Block, Episode
 from app.models.feedback import Feedback
-from app.models.profile import Profile
+from app.models.profile import Language, Profile
 from app.models.request import (
     CreatedFrom, Request, RequestKind, RequestStatus, RequestVersion,
     VersionSource, VersionStatus,
@@ -108,11 +109,11 @@ class RequestDetailOut(RequestOut):
     versions: list[VersionOut]
 
 
-def _validar_raw_text(raw_text: str):
+def _validar_raw_text(raw_text: str, language: str = "en"):
     """Cheap pre-filter before spending a model call — the real safety/structuring
     gate is app.services.ai_platform.structure_request."""
     if len(raw_text.strip()) < 5:
-        raise HTTPException(400, "This request is too short to research anything from.")
+        raise HTTPException(400, msg("request_too_short", language))
 
 
 def _structured_dict(result: ai_platform.StructuredRequest) -> dict:
@@ -120,12 +121,17 @@ def _structured_dict(result: ai_platform.StructuredRequest) -> dict:
 
 
 async def _structure_or_reject(
-    db: AsyncSession, raw_text: str, customer_id: uuid.UUID, request_id: uuid.UUID | None
+    db: AsyncSession, raw_text: str, customer_id: uuid.UUID, request_id: uuid.UUID | None,
+    language: str = "en",
 ) -> dict:
-    result = await ai_platform.structure_request(db, raw_text, customer_id, request_id)
+    try:
+        result = await ai_platform.structure_request(db, raw_text, customer_id, request_id, language=language)
+    except ai_platform.BudgetExceededError:
+        await db.commit()  # keep the budget_exceeded event; app.main turns the error into a 429
+        raise
     if result.rejected:
         await db.commit()  # persist the AICall log even though the request is rejected — PRD: every call is logged
-        raise HTTPException(400, result.rejected_reason or "This request can't be researched as written.")
+        raise HTTPException(400, result.rejected_reason or msg("request_not_researchable", language))
     return _structured_dict(result)
 
 
@@ -147,8 +153,8 @@ async def crear_request(
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
-    _validar_raw_text(body.raw_text)
-    structured = await _structure_or_reject(db, body.raw_text, cliente.id, None)
+    _validar_raw_text(body.raw_text, language_for(cliente))
+    structured = await _structure_or_reject(db, body.raw_text, cliente.id, None, language_for(cliente))
 
     req = Request(
         customer_id=cliente.id,
@@ -276,9 +282,9 @@ async def editar_request(
     db: AsyncSession = Depends(get_db),
 ):
     """Direct edit — applies immediately (unlike refine(), which applies on the next generation)."""
-    _validar_raw_text(body.raw_text)
+    _validar_raw_text(body.raw_text, language_for(cliente))
     req = await _obtener_request_del_cliente(db, request_id, cliente)
-    structured = await _structure_or_reject(db, body.raw_text, cliente.id, req.id)
+    structured = await _structure_or_reject(db, body.raw_text, cliente.id, req.id, language_for(cliente))
 
     if req.current_version_id:
         anterior = await db.get(RequestVersion, req.current_version_id)
@@ -354,10 +360,14 @@ async def refinar_request(
     if not block:
         raise HTTPException(404, "Block not found for this request/episode")
 
-    refined = await ai_platform.refine_request(
-        db, req.raw_text, req.structured, body.intent, block.summary, block.script,
-        cliente.id, req.id,
-    )
+    try:
+        refined = await ai_platform.refine_request(
+            db, req.raw_text, req.structured, body.intent, block.summary, block.script,
+            cliente.id, req.id,
+        )
+    except ai_platform.BudgetExceededError:
+        await db.commit()  # keep the budget_exceeded event; app.main turns the error into a 429
+        raise
     structured = {"topic": refined.topic, "scope": refined.scope, "geography": refined.geography, "depth": refined.depth}
 
     if req.pending_version_id:
@@ -378,7 +388,7 @@ async def refinar_request(
 
     req.pending_version_id = nueva_version.id
     await db.commit()
-    return RefineResponse(pending_version_id=str(nueva_version.id))
+    return RefineResponse(pending_version_id=str(nueva_version.id), message=msg("refine_applied", cliente))
 
 
 async def _disown_feedback_pause(db: AsyncSession, cliente: Cliente, request_id: uuid.UUID) -> None:
@@ -503,7 +513,7 @@ async def calificar_episodio(
     perfil_result = await db.execute(select(Profile).where(Profile.customer_id == cliente.id))
     perfil = perfil_result.scalar_one_or_none()
     if not perfil:
-        perfil = Profile(customer_id=cliente.id)
+        perfil = Profile(customer_id=cliente.id, language=Language(language_for(cliente)))
         db.add(perfil)
         await db.flush()
 

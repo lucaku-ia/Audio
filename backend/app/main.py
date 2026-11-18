@@ -5,6 +5,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
+from app.core.errors import CodedHTTPException
+from app.core.i18n import DEFAULT_LANGUAGE, language_from_accept_header, msg
 from app.db.session import engine, Base, AsyncSessionLocal
 from app.db.migraciones import ejecutar_migraciones
 # Import every model so create_all() sees them
@@ -13,7 +15,7 @@ from app.models import (
     source_catalogue, findings_cache, news, feedback,
 )  # noqa: F401
 from app.services.ai_platform import (
-    ModelUnavailable,
+    ModelUnavailable, BudgetExceededError, AIKillSwitchError,
     STRUCTURE_REQUEST_SYSTEM, STRUCTURE_REQUEST_VERSION,
     RESEARCH_TOPIC_SYSTEM, RESEARCH_TOPIC_VERSION,
     WRITE_BLOCK_SYSTEM, WRITE_BLOCK_VERSION,
@@ -93,6 +95,22 @@ app.include_router(history_routes.router, prefix="/api")
 app.include_router(feedback_routes.router, prefix="/api")
 
 
+@app.exception_handler(CodedHTTPException)
+async def coded_http_exception(request: Request, exc: CodedHTTPException):
+    """Same body as FastAPI's default ({"detail": <string>}) plus a top-level `code`."""
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "message": exc.detail, "code": exc.code})
+
+
+def _request_language(request: Request) -> str:
+    """The caller's language: the authenticated customer's setting when the auth
+    dependency ran (request.state.language), else the Accept-Language header, else the default."""
+    if request is None:
+        return DEFAULT_LANGUAGE
+    return (getattr(request.state, "language", None)
+            or language_from_accept_header(request.headers.get("accept-language"))
+            or DEFAULT_LANGUAGE)
+
+
 @app.exception_handler(ModelUnavailable)
 async def model_unavailable(request: Request, exc: ModelUnavailable):
     """
@@ -106,9 +124,31 @@ async def model_unavailable(request: Request, exc: ModelUnavailable):
     deliberately not in the response, because it is a provider's internal
     error string and means nothing to the person reading it.
     """
+    text = msg("model_unavailable", _request_language(request))
     return JSONResponse(
         status_code=503,
-        content={"detail": "I could not reach the model just now. Try that again in a moment."},
+        content={"detail": text, "message": text, "code": "model_unavailable"},
+    )
+
+
+@app.exception_handler(BudgetExceededError)
+async def budget_exceeded(request: Request, exc: BudgetExceededError):
+    """Daily AI spend limit reached (per-customer or global): a clean 429 with
+    a short message and a stable `code`, never a 500."""
+    text = msg("budget_exceeded", _request_language(request))
+    return JSONResponse(
+        status_code=429,
+        content={"detail": text, "message": text, "code": "budget_exceeded"},
+        headers={"Retry-After": "3600"},
+    )
+
+
+@app.exception_handler(AIKillSwitchError)
+async def ai_paused(request: Request, exc: AIKillSwitchError):
+    text = msg("ai_paused", _request_language(request))
+    return JSONResponse(
+        status_code=503,
+        content={"detail": text, "message": text, "code": "ai_paused"},
     )
 
 

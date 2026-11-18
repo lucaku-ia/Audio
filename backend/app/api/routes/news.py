@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_cliente
+from app.core.i18n import language_for, other_language
 from app.db.session import get_db
 from app.models.cliente import Cliente
 from app.models.news import NewsItem, NewsReadState
@@ -56,11 +57,17 @@ class NewsItemOut(BaseModel):
     slot: str
     cluster_id: str | None
     read: bool
+    language: str = "en"  # the language this item is written in ("es" | "en")
 
 
 class NewsListOut(BaseModel):
     items: list[NewsItemOut]
     next_cursor: str | None
+    # Language of the items in this response. It is the caller's language
+    # (Cliente.idioma) unless nothing exists in it yet, in which case the other
+    # language is served and `language_fallback` is true (additive fields).
+    language: str = "en"
+    language_fallback: bool = False
     # True when the caller follows nothing that matches any item in the window
     # (items is then empty unless scope=all): the app falls back to scope=all.
     no_follow_match: bool
@@ -86,7 +93,7 @@ def _out(item: NewsItem, read_at, tz: tzinfo = timezone.utc) -> NewsItemOut:
         image_hint=item.image_hint, published_at=published, day=published.astimezone(tz).date(),
         read_minutes=max(1, -(-len(item.body.split()) // 200)),
         slot=item.slot, cluster_id=str(item.cluster_id) if item.cluster_id else None,
-        read=read_at is not None,
+        read=read_at is not None, language=item.language or "en",
     )
 
 
@@ -117,10 +124,10 @@ def _follow_filter(keys: set[str], cats: set[str]):
     return or_(*clauses) if clauses else None
 
 
-async def _visible_filters(db: AsyncSession, cliente: Cliente, scope: str):
-    """(where-clauses, no_follow_match, keys, cats) for the caller's feed."""
+async def _visible_filters(db: AsyncSession, cliente: Cliente, scope: str, language: str):
+    """(where-clauses, no_follow_match, keys, cats) for the caller's feed in one language."""
     keys, cats = await followed_topics_for(db, cliente.id)
-    base = [NewsItem.published_at >= _window_start()]
+    base = [NewsItem.published_at >= _window_start(), NewsItem.language == language]
     follow = _follow_filter(keys, cats)
     matched = 0
     if follow is not None:
@@ -132,6 +139,32 @@ async def _visible_filters(db: AsyncSession, cliente: Cliente, scope: str):
         # Impossible clause: an empty list plus the explicit flag.
         return base + [NewsItem.id.is_(None)], True, keys, cats
     return base + [follow], False, keys, cats
+
+
+async def _resolve_feed(db: AsyncSession, cliente: Cliente, scope: str):
+    """(where, no_follow_match, keys, cats, served_language, fallback).
+
+    The caller's own language wins. Only when it has nothing visible for this
+    scope (no item matches what they follow, or none at all for scope=all) and the
+    other language does, that language is served and fallback is True."""
+    preferred = language_for(cliente)
+    first = await _visible_filters(db, cliente, scope, preferred)
+    where, no_match = first[0], first[1]
+    if scope == "all":
+        has_items = (await db.execute(select(func.count()).select_from(NewsItem).where(*where))).scalar_one() > 0
+    else:
+        has_items = not no_match
+    if has_items:
+        return (*first, preferred, False)
+    alt = other_language(preferred)
+    second = await _visible_filters(db, cliente, scope, alt)
+    if scope == "all":
+        alt_has = (await db.execute(select(func.count()).select_from(NewsItem).where(*second[0]))).scalar_one() > 0
+    else:
+        alt_has = not second[1]
+    if alt_has:
+        return (*second, alt, True)
+    return (*first, preferred, False)
 
 
 @router.get("", response_model=NewsListOut)
@@ -153,7 +186,7 @@ async def fetch_news_page(
     tz_offset_minutes: int | None = None, cursor: str | None = None, limit: int = 30,
 ) -> NewsListOut:
     """The news feed query behind GET /news (also reused by GET /home for page 1)."""
-    where, no_match, keys, cats = await _visible_filters(db, cliente, scope)
+    where, no_match, keys, cats, served, fallback = await _resolve_feed(db, cliente, scope)
     tz = await _caller_tz(db, cliente, tz_offset_minutes)
     if day is not None:
         start = datetime(day.year, day.month, day.day, tzinfo=tz).astimezone(timezone.utc)
@@ -174,6 +207,7 @@ async def fetch_news_page(
     return NewsListOut(
         items=[_out(item, read_at, tz) for item, read_at in page],
         next_cursor=_encode_cursor(page[-1][0]) if len(rows) > limit and page else None,
+        language=served, language_fallback=fallback,
         no_follow_match=no_match,
         followed_topics=sorted(keys),
         followed_categories=sorted(cats),
@@ -186,10 +220,10 @@ async def read_all(
     cliente: Cliente = Depends(get_current_cliente),
     db: AsyncSession = Depends(get_db),
 ):
-    where, no_match, _, _ = await _visible_filters(db, cliente, scope)
+    where, no_match, _, _, _, _ = await _resolve_feed(db, cliente, scope)
     if no_match and scope != "all":
         # Mirrors the app: with nothing matching, "the feed" is everything.
-        where, _, _, _ = await _visible_filters(db, cliente, "all")
+        where, _, _, _, _, _ = await _resolve_feed(db, cliente, "all")
     already = select(NewsReadState.news_id).where(NewsReadState.cliente_id == cliente.id)
     ids = (await db.execute(select(NewsItem.id).where(*where, NewsItem.id.not_in(already)))).scalars().all()
     if ids:

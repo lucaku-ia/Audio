@@ -848,6 +848,64 @@ news"`, `"Resumen diario de IA..."`). That follows the backend's default languag
 setting and is not a bug, but nobody has explicitly decided whether Spanish-by-default
 is the intended behaviour for all customers.
 
+## AI budgets and kill switch
+
+Every paid call (Anthropic and ElevenLabs) goes through one guard,
+`ai_platform.guard_paid_call`, **before** money is spent. `AICall.cost` is the only
+ledger: the guard sums today's (UTC day) `AICall` rows for the customer.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `AI_GLOBAL_KILL_SWITCH` | off | `true`/`1`/`yes`/`on` refuses every paid call, news included |
+| `AI_DAILY_BUDGET_PER_CUSTOMER_USD` | `1.50` | per account per UTC day; `0` disables |
+| `AI_DAILY_BUDGET_GLOBAL_USD` | `0` (off) | total across all accounts per UTC day; refuses customer calls only |
+
+All three are read from the environment on every call, so changing one needs no code
+change. News calls (`customer_id` None or the zero-UUID sentinel) are governed by
+`NEWS_DAILY_COST_CEILING_USD`, not the per-customer budget, but they do obey the kill
+switch.
+
+**Why 1.50.** A measured single-request episode is about $0.58 ($0.43 research, $0.15
+voicing); a research+write block is roughly $0.11 and ElevenLabs about $0.18/1k chars,
+so a customer with several requests lands around $0.6 to $1.0 a day. 1.50 leaves room for
+one extra regeneration or a few one-off requests, and still caps a runaway loop at about
+2.5 episodes. (The old per-job empty-day retry cap alone could reach about $1.74.)
+The check is "spent so far >= budget", so a run that starts under the limit may finish
+slightly over it; it is a brake, not an exact meter.
+
+**What happens when a call is refused**
+- `BudgetExceededError` (code `budget_exceeded`) or `AIKillSwitchError` (code
+  `ai_paused`). A `budget_exceeded` event is emitted (scope, purpose, spent_usd,
+  limit_usd; no free text).
+- HTTP routes: budget returns `429` `{"detail": ..., "code": "budget_exceeded"}`; the
+  kill switch returns `503` with `"code": "ai_paused"`.
+- Episode generation: the job ends `failed` with `stages = [{"error": code, "code": code}]`
+  (no exception text). `POST /generation/run` additionally returns an additive
+  `failure_code`. Home still shows the existing `making` state (it never exposes
+  `failed`). Nothing retries in a loop: the failed job is returned as is until the guard
+  would allow it (switch flipped back, limit raised), then it re-runs in place, bounded
+  by the per-day retry cap. A job that already has scripts and only failed in voicing is
+  re-voiced instead of re-researched.
+
+**Known limits (by design)**
+- The check is not atomic: it reads today's spend, then the call happens. Concurrent
+  calls for one customer can each pass and overshoot, bounded by the calls in flight.
+- The day boundary is UTC. A customer far from UTC sees the budget reset mid-afternoon
+  or evening local time, not at their midnight.
+- Shared research is booked to whoever misses the findings cache: that customer's
+  budget carries the research cost, and later customers get cache hits at zero cost.
+- `AICall` rows are added to the work session as usual. When generation, a news run or
+  `_mark_answered` rolls back, the discarded rows are re-inserted right after the
+  rollback (`ai_platform.rescue_ai_rows`, best effort, never masks the original
+  failure), so a failed run still counts toward the budget. Other routes that roll back
+  (for example a failed `POST /requests`) do not rescue.
+
+**Flipping the switch in Railway.** Service `Audio` -> Variables -> add
+`AI_GLOBAL_KILL_SWITCH` = `true` -> Deploy (Railway restarts the service with the new
+variable; no code change). Set it to `false` or delete it to resume. To change a limit,
+edit `AI_DAILY_BUDGET_PER_CUSTOMER_USD` the same way. Look for `budget_exceeded` in the
+`events` table (or the Instrumentation dashboard) to see who is hitting the limit.
+
 ## What an episode costs, and the model routing that changed it
 
 Measured against production on 2026-09-24, then re-costed after routing.
@@ -1315,6 +1373,22 @@ Persists the iOS "Useful / Not quite" ratings (T-402). Code: `app/models/feedbac
 
 **Generation wiring (minimal)**: `stop_topic` on a story pauses that story's request (status `paused`, same as the pause endpoint); toggling the feedback off or changing it resumes it only if feedback itself paused it. Nothing else changes generation, and no prompts were touched. **Follow-ups**: `too_long`/`too_short` could nudge `profiles.max_length_minutes` or a per-request depth hint, `not_relevant`/`needs_more_detail` could steer the request `structured.depth`, and news `stop_topic` could unfollow the topic; for now they are only stored in `feedback_signals` for the generator to read. Events: `feedback_submitted` (target_type, rating, reasons, has_suggestion, action created|updated|removed; never free text) and `problem_reported`.
 
+## Audio capsules (Phase 1a)
+
+Design: `docs/capsules-design.md` (rev 3, branch `docs/capsules-design`). Phase 1a is backend only and invisible to the shipped iOS build: `Episode.audio_url` is still one concatenated mp3, `blocks[]` still carries `start_s`/`end_s`, job statuses, Home banner states and `search.py`'s `ready iff audio_url` are unchanged.
+
+- **A capsule is a `Block` with its own audio.** New columns: `blocks.audio_url`, `duration_s` (REAL length), `audio_status` (`pending|voiced|failed|blocked`; NULL = legacy row, counts as delivered), `voice_attempts`, `sequence`, and `episodes.playlist_version` (1 legacy, 2 built from capsules). All are in `COLUMNAS_ESPERADAS` with defaults safe for existing rows. Capsule files are `/media/capsule-<random uuid>.mp3`, never derived from user data. `word_timestamps` are capsule-relative, as before.
+- **Failure isolation.** Each block is voiced separately (`app/services/capsules.py`). A failure marks only that capsule `failed` after `VOICE_MAX_ATTEMPTS` (3) tries with exponential backoff; the others stay voiced. The job stays `voicing` until the concatenated file exists, then `ready`; it fails only if no capsule could be voiced. Lifetime cap per capsule: `VOICE_MAX_TOTAL_ATTEMPTS` (6). Job-level re-voice (`_revoice_failed_job`) now voices only unvoiced capsules and is capped (`_MAX_REVOICE_ROUNDS`).
+- **Concatenation.** Only voiced capsules go into the legacy file; `start_s`/`end_s` come from real durations (mp3 frame walk, else last word-alignment end, else 128 kbps byte estimate, else 150 wpm). The file and `audio_url` are written once with `published_at`, never rewritten. A capsule that fails keeps a zero-length span and is hidden from legacy `blocks[]`, Home banner blocks and search block matches.
+- **Atomic claim.** Before every paid call a capsule is claimed with `UPDATE blocks SET audio_status='voicing', voice_attempts=voice_attempts+1, voicing_started_at=now WHERE <claimable> RETURNING`, committed before the provider is contacted, so overlapping requests/scheduler ticks never pay twice (`blocks.voicing_started_at` is the lease; a claim older than `VOICE_LEASE_S` is reclaimable). Job-level re-voice claims the failed job the same way. `voicing` capsules are hidden from legacy surfaces and are not "delivered".
+- **Retry policy.** 4xx (except 408/409/425/429) is not retried; two consecutive capsules that exhaust their tries end the pass; a timeout writes an estimated-cost `AICall` row so the budget sees possibly-billed calls.
+- **Late retry (flag, default OFF).** `CAPSULE_LATE_REVOICE_ENABLED=1` lets a failed/blocked capsule of a published episode get one more try per `run_generation` poll (one capsule per call, backoff `LATE_REVOICE_BACKOFF_S` x tries, lifetime cap, only while the guard allows). It gets its own audio (playlist only); the published file is untouched. A late capsule is outside the file the shipped client plays, so it is never marked answered/told. Keep it OFF until the Phase 1b iOS client ships.
+- **Budget.** Every capsule goes through `ai_platform.synthesize`, which calls `guard_paid_call`. A refusal marks the current and remaining capsules `blocked` (not an attempt, no retry loop); capsules already voiced still publish. Nothing voiced means the existing failed job with the stable `budget_exceeded`/`ai_paused` code.
+- **Continuity.** `told_log` counts only legacy (NULL) or `voiced` blocks. One-off requests are marked fulfilled (and `request_answered` emitted) only when their capsule is delivered.
+- **New endpoint** `GET /api/generation/episodes/{id}/playlist` (own episodes only, 404 otherwise, works before publish): `{episode_id, playlist_version, published, audio_url, items:[{block_id, request_id, sequence, title, summary, duration_s, audio_url, audio_status, start_s, end_s}]}`. `audio_status` also has `legacy` (audio only inside the episode file). `start_s`/`end_s` are null for capsules not in the concatenated file. `GET /episodes/{id}` only gains `playlist_version`.
+- **Not in 1a:** the 3 h research-age rule (design 3.1), `episode_items`, intro/transitions, priority ordering, `POST /blocks/{id}/voice`, retention of per-capsule files, deleting media files on account deletion.
+- **Tests:** `backend/tests/test_capsules.py`, `test_capsule_migration.py` (fakes only; the migration test drops the new columns from a legacy-populated DB and runs `ejecutar_migraciones`). Still manual: real mp3 concatenation drift and real ElevenLabs durations.
+
 ## Suggested next steps
 
 **Status as of 2026-11-11, after the autonomous backend session.** Everything
@@ -1660,3 +1734,76 @@ is what to keep.
 Two traps when reading a string diff: Material Symbols icon names
 (`ios_share`, `fast_forward`, `content_copy`) never match because the app uses SF
 Symbols, and Swift escapes (`\u{00D7}` for ×) hide literals that are really there.
+
+## Language (es/en)
+
+**Decision:** one language setting per customer drives the app UI, the audio voice,
+the episode script, the news and every server-originated message. Both `es` and
+`en` are offered for everything. (A separate audio language may come later; the
+old "UI is English only" rule is superseded.)
+
+### Audit (before this change)
+- `Cliente.idioma` (default `es`, signup accepts `es|en`) was the source of truth; `Profile.language`
+  mirrored it and `PATCH /profile` wrote both. The generator read `Profile.language`, others read `Cliente.idioma`.
+- Onboarding labels and seed suggestions already followed `idioma` (`onboarding_seeds.json` has `_es/_en`).
+- Episode scripts: `write_block(language)` was already language-aware; research is English and shared by design.
+- **Hardcoded / inconsistent:** news was English only (`write_news_items(language="en")`, no `language` column,
+  `NewsRun` key had no language); shared inventory (Home samples) was always generated by an `es` system customer,
+  so English users saw Spanish samples; `Profile.voice_id` was free text, never validated, and the app sends logical ids
+  ("valentina") that ElevenLabs does not know; the ElevenLabs default voice ignored language; English-only server texts:
+  429 `budget_exceeded`, 503 `ai_paused`, model-unavailable 503, Profile PATCH "applies from next episode" messages,
+  onboarding confirm message, Home suggestion `reason` ("Because you follow", "Explore"), refine "Applied from tomorrow.",
+  request validation errors, `structure_request` `rejected_reason` (model text). Feedback reasons are codes (language-neutral).
+- No intro/outro/transition scripts exist yet (only durations); when added they must use `language_for` + the catalog.
+- `eleven_multilingual_v2` speaks both languages, so no model change is needed.
+
+### Server design
+- `app/core/i18n.py`: `language_for(cliente | profile | str)` -> `"es"|"en"` (default `es`, allowlist, region suffix tolerated),
+  `validate_language`, and the message catalog `msg(code, language, **fmt)` (es/en).
+  `Cliente.idioma` is the single source of truth; `PATCH /profile` updates it and `Profile.language` together.
+- **News per language.** `news_items.language` and `news_runs.language` (migrated, default `en` for existing rows);
+  run key is `(topic_key, date, slot, language)`. The scheduler writes only the languages that have followers of the
+  topic; research is called **once per topic** whatever the languages (only the cheap write step runs per language).
+  Internal `POST /internal/news/run?languages=en,es`.
+- **Voices.** `app/core/voices.py`: allowlist per language, logical keys (`valentina`, `andres`; English keys are
+  PLACEHOLDERS `en_voice_female_1`, `en_voice_male_1`). Real ElevenLabs ids come from env
+  `ELEVENLABS_VOICE_ID_<KEY>` (e.g. `ELEVENLABS_VOICE_ID_VALENTINA`); while unset the key resolves to the account's default voice
+  (previous behaviour). Profile PUT/PATCH reject other values (422 `voice_not_allowed`), except `null` and the value already stored.
+- **Shared inventory.** English samples: `POST /internal/generate-shared-inventory?language=en` (seeds have `seed_request_text_en`).
+
+### Contract for the iOS developer
+- **Switch language:** `PATCH /api/profile {"language": "es"|"en"}` (422 on anything else). Effect is immediate for news,
+  messages and onboarding text; episodes from the next generation. If the stored voice belongs to the other language it is reset
+  to `null` (default of the new language) and a message says so. `GET /api/auth/me` and `GET /api/profile` return the language.
+- **Voices:** `GET/PUT/PATCH /api/profile` now include `available_voices: [{id,label,detail,language}]` for the customer's language;
+  send one of those `id`s as `voice_id` (or null). Do not send free text.
+- **News:** `GET /api/news` and `GET /api/home` (`news`) return items in the caller's language. Additive fields: `language`
+  (language of the items served) and `language_fallback` (true = nothing exists yet in the caller's language, the other one is served);
+  each item has `language`. Single-item `GET /api/news/{id}` returns the item as stored.
+- **Home samples** (`shared_inventory`, `explore`): the caller's language when available, else any; each has `language`;
+  `reason` is localized server-side.
+- **Server-localized (es/en by customer language):** `detail` + new `message` on 429 `budget_exceeded`, 503 `ai_paused`,
+  503 `model_unavailable` (new `code`); `failure_message` next to `failure_code` on jobs; `PATCH /profile` `messages`;
+  onboarding `POST /onboarding/confirm` `message`; onboarding interest labels/suggestions; request "too short" and refine message;
+  Home `reason`. Unauthenticated errors use the `Accept-Language` header, else `es`.
+- **Client-side (iOS must localize):** all static UI strings, weekday/date formatting, enum/code labels (`state`, `style`,
+  feedback reasons, news categories, `failure_code`), the voice `label` fallback, plain 4xx `detail` texts not listed above
+  (404s, validation), and user-written request text (stays as typed).
+- Episode/news content: scripts and news are written in the customer's language; research sources stay in whatever language they publish.
+
+### Open questions for the founder
+Real ElevenLabs voice ids/names for both languages; whether existing English-only news should be kept for Spanish users
+(today it is served as a flagged fallback until Spanish items exist); whether to generate English shared inventory now (extra cost per tag per day);
+when to split audio language from UI language.
+
+### Language (es/en): review follow-ups
+- **Voice validation is transitional.** `PUT/PATCH /profile` accept a catalogue key of EITHER language (the shipped iOS picker hardcodes
+  `valentina`/`andres` and a free-text field exists); a key of the other language is mapped to the customer's language default at
+  synthesis. Unknown values get 422 with a plain-string `detail` plus top-level `code: "voice_not_allowed"` (and `message`). Tighten
+  once iOS builds its picker from `available_voices`.
+- **Before release set the voice env vars:** `ELEVENLABS_VOICE_ID_VALENTINA`, `..._ANDRES`, `..._EN_VOICE_FEMALE_1`, `..._EN_VOICE_MALE_1`.
+  Until then all voices sound the same (account default). English placeholders are hidden from `available_voices` until their id is set
+  (an English customer then sees the Spanish pair, each entry carrying `language`).
+- `Cliente.idioma` always wins: `GET/PUT/PATCH /profile` report `language` from it and repair a drifted `Profile.language`.
+- News runs are per language: one language failing marks only its own run failed; the others are kept.
+- iOS follow-up (pre-existing): onboarding does not persist the chosen voice (`selectedVoice` is display-only); it should send `voice_id` via PUT/PATCH /profile.

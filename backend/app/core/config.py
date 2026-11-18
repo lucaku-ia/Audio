@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # audio still resolves without extra config; override via env if that changes.
     PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "https://audio-production-2a77.up.railway.app")
 
+    # Audio capsules: whether a failed capsule of an already-published episode
+    # is voiced again later. OFF until the Phase 1b iOS client can play the
+    # per-capsule audio (the shipped client only plays the concatenated file,
+    # so a late capsule would be paid for and never heard).
+    CAPSULE_LATE_REVOICE_ENABLED: bool = os.getenv("CAPSULE_LATE_REVOICE_ENABLED", "").strip().lower() in ("1", "true", "yes")
+
     # Shared-secret gate for internal-only endpoints — the founder/ops-only
     # Instrumentation dashboard (app/api/routes/instrumentation.py) and the AI
     # Platform prompt registry's GET /api/internal/prompts both use this same
@@ -44,3 +50,36 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# AI spend guards (see README "AI budgets and kill switch"). Deliberately plain
+# functions reading os.environ on EVERY call, not Settings fields: Settings is
+# built once at import, and the point of the kill switch is that flipping a
+# Railway variable takes effect on the next model call without a redeploy.
+DEFAULT_AI_DAILY_BUDGET_PER_CUSTOMER_USD = 1.50
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default  # a typo in an env var must not take the guard down
+    return value if value >= 0 else default
+
+
+def ai_kill_switch_on() -> bool:
+    """AI_GLOBAL_KILL_SWITCH: true/1/yes/on refuses every paid model call."""
+    return os.getenv("AI_GLOBAL_KILL_SWITCH", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def ai_daily_budget_per_customer_usd() -> float:
+    """Per account, per UTC day. 0 disables the per-customer check."""
+    return _env_float("AI_DAILY_BUDGET_PER_CUSTOMER_USD", DEFAULT_AI_DAILY_BUDGET_PER_CUSTOMER_USD)
+
+
+def ai_daily_budget_global_usd() -> float:
+    """Total across all accounts, per UTC day. 0 (default) disables it."""
+    return _env_float("AI_DAILY_BUDGET_GLOBAL_USD", 0.0)

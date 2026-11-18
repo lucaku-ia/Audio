@@ -46,6 +46,26 @@ COLUMNAS_ESPERADAS: list[tuple[str, str, str]] = [
     ("clientes", "token_version", "INTEGER DEFAULT 0"),
     ("blocks", "word_timestamps", "JSON"),
     ("generation_jobs", "retry_count", "INTEGER DEFAULT 0"),
+    # Audio capsules, Phase 1a. audio_url/duration_s/audio_status stay NULL for
+    # existing rows (NULL status = legacy, counts as delivered).
+    ("blocks", "audio_url", "VARCHAR(1000)"),
+    ("blocks", "duration_s", "INTEGER"),
+    ("blocks", "audio_status", "VARCHAR(20)"),
+    ("blocks", "voice_attempts", "INTEGER DEFAULT 0"),
+    ("blocks", "sequence", "INTEGER DEFAULT 0"),
+    ("blocks", "voicing_started_at", "TIMESTAMPTZ"),
+    ("episodes", "playlist_version", "INTEGER DEFAULT 1"),
+    # Bilingual news: rows that predate the column were written in English.
+    ("news_items", "language", "VARCHAR(5) NOT NULL DEFAULT 'en'"),
+    ("news_runs", "language", "VARCHAR(5) NOT NULL DEFAULT 'en'"),
+]
+
+# (table, constraint name, replacement index name): the constraint is dropped
+# AFTER the indexes are created, and only if the replacement index exists.
+# news_runs' old unique key (topic_key, run_date, slot) is replaced by one
+# that includes language.
+CONSTRAINTS_A_ELIMINAR: list[tuple[str, str, str]] = [
+    ("news_runs", "uq_news_runs_topic_date_slot", "uq_news_runs_topic_date_slot_lang"),
 ]
 
 # (table, index name, "CREATE [UNIQUE] INDEX ... ON ..." statement, without "IF NOT EXISTS")
@@ -59,6 +79,12 @@ INDICES_ESPERADOS: list[tuple[str, str, str]] = [
     # GIN indexes over the exact `to_tsvector('simple', ...)` expression the
     # search queries use in app/api/routes/search.py — the expression must
     # match verbatim for Postgres to use the index instead of a seq scan.
+    (
+        "news_runs",
+        "uq_news_runs_topic_date_slot_lang",
+        "CREATE UNIQUE INDEX uq_news_runs_topic_date_slot_lang "
+        "ON news_runs (topic_key, run_date, slot, language)",
+    ),
     (
         "episodes",
         "ix_episodes_headline_fts",
@@ -151,3 +177,9 @@ async def ejecutar_migraciones(engine: AsyncEngine):
                 # docstring. The app runs without this index's guarantee until the
                 # next successful deploy retries it.
                 logger.exception("Failed to add index %s on %s — continuing without it", indice, tabla)
+
+        # Retire an old constraint only once its replacement index exists, so a failed
+        # build above can never leave the table without uniqueness (_claim_run relies on it).
+        for tabla, constraint, reemplazo in CONSTRAINTS_A_ELIMINAR:
+            if await _tabla_existe(conn, tabla) and await _indice_existe(conn, tabla, reemplazo):
+                await conn.execute(text(f"ALTER TABLE {tabla} DROP CONSTRAINT IF EXISTS {constraint}"))

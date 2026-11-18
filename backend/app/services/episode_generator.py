@@ -199,24 +199,29 @@ FROM ai_calls WHERE ...` scoped by customer_id/purpose/timestamp, which
 would be a lossy heuristic if a customer has two jobs running concurrently
 or two stages complete in the same wall-clock second.
 """
+import logging
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.requests import active_for_generation
 from app.core.config import settings
+from app.core.i18n import language_for
+from app.core.voices import resolve_voice
 from app.models.cliente import AuthProvider, Cliente
 from app.models.episode import Block, Episode, EpisodePath
 from app.models.generation_job import GenerationJob, InventoryItem, JobStatus
 from app.models.profile import Profile
 from app.models.request import CreatedFrom, Request, RequestKind, RequestStatus, RequestVersion, VersionStatus
-from app.services import ai_platform, told_log
+from app.services import ai_platform, capsules, told_log
 from app.services.events import emitir
+
+logger = logging.getLogger(__name__)
 
 _WORDS_PER_MINUTE = 150  # rough narration rate, used only to estimate duration/offsets pre-TTS
 _INTRO_OUTRO_SECONDS = 15
@@ -259,8 +264,10 @@ _MAX_EMPTY_RETRIES_PER_DAY = 2
 SHARED_INVENTORY_EMAIL_DOMAIN = "system.lucaku.internal"
 
 
-def shared_inventory_email(tag: str) -> str:
-    return f"shared-inventory+{tag}@{SHARED_INVENTORY_EMAIL_DOMAIN}"
+def shared_inventory_email(tag: str, language: str = "es") -> str:
+    # Spanish keeps the original address (existing rows); other languages get their own account.
+    suffix = "" if language_for(language) == "es" else f"-{language_for(language)}"
+    return f"shared-inventory+{tag}{suffix}@{SHARED_INVENTORY_EMAIL_DOMAIN}"
 
 
 def _seconds_for_script(script: str) -> float:
@@ -421,6 +428,54 @@ async def _promote_pending_version(db: AsyncSession, req: Request) -> None:
     req.pending_version_id = None
 
 
+def _failure_reason(exc: Exception) -> str:
+    """What goes into job.stages for a failure. A spend-guard refusal records
+    its stable, user-safe code ("budget_exceeded" / "ai_paused") instead of an
+    exception string."""
+    return exc.code if isinstance(exc, ai_platform.AIBlocked) else str(exc)
+
+
+def _failure_stage(exc: Exception, **extra) -> dict:
+    stage = {"error": _failure_reason(exc), **extra}
+    if isinstance(exc, ai_platform.AIBlocked):
+        stage["code"] = exc.code
+    return stage
+
+
+_BLOCKED_CODES = ("budget_exceeded", "ai_paused")
+
+
+def last_failure_code(stages) -> str | None:
+    """Stable code of the LAST failing stage only (a stage carrying "error").
+    An older blocked code must not outlive a later, different failure."""
+    for st in reversed(stages or []):
+        if isinstance(st, dict) and st.get("error"):
+            return st.get("code")
+    return None
+# Job-level re-voice rounds (a job that voiced NOTHING and is `failed`).
+_MAX_REVOICE_ROUNDS = 3
+
+
+async def _blocked_job_can_retry(db: AsyncSession, customer_id: uuid.UUID, job: GenerationJob) -> bool:
+    """
+    A job that failed ONLY because the spend guard refused it (daily budget or
+    kill switch) may be re-run in place once the guard would now let it
+    through: the switch was flipped back, the limit raised, or (via a new
+    customer-local day) the budget window moved. Never while the guard still
+    refuses, so repeated polling cannot loop or spend; bounded by the same
+    per-day retry cap as empty days.
+    """
+    if job.status != JobStatus.failed or job.retry_count >= _MAX_EMPTY_RETRIES_PER_DAY:
+        return False
+    if last_failure_code(job.stages) not in _BLOCKED_CODES:
+        return False
+    try:
+        await ai_platform.guard_paid_call(db, customer_id, "generation_precheck", emit=False)
+    except ai_platform.AIBlocked:
+        return False
+    return True
+
+
 async def _empty_job_can_retry(db: AsyncSession, customer_id: uuid.UUID, job: GenerationJob) -> bool:
     """
     Defect 2 fix: a same-day job that ended in terminal `empty` ("no news
@@ -485,33 +540,127 @@ async def _synthesize_episode(
     was billed, and has AICall rows — losing it would understate the cost of a
     failed run.
     """
-    spent = 0.0
-    audio_parts: list[bytes] = []
-    try:
-        for block in block_rows:
-            audio_bytes_part, call_cost, word_timestamps = await ai_platform.synthesize(
-                db, block.script, voice_id, customer_id=cliente.id,
-                request_id=block.request_id, episode_id=episode.id,
-            )
-            audio_parts.append(audio_bytes_part)
-            spent += call_cost
-            # Timestamps are relative to this block's OWN synthesized audio
-            # (0.0 = the first word of block.script), not to the assembled
-            # episode timeline — the Player must add block.start_s itself when
-            # mapping episode playhead position -> word to highlight, the same
-            # way it already uses block.start_s/end_s today.
-            block.word_timestamps = word_timestamps
-    except Exception as exc:
-        # Carry the partial spend out with the exception so the caller can
-        # record what a failed attempt actually cost.
-        exc.voicing_cost = spent  # type: ignore[attr-defined]
-        raise
+    # Phase 1a (audio capsules): each block is voiced on its own with failure
+    # isolation, so this raises ONLY when no capsule at all could be voiced
+    # (the job then fails exactly as before, with the stable budget code when
+    # the guard refused). Otherwise the concatenated file is built from the
+    # voiced capsules and the episode publishes. Word timestamps are
+    # capsule-relative (0.0 = first word of that block's own audio).
+    cliente_id = cliente.id
+    # Logical voice key -> ElevenLabs id, in the language the scripts were written in.
+    voice_id = resolve_voice(episode.language or language_for(cliente), voice_id)
+    outcome = await capsules.voice_pending(
+        db, cliente_id=cliente_id, episode=episode, blocks=block_rows, voice_id=voice_id,
+    )
+    if not outcome.voiced:
+        # A spend-guard refusal wins over provider errors so the job failure
+        # carries the stable code (_blocked_job_can_retry keys off it).
+        exc = outcome.report_error or RuntimeError("no capsule could be voiced")
+        # Carry the partial spend out so the caller can record what the attempt cost.
+        exc.voicing_cost = outcome.spent  # type: ignore[attr-defined]
+        raise exc
+    await capsules.build_concatenated_file(db, episode, block_rows)
+    await _mark_answered(db, cliente, [b for b in block_rows if capsules.counts_as_delivered(b)])
+    return outcome.spent
 
-    settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-    (settings.MEDIA_DIR / f"{episode.id}.mp3").write_bytes(b"".join(audio_parts))
-    episode.audio_url = f"{settings.PUBLIC_BASE_URL}/media/{episode.id}.mp3"
-    episode.published_at = datetime.utcnow()  # audio exists — only now is it a real episode
-    return spent
+
+async def _mark_answered(db: AsyncSession, cliente: Cliente, blocks: list[Block]) -> None:
+    """
+    A request counts as answered only once its capsule is DELIVERED (inside the
+    episode's concatenated file, or a legacy no-TTS block) — doc 4.1. A failed
+    capsule leaves its one_off request active. Runs after the episode is
+    published and committed, so it must never fail the job: errors are logged
+    and rolled back. Idempotent: a request already answered for this episode
+    (e.g. a pre-deploy episode re-voiced post-deploy) is skipped, so
+    `request_answered` is never emitted twice.
+    """
+    blocks = [b for b in blocks if b.request_id and capsules.counts_as_delivered(b)]
+    if not blocks:
+        return
+    try:
+        reqs = {r.id: r for r in (await db.execute(
+            select(Request).where(Request.id.in_([b.request_id for b in blocks])))).scalars().all()}
+        episodes: dict[uuid.UUID, Episode | None] = {}
+        for b in blocks:
+            req = reqs.get(b.request_id)
+            if req is None:
+                continue
+            if b.episode_id not in episodes:
+                episodes[b.episode_id] = await db.get(Episode, b.episode_id)
+            ep = episodes[b.episode_id]
+            if req.fulfilled_episode_id == b.episode_id:
+                continue  # one_off already fulfilled by this episode
+            if ep is not None and req.last_answered_at is not None:
+                created = ep.creado_en if ep.creado_en.tzinfo else ep.creado_en.replace(tzinfo=timezone.utc)
+                answered = req.last_answered_at if req.last_answered_at.tzinfo \
+                    else req.last_answered_at.replace(tzinfo=timezone.utc)
+                if answered >= created:
+                    continue  # already answered at/after this episode was built
+            req.last_answered_at = datetime.now(timezone.utc)
+            if req.kind.value == "one_off":
+                req.status = RequestStatus.fulfilled
+                req.fulfilled_episode_id = b.episode_id
+            await emitir(db, "request_answered", customer_id=cliente.id, source="episode_generator",
+                         request_id=str(req.id), episode_id=str(b.episode_id), had_more=bool(b.had_more))
+        await db.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("could not mark requests answered; episode stays published")
+        await db.rollback()
+        try:
+            if await ai_platform.rescue_ai_rows(db):
+                await db.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("could not rescue AICall rows")
+            await db.rollback()
+
+
+async def _revoice_late_capsules(db: AsyncSession, cliente: Cliente, job: GenerationJob) -> None:
+    """
+    Give capsules that failed (or were blocked by the budget) in an episode that
+    already published another bounded try. Touches ONLY those blocks: the
+    concatenated file, Episode.audio_url and the other blocks' offsets are never
+    rewritten. The late capsule is therefore reachable through the playlist
+    endpoint only. One try per call, spaced by LATE_REVOICE_BACKOFF_S, capped by
+    VOICE_MAX_TOTAL_ATTEMPTS, and refused while the spend guard refuses.
+    """
+    # OFF by default: no shipped client can play a late capsule, so paying for
+    # it would buy audio nobody hears (see settings.CAPSULE_LATE_REVOICE_ENABLED).
+    if not settings.CAPSULE_LATE_REVOICE_ENABLED:
+        return
+    if job.status != JobStatus.ready or not ai_platform.elevenlabs_configured():
+        return
+    episode = (await db.execute(
+        select(Episode).where(
+            Episode.customer_id == cliente.id, Episode.fecha == job.fecha, Episode.path == job.path,
+            Episode.published_at.is_not(None),
+        ).order_by(Episode.creado_en.desc()).limit(1)
+    )).scalar_one_or_none()
+    if episode is None:
+        return
+    blocks = list((await db.execute(select(Block).where(Block.episode_id == episode.id))).scalars().all())
+    # Tight bound: at most LATE_REVOICE_PER_CALL capsules, one try each, so a
+    # POST /run on a ready job never blocks for long.
+    due = [b for b in sorted(blocks, key=capsules.sort_key)
+           if capsules.late_revoice_due(b, episode)][:capsules.LATE_REVOICE_PER_CALL]
+    if not due:
+        return
+    try:
+        await ai_platform.guard_paid_call(db, cliente.id, "generation_precheck", emit=False)
+    except ai_platform.AIBlocked:
+        return
+    perfil = await db.get(Profile, cliente.id)
+    outcome = await capsules.voice_pending(
+        db, cliente_id=cliente.id, episode=episode, blocks=due,
+        voice_id=resolve_voice(episode.language or language_for(cliente), perfil.voice_id if perfil else None),
+        max_tries=1,
+    )
+    # A late capsule is NOT marked answered / told: it is outside the file the
+    # shipped client plays (capsules.counts_as_delivered is False for it).
+    if outcome.spent or outcome.voiced:
+        job.stages = [*job.stages, {
+            "stage": "capsule_revoice", "cost": outcome.spent, "voiced": len(outcome.voiced),
+        }]
+        await db.commit()
 
 
 async def _revoice_failed_job(db: AsyncSession, cliente: Cliente, job: GenerationJob) -> bool:
@@ -544,6 +693,12 @@ async def _revoice_failed_job(db: AsyncSession, cliente: Cliente, job: Generatio
     """
     if job.status != JobStatus.failed or not ai_platform.elevenlabs_configured():
         return False
+    # Still over budget / switched off: re-voicing would only fail again (and
+    # pile up stage entries and retry_count), so leave the job as it is.
+    try:
+        await ai_platform.guard_paid_call(db, cliente.id, "generation_precheck", emit=False)
+    except ai_platform.AIBlocked:
+        return False
 
     voicing_stages = [st for st in (job.stages or []) if st.get("stage") == "voicing" and st.get("error")]
     if not voicing_stages:
@@ -563,16 +718,34 @@ async def _revoice_failed_job(db: AsyncSession, cliente: Cliente, job: Generatio
         return False
 
     block_rows = list((await db.execute(
-        select(Block).where(Block.episode_id == episode.id).order_by(Block.start_s)
+        select(Block).where(Block.episode_id == episode.id).order_by(Block.sequence, Block.start_s)
     )).scalars().all())
     if not block_rows or not any((b.script or "").strip() for b in block_rows):
+        return False
+    # Bounded: every capsule that still needs audio has used up its lifetime
+    # tries (capsules.VOICE_MAX_TOTAL_ATTEMPTS), or the job already had its
+    # re-voice rounds. Budget refusals do not consume tries, so the round cap
+    # is what bounds those.
+    if job.retry_count >= _MAX_REVOICE_ROUNDS or not any(
+        b.audio_status != capsules.VOICED and (b.voice_attempts or 0) < capsules.VOICE_MAX_TOTAL_ATTEMPTS
+        for b in block_rows
+    ):
         return False
 
     perfil = await db.get(Profile, cliente.id)
     voice_id = perfil.voice_id if perfil else None
 
-    job.retry_count += 1
-    await _advance_status_unless_late(db, job, JobStatus.voicing)
+    # Atomic claim of the JOB: only one overlapping caller re-voices it.
+    claim = await db.execute(
+        update(GenerationJob)
+        .where(GenerationJob.id == job.id, GenerationJob.status == JobStatus.failed)
+        .values(status=JobStatus.voicing, retry_count=GenerationJob.retry_count + 1)
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+    await db.refresh(job)
+    if claim.rowcount != 1:
+        return False  # lost the race: the job is now `voicing`, so callers return it unchanged
     start = time.monotonic()
     await emitir(db, "stage_started", customer_id=cliente.id, source="episode_generator",
                  job_id=str(job.id), stage="revoicing")
@@ -590,10 +763,9 @@ async def _revoice_failed_job(db: AsyncSession, cliente: Cliente, job: Generatio
     except Exception as exc:
         cost = getattr(exc, "voicing_cost", 0.0)
         job.status = JobStatus.failed  # still terminal — never back to a non-terminal status
-        job.stages = [*job.stages, {
-            "stage": "revoicing", "error": str(exc), "cost": cost,
-            "latency_ms": int((time.monotonic() - start) * 1000),
-        }]
+        job.stages = [*job.stages, _failure_stage(
+            exc, stage="revoicing", cost=cost, latency_ms=int((time.monotonic() - start) * 1000),
+        )]
         await emitir(db, "job_failed", customer_id=cliente.id, source="episode_generator",
                      job_id=str(job.id), stage="revoicing", episode_id=str(episode.id))
 
@@ -691,7 +863,11 @@ async def run_generation(
         # customer down the full pipeline again — see _revoice_failed_job.
         if await _revoice_failed_job(db, cliente, existing_job):
             return existing_job
-        if not await _empty_job_can_retry(db, cliente.id, existing_job):
+        # A published episode may still hold capsules that failed to voice:
+        # one bounded retry of just those (never rewrites the published file).
+        await _revoice_late_capsules(db, cliente, existing_job)
+        if not (await _blocked_job_can_retry(db, cliente.id, existing_job)
+                or await _empty_job_can_retry(db, cliente.id, existing_job)):
             existing_job.started_new_run = False
             return existing_job
         # Re-run in place — see _empty_job_can_retry and this function's own
@@ -735,6 +911,7 @@ async def run_generation(
         await db.commit()
 
     job.started_new_run = True
+    db.info.pop("ai_rows", None)  # earlier runs on this session are committed; track only this run
 
     try:
         research_start = time.monotonic()
@@ -752,7 +929,7 @@ async def run_generation(
         result = await db.execute(select(Profile).where(Profile.customer_id == cliente.id))
         perfil = result.scalar_one_or_none()
         style = perfil.narration_style.value if perfil else "news"
-        language = perfil.language.value if perfil else cliente.idioma
+        language = language_for(cliente)  # single source of truth: Cliente.idioma (PATCH /profile keeps Profile.language in step)
         voice_id = perfil.voice_id if perfil else None
         max_length_minutes = perfil.max_length_minutes if perfil else None
 
@@ -884,7 +1061,10 @@ async def run_generation(
         cursor_s = _INTRO_OUTRO_SECONDS // 2
         topics = []
         block_rows: list[Block] = []
-        for b in answerable:
+        # With TTS on, every block is a capsule awaiting its own audio; with
+        # TTS off the status stays NULL (legacy script-only episode).
+        capsule_status = capsules.PENDING if ai_platform.elevenlabs_configured() else None
+        for seq, b in enumerate(answerable):
             req, result = b["request"], b["result"]
             script = result.script
             had_more = trim_factor < 1.0
@@ -905,6 +1085,9 @@ async def run_generation(
                 sources=result.sources,
                 had_more=had_more,
                 no_news=False,
+                sequence=seq,
+                audio_status=capsule_status,
+                voice_attempts=0,
             )
             db.add(block)
             block_rows.append(block)
@@ -926,17 +1109,8 @@ async def run_generation(
         episode.duration_s = int(cursor_s + _INTRO_OUTRO_SECONDS // 2)
         episode.headline = "Today: " + ", ".join(topics[:3]) if language != "es" else "Hoy: " + ", ".join(topics[:3])
 
-        for req in [b["request"] for b in answerable]:
-            req.last_answered_at = datetime.utcnow()
-            if req.kind.value == "one_off":
-                req.status = RequestStatus.fulfilled
-                req.fulfilled_episode_id = episode.id
-            # The real on-demand path marks requests answered here directly rather than
-            # through POST /requests/mark_answered (that endpoint is still the contract
-            # path for when a caller other than this pipeline needs it) — so this is the
-            # only place that can emit request_answered for what actually happens today.
-            await emitir(db, "request_answered", customer_id=cliente.id, source="episode_generator",
-                         request_id=str(req.id), episode_id=str(episode.id), had_more=trim_factor < 1.0)
+        # Requests are marked answered AFTER voicing, per delivered capsule —
+        # see _mark_answered (doc 4.1: not at assemble, before audio exists).
 
         assemble_latency_ms = int((time.monotonic() - assemble_start) * 1000)
         # No AICall is made during assembly (pure in-process trimming/DB writes) — cost
@@ -1001,7 +1175,7 @@ async def run_generation(
                 # problem (quota, 5xx, timeout). An unpublished episode with
                 # finished scripts is exactly the right state to re-voice from.
                 voicing_cost = getattr(exc, "voicing_cost", voicing_cost)
-                job.stages = [*job.stages, {"stage": "voicing", "error": str(exc), "cost": voicing_cost}]
+                job.stages = [*job.stages, _failure_stage(exc, stage="voicing", cost=voicing_cost)]
                 job.status = JobStatus.failed
                 voicing_failed = True
 
@@ -1011,11 +1185,16 @@ async def run_generation(
             # module docstring's pre-TTS note — not a failure, so it keeps the
             # pre-existing behaviour: publish the script-only episode. Only a
             # real synthesis *error* is treated as a failed job above.
-            episode.published_at = datetime.utcnow()
+            episode.published_at = datetime.now(timezone.utc)
+            await _mark_answered(db, cliente, block_rows)
 
         voicing_latency_ms = int((time.monotonic() - voicing_start) * 1000)
         job.stages = [*job.stages, {
             "stage": "voicing", "latency_ms": voicing_latency_ms, "skipped": voicing_skipped, "cost": voicing_cost,
+            # Additive: per-capsule outcome, e.g. {"voiced": 2, "failed": 1} (absent when TTS is off).
+            **({"capsules": {s: _cnt for s in (capsules.VOICED, capsules.FAILED, capsules.BLOCKED, capsules.PENDING)
+                             if (_cnt := sum(1 for b in block_rows if b.audio_status == s))}}
+               if not voicing_skipped else {}),
         }]
         await emitir(db, "stage_completed", customer_id=cliente.id, source="episode_generator",
                      job_id=str(job.id), stage="voicing", latency_ms=voicing_latency_ms,
@@ -1037,10 +1216,21 @@ async def run_generation(
 
     except Exception as exc:
         await db.rollback()  # discard any partial episode/block writes — never publish partial results
+        # ...but not the paid-call records: that money is spent and must count toward the budget.
+        try:
+            await ai_platform.rescue_ai_rows(db)
+        except Exception:  # noqa: BLE001 - must never mask the job failure below
+            logger.exception("generation: could not rescue AICall rows")
         job.status = JobStatus.failed
-        job.stages = [{"error": str(exc)}]
+        job.stages = [_failure_stage(exc)]
         await db.commit()
         await db.refresh(job)
+        if isinstance(exc, ai_platform.BudgetExceededError):
+            # The guard's own event was just rolled back with the rest of the
+            # transaction; record the refusal once, here, where it persists.
+            await ai_platform.emit_budget_exceeded(
+                db, scope=exc.scope, spent=exc.spent, limit=exc.limit,
+                customer_id=job.customer_id, purpose=exc.purpose)
         # No free-text error content in the Event payload (PII tenet) — the exception
         # message stays only in job.stages, which is internal-only, not the catalogue.
         # customer_id comes from job (just refreshed), not the `cliente` argument —
@@ -1055,23 +1245,24 @@ async def run_generation(
 # ── Shared inventory ─────────────────────────────────────────────────────────
 # See module docstring's "Built: shared inventory" section for the design.
 
-async def _get_or_create_shared_customer(db: AsyncSession, tag: str) -> Cliente:
+async def _get_or_create_shared_customer(db: AsyncSession, tag: str, language: str = "es") -> Cliente:
     """One persistent system Cliente per interest tag, created on first use and
     reused on every later refresh. Never logs in (no hashed_password) and is
     excluded from real customer-facing lists by construction — nothing lists
     Cliente rows generically anywhere in this codebase — and from cost-per-
     customer views by its email pattern (see instrumentation.py)."""
-    result = await db.execute(select(Cliente).where(Cliente.email == shared_inventory_email(tag)))
+    language = language_for(language)
+    result = await db.execute(select(Cliente).where(Cliente.email == shared_inventory_email(tag, language)))
     cliente = result.scalar_one_or_none()
     if cliente is not None:
         return cliente
 
     cliente = Cliente(
-        email=shared_inventory_email(tag),
+        email=shared_inventory_email(tag, language),
         auth_provider=AuthProvider.email,
         hashed_password=None,
         nombre=f"Shared inventory — {tag}",
-        idioma="es",
+        idioma=language,
         onboarding_complete=True,
     )
     db.add(cliente)
@@ -1112,6 +1303,7 @@ async def generate_shared_episode(
     tag: str,
     seed_request_text: str,
     fecha: date | None = None,
+    language: str = "es",
 ) -> GenerationJob:
     """
     Runs the shared pipeline for one interest tag: gets or creates that tag's
@@ -1124,7 +1316,7 @@ async def generate_shared_episode(
     path) uniqueness — calling this twice for the same tag on the same day
     returns the first call's job unchanged rather than generating twice.
     """
-    cliente = await _get_or_create_shared_customer(db, tag)
+    cliente = await _get_or_create_shared_customer(db, tag, language)
     await _get_or_create_shared_request(db, cliente, seed_request_text)
     await db.commit()
     return await run_generation(db, cliente, path=EpisodePath.shared, fecha=fecha, shared_tag=tag)
